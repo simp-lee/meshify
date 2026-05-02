@@ -1,0 +1,403 @@
+// Package workflow orchestrates user-facing meshify flows.
+package workflow
+
+import (
+	"fmt"
+	"meshify/internal/config"
+	"meshify/internal/output"
+	"net/url"
+	"path/filepath"
+	"strings"
+)
+
+type InitMode string
+
+const (
+	InitModeDefault  InitMode = "default"
+	InitModeAdvanced InitMode = "advanced"
+)
+
+type InitSource string
+
+const (
+	InitSourceExample InitSource = "example"
+	InitSourceGuided  InitSource = "guided"
+)
+
+type InitOptions struct {
+	Advanced bool
+}
+
+type InitResult struct {
+	Config config.Config
+	Mode   InitMode
+	Source InitSource
+}
+
+func ExampleInitResult() InitResult {
+	return InitResult{
+		Config: config.ExampleConfig(),
+		Source: InitSourceExample,
+	}
+}
+
+func RunInit(prompter output.Prompter, options InitOptions) (InitResult, error) {
+	if prompter == nil || !prompter.Enabled() {
+		return InitResult{}, fmt.Errorf("guided init requires interactive input")
+	}
+
+	cfg := config.New()
+	mode := InitModeDefault
+	if options.Advanced {
+		mode = InitModeAdvanced
+	} else {
+		advanced, err := prompter.Confirm("Use advanced mode now?", output.ConfirmPrompt{
+			Default: false,
+			Help:    "Choose advanced if you need DNS-01, mirror or offline packages, proxy, architecture, or public IP overrides.",
+		})
+		if err != nil {
+			return InitResult{}, err
+		}
+		if advanced {
+			mode = InitModeAdvanced
+		}
+	}
+
+	var err error
+	if cfg.Default.ServerURL, err = prompter.Text("Headscale server URL", output.TextPrompt{
+		Help:     "Use the public HTTPS URL clients will open, for example https://hs.example.com",
+		Validate: validateServerURL,
+	}); err != nil {
+		return InitResult{}, err
+	}
+
+	if cfg.Default.BaseDomain, err = prompter.Text("MagicDNS base domain", output.TextPrompt{
+		Help: "Must differ from the Headscale host name, for example tailnet.example.com",
+		Validate: func(value string) error {
+			return validateBaseDomain(cfg.Default.ServerURL, value)
+		},
+	}); err != nil {
+		return InitResult{}, err
+	}
+
+	if cfg.Default.CertificateEmail, err = prompter.Text("Certificate email", output.TextPrompt{
+		Help:     "Used for ACME registration and renewal notices",
+		Validate: validateCertificateEmail,
+	}); err != nil {
+		return InitResult{}, err
+	}
+
+	if mode == InitModeAdvanced {
+		if err := collectAdvancedFields(prompter, &cfg); err != nil {
+			return InitResult{}, err
+		}
+	}
+
+	if err := cfg.Validate(); err != nil {
+		return InitResult{}, fmt.Errorf("validate guided config: %w", err)
+	}
+
+	return InitResult{
+		Config: cfg,
+		Mode:   mode,
+		Source: InitSourceGuided,
+	}, nil
+}
+
+func (result InitResult) Response(configPath string) output.Response {
+	summary := "wrote example config"
+	sourceValue := "example template"
+	if result.Source == InitSourceGuided {
+		summary = "wrote guided config"
+		sourceValue = "guided " + string(result.Mode)
+	}
+
+	return output.Response{
+		Command: "init",
+		Status:  "written",
+		Summary: summary,
+		Fields: []output.Field{
+			{Label: "config path", Value: configPath},
+			{Label: "config source", Value: sourceValue},
+			{Label: "server url", Value: result.Config.Default.ServerURL},
+			{Label: "base domain", Value: result.Config.Default.BaseDomain},
+			{Label: "acme challenge", Value: result.Config.Default.ACMEChallenge},
+		},
+		NextSteps: result.nextSteps(configPath),
+	}
+}
+
+func (result InitResult) nextSteps(configPath string) []string {
+	steps := []string{}
+	advancedConfigPath := suggestAdvancedConfigPath(configPath)
+
+	switch result.Source {
+	case InitSourceExample:
+		steps = append(steps,
+			"Edit default.server_url, default.base_domain, and default.certificate_email for your environment.",
+			fmt.Sprintf("If you want guided advanced questions later, generate a separate advanced config with 'meshify init --advanced --config %s' and copy the advanced values you need into %s.", advancedConfigPath, configPath),
+		)
+	case InitSourceGuided:
+		if result.Mode == InitModeDefault {
+			steps = append(steps,
+				"Review the generated default section and edit the advanced section only if your environment needs it.",
+				fmt.Sprintf("If you later need guided advanced answers for DNS-01, mirror or offline packages, proxy, architecture, or public IP overrides, generate a separate advanced config with 'meshify init --advanced --config %s' and copy the advanced values you need into %s.", advancedConfigPath, configPath),
+			)
+		} else {
+			steps = append(steps, "Review the generated advanced section before deploy, especially package source, proxy, DNS-01, architecture, and public IP overrides.")
+			if result.Config.Default.ACMEChallenge == config.ACMEChallengeDNS01 {
+				steps = append(steps, "Provide DNS-01 provider credentials through the host environment, not this config file.")
+			}
+		}
+	}
+
+	steps = append(steps,
+		fmt.Sprintf("Run 'meshify deploy --config %s' to validate the deploy surface with this config.", configPath),
+		fmt.Sprintf("Run 'meshify verify --config %s' to validate this config now.", configPath),
+	)
+
+	return steps
+}
+
+func suggestAdvancedConfigPath(configPath string) string {
+	extension := filepath.Ext(configPath)
+	if extension == "" {
+		return configPath + ".advanced"
+	}
+
+	return strings.TrimSuffix(configPath, extension) + ".advanced" + extension
+}
+
+func collectAdvancedFields(prompter output.Prompter, cfg *config.Config) error {
+	var err error
+
+	if cfg.Default.ACMEChallenge, err = prompter.Select("ACME challenge", output.SelectPrompt{
+		Default: config.ACMEChallengeHTTP01,
+		Help:    "Keep http-01 unless your environment specifically requires DNS-01",
+		Options: []string{config.ACMEChallengeHTTP01, config.ACMEChallengeDNS01},
+	}); err != nil {
+		return err
+	}
+
+	if cfg.Default.ACMEChallenge == config.ACMEChallengeDNS01 {
+		if cfg.Advanced.DNS01.Provider, err = prompter.Text("DNS-01 provider", output.TextPrompt{
+			Help:     "Credentials stay outside the config file and should come from the host environment",
+			Validate: validateDNS01Provider,
+		}); err != nil {
+			return err
+		}
+
+		if cfg.Advanced.DNS01.Zone, err = prompter.Text("DNS-01 zone", output.TextPrompt{
+			Help: "Optional. Leave empty to let the provider determine the zone automatically.",
+		}); err != nil {
+			return err
+		}
+	}
+
+	if cfg.Advanced.PackageSource.Mode, err = prompter.Select("Package source mode", output.SelectPrompt{
+		Default: config.PackageSourceModeDirect,
+		Help:    "Use mirror or offline only when direct package download is not suitable",
+		Options: []string{config.PackageSourceModeDirect, config.PackageSourceModeMirror, config.PackageSourceModeOffline},
+	}); err != nil {
+		return err
+	}
+
+	if cfg.Advanced.PackageSource.Version, err = prompter.Text("Headscale package version", output.TextPrompt{
+		Default: config.DefaultHeadscaleVersion,
+		Help:    "Press Enter to keep the default tested version",
+		Validate: func(value string) error {
+			if strings.TrimSpace(value) == "" {
+				return fmt.Errorf("advanced.package_source.version is required")
+			}
+			return nil
+		},
+	}); err != nil {
+		return err
+	}
+
+	switch cfg.Advanced.PackageSource.Mode {
+	case config.PackageSourceModeMirror:
+		if cfg.Advanced.PackageSource.URL, err = prompter.Text("Mirror package URL", output.TextPrompt{
+			Help:     "Use the full URL to the headscale .deb package",
+			Validate: validateMirrorURL,
+		}); err != nil {
+			return err
+		}
+		if cfg.Advanced.PackageSource.SHA256, err = prompter.Text("Mirror package SHA-256", output.TextPrompt{
+			Help:     "Use the lowercase 64-character checksum for the package",
+			Validate: validateMirrorSHA256,
+		}); err != nil {
+			return err
+		}
+	case config.PackageSourceModeOffline:
+		if cfg.Advanced.PackageSource.FilePath, err = prompter.Text("Offline package path", output.TextPrompt{
+			Help:     "Use the absolute or relative path to the local headscale .deb file",
+			Validate: validateOfflinePath,
+		}); err != nil {
+			return err
+		}
+		if cfg.Advanced.PackageSource.SHA256, err = prompter.Text("Offline package SHA-256", output.TextPrompt{
+			Help:     "Use the lowercase 64-character checksum for the package",
+			Validate: validateOfflineSHA256,
+		}); err != nil {
+			return err
+		}
+	}
+
+	configureProxy, err := prompter.Confirm("Configure HTTP or HTTPS proxy settings?", output.ConfirmPrompt{
+		Default: false,
+		Help:    "Leave this off unless the host needs a proxy to reach package or ACME endpoints",
+	})
+	if err != nil {
+		return err
+	}
+	if configureProxy {
+		if cfg.Advanced.Proxy.HTTPProxy, err = prompter.Text("http_proxy", output.TextPrompt{
+			Help:     "Optional. Leave empty to skip.",
+			Validate: validateHTTPProxy,
+		}); err != nil {
+			return err
+		}
+		if cfg.Advanced.Proxy.HTTPSProxy, err = prompter.Text("https_proxy", output.TextPrompt{
+			Help:     "Optional. Leave empty to skip.",
+			Validate: validateHTTPSProxy,
+		}); err != nil {
+			return err
+		}
+		if cfg.Advanced.Proxy.NoProxy, err = prompter.Text("no_proxy", output.TextPrompt{
+			Help: "Optional. Use a comma-separated list such as 127.0.0.1,localhost",
+		}); err != nil {
+			return err
+		}
+	}
+
+	if cfg.Advanced.Platform.Arch, err = prompter.Select("Target architecture", output.SelectPrompt{
+		Default: config.ArchAMD64,
+		Help:    "Keep amd64 unless the host is arm64",
+		Options: []string{config.ArchAMD64, config.ArchARM64},
+	}); err != nil {
+		return err
+	}
+
+	overrideIPs, err := prompter.Confirm("Override public IP detection?", output.ConfirmPrompt{
+		Default: false,
+		Help:    "Only use this if the host cannot advertise the right public address on its own",
+	})
+	if err != nil {
+		return err
+	}
+	if overrideIPs {
+		if cfg.Advanced.Network.PublicIPv4, err = prompter.Text("Public IPv4 override", output.TextPrompt{
+			Help:     "Optional. Leave empty to skip.",
+			Validate: validatePublicIPv4,
+		}); err != nil {
+			return err
+		}
+		if cfg.Advanced.Network.PublicIPv6, err = prompter.Text("Public IPv6 override", output.TextPrompt{
+			Help:     "Optional enhancement. Leave empty when the host has no usable IPv6.",
+			Validate: validatePublicIPv6,
+		}); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func validateServerURL(value string) error {
+	candidate := config.ExampleConfig()
+	candidate.Default.ServerURL = value
+	candidate.Default.BaseDomain = validationBaseDomainForServerURL(value)
+	return candidate.Validate()
+}
+
+func validationBaseDomainForServerURL(value string) string {
+	parsedURL, err := url.Parse(strings.TrimSpace(value))
+	if err != nil {
+		return config.ExampleConfig().Default.BaseDomain
+	}
+
+	host := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(parsedURL.Hostname()), "."))
+	for _, baseDomain := range []string{"meshify-init.invalid", "meshify-init.example", "meshify-init.test"} {
+		if host != baseDomain && !strings.HasSuffix(host, "."+baseDomain) {
+			return baseDomain
+		}
+	}
+	return config.ExampleConfig().Default.BaseDomain
+}
+
+func validateBaseDomain(serverURL string, value string) error {
+	candidate := config.ExampleConfig()
+	candidate.Default.ServerURL = serverURL
+	candidate.Default.BaseDomain = value
+	return candidate.Validate()
+}
+
+func validateCertificateEmail(value string) error {
+	candidate := config.ExampleConfig()
+	candidate.Default.CertificateEmail = value
+	return candidate.Validate()
+}
+
+func validateDNS01Provider(value string) error {
+	candidate := config.ExampleConfig()
+	candidate.Default.ACMEChallenge = config.ACMEChallengeDNS01
+	candidate.Advanced.DNS01.Provider = value
+	return candidate.Validate()
+}
+
+func validateMirrorURL(value string) error {
+	candidate := config.ExampleConfig()
+	candidate.Advanced.PackageSource.Mode = config.PackageSourceModeMirror
+	candidate.Advanced.PackageSource.URL = value
+	candidate.Advanced.PackageSource.SHA256 = strings.Repeat("a", 64)
+	return candidate.Validate()
+}
+
+func validateMirrorSHA256(value string) error {
+	candidate := config.ExampleConfig()
+	candidate.Advanced.PackageSource.Mode = config.PackageSourceModeMirror
+	candidate.Advanced.PackageSource.URL = "https://mirror.example.com/headscale.deb"
+	candidate.Advanced.PackageSource.SHA256 = value
+	return candidate.Validate()
+}
+
+func validateOfflinePath(value string) error {
+	candidate := config.ExampleConfig()
+	candidate.Advanced.PackageSource.Mode = config.PackageSourceModeOffline
+	candidate.Advanced.PackageSource.FilePath = value
+	candidate.Advanced.PackageSource.SHA256 = strings.Repeat("b", 64)
+	return candidate.Validate()
+}
+
+func validateOfflineSHA256(value string) error {
+	candidate := config.ExampleConfig()
+	candidate.Advanced.PackageSource.Mode = config.PackageSourceModeOffline
+	candidate.Advanced.PackageSource.FilePath = "/tmp/headscale.deb"
+	candidate.Advanced.PackageSource.SHA256 = value
+	return candidate.Validate()
+}
+
+func validateHTTPProxy(value string) error {
+	candidate := config.ExampleConfig()
+	candidate.Advanced.Proxy.HTTPProxy = value
+	return candidate.Validate()
+}
+
+func validateHTTPSProxy(value string) error {
+	candidate := config.ExampleConfig()
+	candidate.Advanced.Proxy.HTTPSProxy = value
+	return candidate.Validate()
+}
+
+func validatePublicIPv4(value string) error {
+	candidate := config.ExampleConfig()
+	candidate.Advanced.Network.PublicIPv4 = value
+	return candidate.Validate()
+}
+
+func validatePublicIPv6(value string) error {
+	candidate := config.ExampleConfig()
+	candidate.Advanced.Network.PublicIPv6 = value
+	return candidate.Validate()
+}

@@ -1,0 +1,40 @@
+api_version: meshify/v1alpha1
+
+# Edit the default section first. It is the only part that should matter for the
+# first successful deployment.
+default:
+  server_url: "https://hs.example.com"
+  # base_domain must differ from the host part of server_url and cannot be its
+  # parent domain.
+  base_domain: "tailnet.example.com"
+  certificate_email: "ops@example.com"
+  # Keep HTTP-01 unless your environment requires DNS-01.
+  acme_challenge: "http-01"
+
+# The advanced section is opt-in. Leave values empty unless you have a real
+# need for mirrors, offline packages, proxies, DNS-01, or public IP overrides.
+advanced:
+  package_source:
+    mode: "direct" # direct | mirror | offline
+    version: "0.28.0"
+    url: ""
+    sha256: ""
+    file_path: ""
+
+  proxy:
+    http_proxy: ""
+    https_proxy: ""
+    no_proxy: ""
+
+  dns01:
+    provider: ""
+    zone: ""
+    # Supply provider credentials through the host environment, not this file.
+
+  network:
+    public_ipv4: ""
+    # Optional enhancement. Leave empty when the host has no usable IPv6.
+    public_ipv6: ""
+
+  platform:
+    arch: "amd64"

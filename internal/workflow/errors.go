@@ -1,0 +1,131 @@
+package workflow
+
+import (
+	"meshify/internal/output"
+	"strings"
+)
+
+type Failure struct {
+	Step         string
+	Operation    string
+	Impact       string
+	Remediation  []string
+	RetryCommand string
+	Cause        error
+}
+
+type FailureSnapshot struct {
+	Summary      string   `json:"summary,omitempty"`
+	Step         string   `json:"step,omitempty"`
+	Operation    string   `json:"operation,omitempty"`
+	Impact       string   `json:"impact,omitempty"`
+	Details      string   `json:"details,omitempty"`
+	Remediation  []string `json:"remediation,omitempty"`
+	RetryCommand string   `json:"retry_command,omitempty"`
+}
+
+func (failure Failure) Error() string {
+	return failure.Summary()
+}
+
+func (failure Failure) Summary() string {
+	step := strings.TrimSpace(failure.Step)
+	operation := strings.TrimSpace(failure.Operation)
+
+	switch {
+	case step != "" && operation != "":
+		return step + " failed: " + operation
+	case operation != "":
+		return operation
+	case step != "":
+		return step + " failed"
+	default:
+		return "workflow failed"
+	}
+}
+
+func (failure Failure) Response(command string) output.Response {
+	return failure.Snapshot().Response(command)
+}
+
+func (failure Failure) Snapshot() FailureSnapshot {
+	return FailureSnapshot{
+		Summary:      failure.Summary(),
+		Step:         strings.TrimSpace(failure.Step),
+		Operation:    strings.TrimSpace(failure.Operation),
+		Impact:       strings.TrimSpace(failure.Impact),
+		Details:      summarizeCause(failure.Cause),
+		Remediation:  append([]string(nil), failure.Remediation...),
+		RetryCommand: strings.TrimSpace(failure.RetryCommand),
+	}
+}
+
+func (snapshot FailureSnapshot) HasContent() bool {
+	return strings.TrimSpace(snapshot.Summary) != "" ||
+		strings.TrimSpace(snapshot.Step) != "" ||
+		strings.TrimSpace(snapshot.Operation) != "" ||
+		strings.TrimSpace(snapshot.Impact) != "" ||
+		strings.TrimSpace(snapshot.Details) != "" ||
+		len(snapshot.Remediation) > 0 ||
+		strings.TrimSpace(snapshot.RetryCommand) != ""
+}
+
+func (snapshot FailureSnapshot) Response(command string) output.Response {
+	fields := make([]output.Field, 0, 4)
+	if step := strings.TrimSpace(snapshot.Step); step != "" {
+		fields = append(fields, output.Field{Label: "step", Value: step})
+	}
+	if operation := strings.TrimSpace(snapshot.Operation); operation != "" {
+		fields = append(fields, output.Field{Label: "what failed", Value: operation})
+	}
+	if impact := strings.TrimSpace(snapshot.Impact); impact != "" {
+		fields = append(fields, output.Field{Label: "impact", Value: impact})
+	}
+	if details := strings.TrimSpace(snapshot.Details); details != "" {
+		fields = append(fields, output.Field{Label: "details", Value: details})
+	}
+
+	nextSteps := append([]string(nil), snapshot.Remediation...)
+	if retry := strings.TrimSpace(snapshot.RetryCommand); retry != "" {
+		nextSteps = append(nextSteps, "Retry after remediation: "+retry)
+	}
+
+	return output.Response{
+		Command:   command,
+		Status:    "failed",
+		Summary:   snapshot.summary(),
+		Fields:    fields,
+		NextSteps: nextSteps,
+	}
+}
+
+func (snapshot FailureSnapshot) summary() string {
+	if summary := strings.TrimSpace(snapshot.Summary); summary != "" {
+		return summary
+	}
+
+	step := strings.TrimSpace(snapshot.Step)
+	operation := strings.TrimSpace(snapshot.Operation)
+	switch {
+	case step != "" && operation != "":
+		return step + " failed: " + operation
+	case operation != "":
+		return operation
+	case step != "":
+		return step + " failed"
+	default:
+		return "workflow failed"
+	}
+}
+
+func summarizeCause(err error) string {
+	if err == nil {
+		return ""
+	}
+	message := strings.TrimSpace(err.Error())
+	if message == "" {
+		return ""
+	}
+	line, _, _ := strings.Cut(message, "\n")
+	return strings.TrimSpace(line)
+}
