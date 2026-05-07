@@ -56,6 +56,24 @@ func TestExecutorAptGetAddsProxyEnvAndNonInteractiveMode(t *testing.T) {
 	}
 }
 
+func TestProxyEnvNormalizesHostPortProxyForExternalCommands(t *testing.T) {
+	t.Parallel()
+
+	env := ProxyEnv("proxy.internal:8080", "[2001:db8::10]:8443", "127.0.0.1,localhost")
+	for key, want := range map[string]string{
+		"http_proxy":  "http://proxy.internal:8080",
+		"HTTP_PROXY":  "http://proxy.internal:8080",
+		"https_proxy": "http://[2001:db8::10]:8443",
+		"HTTPS_PROXY": "http://[2001:db8::10]:8443",
+		"no_proxy":    "127.0.0.1,localhost",
+		"NO_PROXY":    "127.0.0.1,localhost",
+	} {
+		if got := env[key]; got != want {
+			t.Fatalf("ProxyEnv()[%q] = %q, want %q", key, got, want)
+		}
+	}
+}
+
 func TestCommandErrorOmitsShellSpew(t *testing.T) {
 	t.Parallel()
 
@@ -83,14 +101,14 @@ func TestCommandMissingDoesNotTreatMissingSudoAsWrappedCommand(t *testing.T) {
 	result := Result{
 		Command: Command{
 			Name:        "sudo",
-			Args:        []string{"-n", "certbot", "--version"},
-			DisplayName: "certbot",
+			Args:        []string{"-n", "/opt/meshify/bin/lego", "--version"},
+			DisplayName: "/opt/meshify/bin/lego",
 			DisplayArgs: []string{"--version"},
 		},
 	}
 	err := &CommandError{Result: result, Err: exec.ErrNotFound}
 
-	if CommandMissing(result, err, "certbot") {
+	if CommandMissing(result, err, "/opt/meshify/bin/lego") {
 		t.Fatal("CommandMissing() = true, want false when sudo is the missing executable")
 	}
 	if !CommandMissing(result, err, "sudo") {

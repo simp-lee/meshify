@@ -40,7 +40,45 @@ func TestValidateRenderedSiteRejectsMissingUpgradeHeaders(t *testing.T) {
 	}
 }
 
-func TestValidateRenderedSiteRequiresNonHeadscaleDefaultServers(t *testing.T) {
+func TestValidateRenderedSiteRejectsPseudoCatchAllServers(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	site, err := NewSiteConfig(cfg)
+	if err != nil {
+		t.Fatalf("NewSiteConfig() error = %v", err)
+	}
+	content := strings.Replace(string(renderNginxSite(t, cfg)), "server_name hs.example.com;", "server_name _;", 1)
+
+	err = ValidateRenderedSite(site, []byte(content))
+	if err == nil {
+		t.Fatal("ValidateRenderedSite() error = nil, want failure")
+	}
+	if !strings.Contains(err.Error(), "pseudo catch-all server_name _") {
+		t.Fatalf("error = %q, want pseudo catch-all failure", err.Error())
+	}
+}
+
+func TestValidateRenderedSiteRejectsNamedServerDefaultOwnership(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	site, err := NewSiteConfig(cfg)
+	if err != nil {
+		t.Fatalf("NewSiteConfig() error = %v", err)
+	}
+	content := strings.Replace(string(renderNginxSite(t, cfg)), "listen 80;\n    listen [::]:80;\n    server_name hs.example.com;", "listen 80 default_server;\n    listen [::]:80 default_server;\n    server_name hs.example.com;", 1)
+
+	err = ValidateRenderedSite(site, []byte(content))
+	if err == nil {
+		t.Fatal("ValidateRenderedSite() error = nil, want failure")
+	}
+	if !strings.Contains(err.Error(), "named Nginx site must not be the default_server") {
+		t.Fatalf("error = %q, want named default_server ownership failure", err.Error())
+	}
+}
+
+func TestValidateRenderedSiteRejectsMissingDefaultCatchAll(t *testing.T) {
 	t.Parallel()
 
 	cfg := validConfig()
@@ -54,12 +92,12 @@ func TestValidateRenderedSiteRequiresNonHeadscaleDefaultServers(t *testing.T) {
 	if err == nil {
 		t.Fatal("ValidateRenderedSite() error = nil, want failure")
 	}
-	if !strings.Contains(err.Error(), "catch-all default server missing") {
-		t.Fatalf("error = %q, want catch-all default failure", err.Error())
+	if !strings.Contains(err.Error(), "missing HTTP default_server catch-all") || !strings.Contains(err.Error(), "missing HTTPS default_server catch-all") {
+		t.Fatalf("error = %q, want missing default catch-all failures", err.Error())
 	}
 }
 
-func TestValidateRenderedSiteRejectsHeadscaleDefaultServer(t *testing.T) {
+func TestValidateRenderedSiteRejectsDeprecatedHTTP2ListenSyntax(t *testing.T) {
 	t.Parallel()
 
 	cfg := validConfig()
@@ -67,14 +105,94 @@ func TestValidateRenderedSiteRejectsHeadscaleDefaultServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSiteConfig() error = %v", err)
 	}
-	content := strings.Replace(string(renderNginxSite(t, cfg)), "listen 80;\n    listen [::]:80;\n    server_name hs.example.com;", "listen 80 default_server;\n    listen [::]:80;\n    server_name hs.example.com;", 1)
+	content := strings.Replace(string(renderNginxSite(t, cfg)), "listen 443 ssl default_server;", "listen 443 ssl http2 default_server;", 1)
 
 	err = ValidateRenderedSite(site, []byte(content))
 	if err == nil {
 		t.Fatal("ValidateRenderedSite() error = nil, want failure")
 	}
-	if !strings.Contains(err.Error(), "Headscale server block must not claim default_server") {
-		t.Fatalf("error = %q, want Headscale default_server failure", err.Error())
+	if !strings.Contains(err.Error(), "deprecated listen ... http2 syntax") {
+		t.Fatalf("error = %q, want deprecated http2 listen failure", err.Error())
+	}
+}
+
+func TestValidateRenderedSiteRejectsDefaultCatchAllProxy(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	site, err := NewSiteConfig(cfg)
+	if err != nil {
+		t.Fatalf("NewSiteConfig() error = %v", err)
+	}
+	content := strings.Replace(string(renderNginxSite(t, cfg)), "return 444;", "proxy_pass http://headscale_upstream;", 1)
+
+	err = ValidateRenderedSite(site, []byte(content))
+	if err == nil {
+		t.Fatal("ValidateRenderedSite() error = nil, want failure")
+	}
+	if !strings.Contains(err.Error(), "default_server catch-all must not proxy to Headscale") {
+		t.Fatalf("error = %q, want catch-all proxy failure", err.Error())
+	}
+}
+
+func TestValidateRenderedSiteRejectsMissingHostSNIGuards(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	site, err := NewSiteConfig(cfg)
+	if err != nil {
+		t.Fatalf("NewSiteConfig() error = %v", err)
+	}
+	content := strings.Replace(string(renderNginxSite(t, cfg)), "if ($meshify_host_header_valid = 0)", "if ($meshify_other_guard = 0)", 1)
+
+	err = ValidateRenderedSite(site, []byte(content))
+	if err == nil {
+		t.Fatal("ValidateRenderedSite() error = nil, want failure")
+	}
+	if !strings.Contains(err.Error(), "missing if ($meshify_host_header_valid = 0) guard") {
+		t.Fatalf("error = %q, want Host guard failure", err.Error())
+	}
+}
+
+func TestValidateRenderedSiteRejectsIncompleteSNIGuardMap(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	site, err := NewSiteConfig(cfg)
+	if err != nil {
+		t.Fatalf("NewSiteConfig() error = %v", err)
+	}
+	content := strings.Replace(string(renderNginxSite(t, cfg)), "map $ssl_server_name $meshify_sni_valid {\n    default 0;\n    \"hs.example.com\" 1;\n}", "map $ssl_server_name $meshify_sni_valid {\n    default 0;\n}", 1)
+
+	err = ValidateRenderedSite(site, []byte(content))
+	if err == nil {
+		t.Fatal("ValidateRenderedSite() error = nil, want failure")
+	}
+	if !strings.Contains(err.Error(), "HTTPS SNI guard allowlist missing") {
+		t.Fatalf("error = %q, want SNI guard map failure", err.Error())
+	}
+}
+
+func TestValidateRenderedSiteRejectsHostSNIGuardsAfterProxy(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	site, err := NewSiteConfig(cfg)
+	if err != nil {
+		t.Fatalf("NewSiteConfig() error = %v", err)
+	}
+	content := strings.Replace(string(renderNginxSite(t, cfg)),
+		"    if ($meshify_sni_valid = 0) {\n        return 421;\n    }\n\n    if ($meshify_host_header_valid = 0) {\n        return 421;\n    }\n\n    location / {\n        proxy_pass http://headscale_upstream;",
+		"    location / {\n        proxy_pass http://headscale_upstream;\n    }\n\n    if ($meshify_sni_valid = 0) {\n        return 421;\n    }\n\n    if ($meshify_host_header_valid = 0) {\n        return 421;\n    }\n\n    location /placeholder {",
+		1,
+	)
+
+	err = ValidateRenderedSite(site, []byte(content))
+	if err == nil {
+		t.Fatal("ValidateRenderedSite() error = nil, want failure")
+	}
+	if !strings.Contains(err.Error(), "must reject Host/SNI mismatches before proxying") {
+		t.Fatalf("error = %q, want Host/SNI guard ordering failure", err.Error())
 	}
 }
 

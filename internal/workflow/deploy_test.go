@@ -40,6 +40,7 @@ func TestNewDeployPlanDescribesDNS01WhenConfigured(t *testing.T) {
 	cfg := validDeployConfig()
 	cfg.Default.ACMEChallenge = config.ACMEChallengeDNS01
 	cfg.Advanced.DNS01.Provider = "cloudflare"
+	cfg.Advanced.DNS01.EnvFile = "/etc/meshify/dns01/cloudflare.env"
 	plan, err := NewDeployPlan(cfg)
 	if err != nil {
 		t.Fatalf("NewDeployPlan() error = %v", err)

@@ -140,9 +140,17 @@ func NewPackagePlan(cfg config.Config, options InstallPlanOptions) (PackagePlan,
 
 func (plan PackagePlan) InstallPath() string {
 	if plan.Mode == config.PackageSourceModeOffline {
-		return plan.SourcePath
+		return localPackagePathForApt(plan.SourcePath)
 	}
 	return plan.CachedPath
+}
+
+func localPackagePathForApt(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" || filepath.IsAbs(path) || strings.Contains(path, string(filepath.Separator)) {
+		return path
+	}
+	return "." + string(filepath.Separator) + path
 }
 
 func (installer Installer) Install(ctx context.Context, plan InstallPlan) ([]host.Result, error) {

@@ -1,11 +1,11 @@
 # Meshify
 
-Meshify is a Go CLI for deploying a small, single-host Headscale server. It
-turns one config file into a Debian or Ubuntu host running Headscale behind
-Nginx TLS, with embedded DERP/STUN, MagicDNS, an initial preauth key, and
-static verification checks.
+Meshify is a Go CLI for deploying a small, single-host Headscale control plane.
+It turns one `meshify.yaml` file into a supported Debian 13 or Ubuntu 24.04 LTS
+host running Headscale behind Nginx TLS, with embedded DERP/STUN, MagicDNS, a
+local onboarding path, and static verification checks.
 
-The intended operator path is:
+The operator path is intentionally short:
 
 ```bash
 meshify init --config meshify.yaml
@@ -16,12 +16,14 @@ meshify verify --config meshify.yaml
 Use `meshify status --config meshify.yaml` for a read-only summary of config
 validity, deploy checkpoints, warnings, and the last recoverable failure.
 
-## Current Scope
+## What Meshify Manages
 
-| Area | Supported baseline |
+| Area | Baseline |
 | --- | --- |
 | Server OS | Debian 13, Ubuntu 24.04 LTS |
-| Server components | Headscale v0.28.0, Nginx, certbot, systemd |
+| Control plane | Headscale v0.28.0 on loopback behind Nginx |
+| TLS automation | HTTP-01 or DNS-01 through a meshify-managed pinned lego v4.35.2 binary |
+| Relay | Embedded Headscale DERP and STUN on `3478/udp`; no official DERP fallback |
 | Client guides | Windows, macOS, Debian/Ubuntu Linux |
 | Client baseline | Tailscale client >= v1.74.0 |
 
@@ -32,14 +34,14 @@ management by default, or official DERP fallback.
 
 ## Quick Start
 
-Build the CLI:
+Build the CLI from this repository:
 
 ```bash
 make build
 ```
 
-On the target server, prepare public DNS for the Headscale host, allow
-`80/tcp`, `443/tcp`, and `3478/udp`, then create and review the config:
+On the target server, point public DNS at the host, allow `80/tcp`, `443/tcp`,
+and `3478/udp`, then generate a config:
 
 ```bash
 ./meshify init --config meshify.yaml
@@ -66,18 +68,29 @@ matching client guide from the documentation map below.
 
 The config example lives at
 [`deploy/config/meshify.yaml.example`](deploy/config/meshify.yaml.example).
-Most first deployments should only edit the `default` section:
+Most first deployments only edit the `default` section:
 
 - `server_url`
 - `base_domain`
 - `certificate_email`
 - `acme_challenge`
 
-Use `meshify init --advanced --config meshify.yaml` only when you need DNS-01,
-package mirrors, offline packages, proxies, architecture overrides, or public
-IP overrides. Do not put DNS provider credentials, API tokens, or other secrets
-in repository templates or public config examples; supply provider credentials
-through the host environment.
+Use `meshify init --advanced --config meshify.yaml` only for DNS-01, Headscale
+package mirrors or offline packages, proxies, architecture overrides, or public
+IP overrides. Headscale package mirror/offline settings do not replace the lego
+source: the server must still reach the pinned lego v4.35.2 GitHub release
+archive through normal egress or the configured proxy.
+
+DNS-01 uses lego provider codes `cloudflare`, `route53`, `digitalocean`, and
+`gcloud`; `google` is accepted as an alias for `gcloud`. Cloudflare and
+DigitalOcean require a root-only `advanced.dns01.env_file`. Route53 and gcloud
+may use lego's ambient credential chain when deploy and
+`meshify-lego-renew.service` run with the same host identity. For gcloud ambient
+mode, the project must also be available through Google Cloud metadata, or set
+`GCE_PROJECT` in the env file. Because systemd environment files are not a
+secret store, keep raw DNS tokens and keys in separate root-only files and
+reference them with lego `_FILE` variables. Do not put DNS provider credentials,
+API tokens, or other secrets in repository templates or public config examples.
 
 ## Documentation
 

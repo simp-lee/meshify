@@ -47,3 +47,46 @@ func TestSystemdIsActiveTreatsInactiveAsFalse(t *testing.T) {
 		t.Fatal("IsActive() = true, want false")
 	}
 }
+
+func TestSystemdIsActiveTreatsKnownNonActiveStatesAsFalse(t *testing.T) {
+	t.Parallel()
+
+	for _, state := range []string{"activating", "deactivating", "maintenance"} {
+		t.Run(state, func(t *testing.T) {
+			t.Parallel()
+
+			runner := &captureRunner{}
+			runner.err = &CommandError{
+				Result: Result{
+					Stdout:   state + "\n",
+					ExitCode: 3,
+				},
+				Err: errors.New("exit status 3"),
+			}
+			manager := NewSystemd(NewExecutor(runner, nil))
+
+			active, err := manager.IsActive(context.Background(), "nginx.service")
+			if err != nil {
+				t.Fatalf("IsActive() error = %v", err)
+			}
+			if active {
+				t.Fatal("IsActive() = true, want false")
+			}
+		})
+	}
+}
+
+func TestSystemdIsActiveTrustsSuccessfulExitStatus(t *testing.T) {
+	t.Parallel()
+
+	runner := &captureRunner{result: Result{Stdout: "reloading\n"}}
+	manager := NewSystemd(NewExecutor(runner, nil))
+
+	active, err := manager.IsActive(context.Background(), "nginx.service")
+	if err != nil {
+		t.Fatalf("IsActive() error = %v", err)
+	}
+	if !active {
+		t.Fatal("IsActive() = false, want true")
+	}
+}

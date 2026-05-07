@@ -1,0 +1,17 @@
+[Unit]
+Description=Renew meshify TLS certificate with lego
+Documentation=https://go-acme.github.io/lego/usage/cli/renew-a-certificate/
+Wants=network-online.target
+Requires=nginx.service
+After=network-online.target nginx.service
+
+[Service]
+Type=oneshot
+{{- if and (eq .ACMEChallenge "dns-01") .DNSEnvFile }}
+EnvironmentFile={{ .DNSEnvFile }}
+{{- end }}
+{{- if eq .ACMEChallenge "dns-01" }}
+ExecStart=/opt/meshify/bin/lego --path /var/lib/meshify/lego --email {{ .CertificateEmail }} --domains {{ .ServerName }} --dns {{ .DNSProvider }} renew --renew-hook /usr/local/lib/meshify/hooks/install-lego-cert-and-reload-nginx.sh
+{{- else }}
+ExecStart=/opt/meshify/bin/lego --path /var/lib/meshify/lego --email {{ .CertificateEmail }} --domains {{ .ServerName }} --http --http.webroot /var/lib/meshify/acme-challenges renew --renew-hook /usr/local/lib/meshify/hooks/install-lego-cert-and-reload-nginx.sh
+{{- end }}

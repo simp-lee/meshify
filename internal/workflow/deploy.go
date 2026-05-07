@@ -20,12 +20,13 @@ func NewDeployPlan(cfg config.Config) (DeployPlan, error) {
 	}
 	steps := []DeployStep{
 		{Key: "preflight", Description: "Run blocking host and network preflight checks before system writes."},
-		{Key: "install-host-dependencies", Description: "Install Nginx, certbot and any selected DNS-01 plugin through the host package manager."},
+		{Key: "install-host-dependencies", Description: "Install Nginx and artifact helper packages through the host package manager."},
+		{Key: "install-lego", Description: "Install the pinned lego v4.35.2 binary after archive SHA-256 verification."},
 		{Key: "install-headscale-package", Description: "Install the verified Headscale v0.28.0 .deb using the official systemd unit."},
-		{Key: "render-runtime-assets", Description: "Render Headscale, Nginx and renewal-hook runtime assets from deploy/."},
-		{Key: "install-runtime-assets", Description: "Write Headscale config, policy, Nginx site and renewal hook to host paths."},
+		{Key: "render-runtime-assets", Description: "Render Headscale, Nginx, lego hook, and renewal timer runtime assets from deploy/."},
+		{Key: "install-runtime-assets", Description: "Write Headscale config, policy, Nginx site, lego hook, and renewal timer units to host paths."},
 		{Key: "issue-certificate", Description: certificateDescription(cfg)},
-		{Key: "enable-services", Description: "Reload systemd, enable Headscale and Nginx, and restart affected services."},
+		{Key: "enable-services", Description: "Reload systemd, enable Headscale, Nginx and the lego renewal timer, and restart affected services."},
 		{Key: "onboarding", Description: "Create the first local user and preauthkey through Headscale local CLI management."},
 		{Key: "verify", Description: "Run static and host readiness checks before directing users to client onboarding."},
 	}
@@ -50,8 +51,8 @@ func (plan DeployPlan) Summary() string {
 func certificateDescription(cfg config.Config) string {
 	switch cfg.Default.ACMEChallenge {
 	case config.ACMEChallengeDNS01:
-		return "Issue or renew the certificate using DNS-01 with externally supplied provider credentials."
+		return "Issue the certificate using lego DNS-01 with externally supplied provider credentials."
 	default:
-		return "Issue or renew the certificate using HTTP-01 webroot without stopping Nginx."
+		return "Issue the certificate using lego HTTP-01 webroot without stopping Nginx."
 	}
 }

@@ -27,11 +27,34 @@ func TestNewTemplateDataDerivesTemplateFields(t *testing.T) {
 	if data.BaseDomain != "tailnet.example.com" {
 		t.Fatalf("BaseDomain = %q, want %q", data.BaseDomain, "tailnet.example.com")
 	}
+	if data.CertificateEmail != "ops@example.com" {
+		t.Fatalf("CertificateEmail = %q, want %q", data.CertificateEmail, "ops@example.com")
+	}
+	if data.ACMEChallenge != config.ACMEChallengeHTTP01 {
+		t.Fatalf("ACMEChallenge = %q, want %q", data.ACMEChallenge, config.ACMEChallengeHTTP01)
+	}
 	if data.PublicIPv4 != "203.0.113.10" {
 		t.Fatalf("PublicIPv4 = %q, want %q", data.PublicIPv4, "203.0.113.10")
 	}
 	if data.PublicIPv6 != "" {
 		t.Fatalf("PublicIPv6 = %q, want empty", data.PublicIPv6)
+	}
+}
+
+func TestNewTemplateDataCanonicalizesLegoDNSProvider(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.Default.ACMEChallenge = config.ACMEChallengeDNS01
+	cfg.Advanced.DNS01.Provider = "google"
+	cfg.Advanced.DNS01.EnvFile = "/etc/meshify/dns01/gcloud.env"
+
+	data, err := NewTemplateData(cfg)
+	if err != nil {
+		t.Fatalf("NewTemplateData() error = %v", err)
+	}
+	if data.DNSProvider != "gcloud" {
+		t.Fatalf("DNSProvider = %q, want canonical lego provider code gcloud", data.DNSProvider)
 	}
 }
 

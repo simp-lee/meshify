@@ -3,6 +3,7 @@ package render
 import (
 	"bytes"
 	"fmt"
+	"meshify/internal/acme"
 	"meshify/internal/assets"
 	"meshify/internal/config"
 	"net/url"
@@ -11,11 +12,15 @@ import (
 )
 
 type TemplateData struct {
-	ServerURL  string
-	ServerName string
-	BaseDomain string
-	PublicIPv4 string
-	PublicIPv6 string
+	ServerURL        string
+	ServerName       string
+	BaseDomain       string
+	CertificateEmail string
+	ACMEChallenge    string
+	DNSProvider      string
+	DNSEnvFile       string
+	PublicIPv4       string
+	PublicIPv6       string
 }
 
 type Renderer struct {
@@ -36,12 +41,25 @@ func NewTemplateData(cfg config.Config) (TemplateData, error) {
 		return TemplateData{}, fmt.Errorf("parse default.server_url: %w", err)
 	}
 
+	dnsProvider := strings.TrimSpace(cfg.Advanced.DNS01.Provider)
+	if strings.TrimSpace(cfg.Default.ACMEChallenge) == config.ACMEChallengeDNS01 && dnsProvider != "" {
+		canonical, err := acme.CanonicalDNSProvider(dnsProvider)
+		if err != nil {
+			return TemplateData{}, err
+		}
+		dnsProvider = canonical
+	}
+
 	return TemplateData{
-		ServerURL:  strings.TrimSpace(cfg.Default.ServerURL),
-		ServerName: parsedURL.Hostname(),
-		BaseDomain: strings.TrimSpace(cfg.Default.BaseDomain),
-		PublicIPv4: strings.TrimSpace(cfg.Advanced.Network.PublicIPv4),
-		PublicIPv6: strings.TrimSpace(cfg.Advanced.Network.PublicIPv6),
+		ServerURL:        strings.TrimSpace(cfg.Default.ServerURL),
+		ServerName:       parsedURL.Hostname(),
+		BaseDomain:       strings.TrimSpace(cfg.Default.BaseDomain),
+		CertificateEmail: strings.TrimSpace(cfg.Default.CertificateEmail),
+		ACMEChallenge:    strings.TrimSpace(cfg.Default.ACMEChallenge),
+		DNSProvider:      dnsProvider,
+		DNSEnvFile:       strings.TrimSpace(cfg.Advanced.DNS01.EnvFile),
+		PublicIPv4:       strings.TrimSpace(cfg.Advanced.Network.PublicIPv4),
+		PublicIPv6:       strings.TrimSpace(cfg.Advanced.Network.PublicIPv6),
 	}, nil
 }
 

@@ -129,6 +129,15 @@ func TestNewPackagePlanSupportsMirrorAndOfflineSources(t *testing.T) {
 	if offlinePlan.InstallPath() != "/srv/packages/headscale.deb" {
 		t.Fatalf("offline InstallPath() = %q", offlinePlan.InstallPath())
 	}
+
+	offline.Advanced.PackageSource.FilePath = "headscale.deb"
+	offlinePlan, err = NewPackagePlan(offline, InstallPlanOptions{})
+	if err != nil {
+		t.Fatalf("NewPackagePlan(relative offline) error = %v", err)
+	}
+	if offlinePlan.InstallPath() != "./headscale.deb" {
+		t.Fatalf("relative offline InstallPath() = %q", offlinePlan.InstallPath())
+	}
 }
 
 func TestInstallerRunsPlanCommandsInOrder(t *testing.T) {

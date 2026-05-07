@@ -1,12 +1,17 @@
 # Onboarding
 
-This guide covers the shared Day 1 handoff after `meshify deploy` and `meshify verify` pass on the server.
+Use this guide after `meshify deploy` and `meshify verify` pass on the server.
+It defines the shared Day 1 handoff before users follow a platform-specific
+client guide.
 
 ## Operator Checklist
 
 - Confirm `meshify verify --config meshify.yaml` reports passed checks.
-- Confirm the deploy output or `meshify status --config meshify.yaml` shows the latest deploy checkpoints and no active failure.
-- Keep the Headscale administration path local. The default runtime config uses `/var/run/headscale/headscale.sock`; do not expose remote gRPC or API-key management for Day 1.
+- Confirm the deploy output or `meshify status --config meshify.yaml` shows the
+  latest deploy checkpoints and no active failure.
+- Keep the Headscale administration path local. The default runtime config uses
+  `/var/run/headscale/headscale.sock`; do not expose remote gRPC or API-key
+  management for Day 1.
 - Hand each client user:
   - `server_url`, for example `https://hs.example.com`
   - the preauth key printed by deploy or created locally
@@ -15,7 +20,9 @@ This guide covers the shared Day 1 handoff after `meshify deploy` and `meshify v
 
 ## Create A Fresh Preauth Key
 
-`meshify deploy` creates the initial `meshify` user and a preauth key when Headscale is running. To create another key later, run the local Headscale CLI on the server:
+`meshify deploy` creates the initial `meshify` user and a preauth key when
+Headscale is running. To create another key later, run the local Headscale CLI
+on the server:
 
 ```bash
 sudo headscale --config /etc/headscale/config.yaml users list
@@ -25,7 +32,9 @@ sudo headscale --config /etc/headscale/config.yaml users list
 sudo headscale --config /etc/headscale/config.yaml preauthkeys create --user <ID> --expiration 24h
 ```
 
-Use the numeric user ID shown by `users list` for the `meshify` user. Use a short expiration for one-time onboarding. Add the Headscale reusable flag only when you intentionally want one key for multiple clients.
+Use the numeric user ID shown by `users list` for the `meshify` user. Use a
+short expiration for one-time onboarding. Add the Headscale reusable flag only
+when you intentionally want one key for multiple clients.
 
 ## Client Handoff Goals
 
@@ -40,12 +49,20 @@ Every supported client should:
 
 ## Network Validation
 
-Validate at least two clients from different networks, such as home broadband plus office network, or home broadband plus phone hotspot.
+Validate at least two clients from different networks, such as home broadband
+plus office network, or home broadband plus phone hotspot.
 
 - When UDP direct connectivity works, peer traffic should prefer direct WireGuard paths.
-- When UDP direct connectivity is blocked or unstable, peer traffic may use the embedded DERP relay over TCP/443. DERP fallback is acceptable when peer traffic still works.
-- `tailscale debug derp-map` should show only the self-hosted DERP region for this deployment.
-- The embedded DERP endpoint does not provide `/generate_204`. If a client or captive portal check behaves oddly, verify real login, `tailscale status`, `tailscale ping`, and MagicDNS before treating that probe as a deployment failure.
+- When UDP direct connectivity is blocked or unstable, peer traffic may use the
+  embedded DERP relay over TCP/443. DERP fallback is acceptable when peer traffic
+  still works.
+- For deeper DERP troubleshooting, `tailscale debug derp-map` is an optional
+  debug command and should show only the self-hosted DERP region for this
+  deployment.
+- The embedded DERP endpoint does not provide `/generate_204`. If a client or
+  captive portal check behaves oddly, verify real login, `tailscale status`,
+  `tailscale ping`, and MagicDNS before treating that probe as a deployment
+  failure.
 
 ## Pick A Platform Guide
 
@@ -61,4 +78,5 @@ Validate at least two clients from different networks, such as home broadband pl
 - Using a Tailscale client older than v1.74.0
 - Treating any DERP path as a failure even when UDP direct connectivity is blocked and peer traffic is healthy
 
-For deployment-side issues, return to [quickstart.md](quickstart.md) or [troubleshooting.md](troubleshooting.md).
+For deployment-side issues, return to [quickstart.md](quickstart.md) or
+[troubleshooting.md](troubleshooting.md).

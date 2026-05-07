@@ -8,11 +8,13 @@ default:
   # parent domain.
   base_domain: "tailnet.example.com"
   certificate_email: "ops@example.com"
-  # Keep HTTP-01 unless your environment requires DNS-01.
+  # Keep HTTP-01 when public port 80 can reach this host. Use advanced guided
+  # mode for DNS-01.
   acme_challenge: "http-01"
 
 # The advanced section is opt-in. Leave values empty unless you have a real
-# need for mirrors, offline packages, proxies, DNS-01, or public IP overrides.
+# need for Headscale package mirrors/offline packages, proxies, DNS-01,
+# architecture overrides, or public IP overrides.
 advanced:
   package_source:
     mode: "direct" # direct | mirror | offline
@@ -28,8 +30,15 @@ advanced:
 
   dns01:
     provider: ""
-    zone: ""
-    # Supply provider credentials through the host environment, not this file.
+    # Supported lego providers: cloudflare, route53, digitalocean, gcloud.
+    # "google" is accepted as an alias for gcloud.
+    # Cloudflare and DigitalOcean require an absolute path to a root-only env
+    # file. Route53 and gcloud may use lego's ambient credential chain when
+    # deploy and systemd renewal run with the same host identity; their env_file
+    # may carry plain provider settings such as AWS_HOSTED_ZONE_ID,
+    # AWS_PROFILE, GCE_PROJECT, or GCE_ZONE_ID. Put sensitive DNS values in
+    # separate root-only files and reference them with provider _FILE variables.
+    env_file: ""
 
   network:
     public_ipv4: ""

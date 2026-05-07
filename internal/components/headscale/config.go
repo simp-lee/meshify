@@ -1,8 +1,10 @@
 package headscale
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"meshify/internal/config"
 	"net"
 	"strings"
@@ -71,7 +73,14 @@ type ToggleConfig struct {
 
 func ParseRuntimeConfig(data []byte) (RuntimeConfig, error) {
 	var runtimeConfig RuntimeConfig
-	if err := yaml.Unmarshal(data, &runtimeConfig); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	if err := decoder.Decode(&runtimeConfig); err != nil {
+		return RuntimeConfig{}, err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err == nil {
+		return RuntimeConfig{}, fmt.Errorf("headscale runtime config must contain exactly one YAML document")
+	} else if err != io.EOF {
 		return RuntimeConfig{}, err
 	}
 	return runtimeConfig, nil

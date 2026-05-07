@@ -42,6 +42,11 @@ func TestHeadscaleCommandsUseLocalConfigPath(t *testing.T) {
 		t.Fatalf("Args = %q", got)
 	}
 
+	list := ListUsersCommand()
+	if got := strings.Join(list.Args, " "); got != "--config /etc/headscale/config.yaml users list --output json" {
+		t.Fatalf("Args = %q", got)
+	}
+
 	plan, err := NewOnboardingPlan(OnboardingOptions{Reusable: true, Expiration: 48 * time.Hour})
 	if err != nil {
 		t.Fatalf("NewOnboardingPlan() error = %v", err)
@@ -69,6 +74,66 @@ ID | Name    | Created
 	}
 }
 
+func TestParseUsersFindsUsernameColumnInHeadscaleV028Table(t *testing.T) {
+	t.Parallel()
+
+	output := `
+ID | Name           | Username | Email | Created
+1  | Admin Person   | admin    |       | 2026-01-01
+2  | Meshify Day 1  | meshify  |       | 2026-01-02
+`
+	userID, err := FindUserID(output, "meshify")
+	if err != nil {
+		t.Fatalf("FindUserID() error = %v", err)
+	}
+	if userID != "2" {
+		t.Fatalf("userID = %q, want 2", userID)
+	}
+}
+
+func TestParseUsersFindsUserIDFromJSONOutput(t *testing.T) {
+	t.Parallel()
+
+	output := `[{"id":1,"name":"admin"},{"id":2,"name":"meshify","display_name":"Meshify Day 1"}]`
+	userID, err := FindUserID(output, "meshify")
+	if err != nil {
+		t.Fatalf("FindUserID() error = %v", err)
+	}
+	if userID != "2" {
+		t.Fatalf("userID = %q, want 2", userID)
+	}
+}
+
+func TestFindUserIDRejectsAmbiguousJSONOutput(t *testing.T) {
+	t.Parallel()
+
+	output := `[{"id":2,"name":"meshify"},{"id":3,"name":"meshify"}]`
+	_, err := FindUserID(output, "meshify")
+	if err == nil {
+		t.Fatal("FindUserID() error = nil, want ambiguous user failure")
+	}
+	if !strings.Contains(err.Error(), "matched multiple user IDs: 2, 3") {
+		t.Fatalf("FindUserID() error = %q, want ambiguity detail", err.Error())
+	}
+}
+
+func TestFindUserIDRejectsAmbiguousHeadscaleV028Table(t *testing.T) {
+	t.Parallel()
+
+	output := `
+ID | Name          | Username | Email | Created
+2  | Meshify Day 1 | meshify  |       | 2026-01-02
+3  | Meshify Other | meshify  |       | 2026-01-03
+`
+	_, err := FindUserID(output, "meshify")
+	if err == nil {
+		t.Fatal("FindUserID() error = nil, want ambiguous user failure")
+	}
+	if !strings.Contains(err.Error(), "matched multiple user IDs: 2, 3") {
+		t.Fatalf("FindUserID() error = %q, want ambiguity detail", err.Error())
+	}
+}
+
 func TestOnboardingCreatePreAuthKeyUsesUserIDAndReturnsKey(t *testing.T) {
 	t.Parallel()
 
@@ -79,7 +144,7 @@ func TestOnboardingCreatePreAuthKeyUsesUserIDAndReturnsKey(t *testing.T) {
 	runner := &scriptedRunner{
 		results: []host.Result{
 			{},
-			{Stdout: "ID | Name\n2 | meshify\n"},
+			{Stdout: `[{"id":2,"name":"meshify"}]` + "\n"},
 			{Stdout: "hskey-auth-example\n"},
 		},
 	}

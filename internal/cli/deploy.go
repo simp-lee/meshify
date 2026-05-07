@@ -9,9 +9,26 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
+	"os/exec"
+	"os/user"
+	"path/filepath"
+	"reflect"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	acmecatalog "meshify/internal/acme"
 	"meshify/internal/assets"
 	"meshify/internal/components/headscale"
+	legocomponent "meshify/internal/components/lego"
 	"meshify/internal/components/nginx"
+	tlscomponent "meshify/internal/components/tls"
 	"meshify/internal/config"
 	"meshify/internal/host"
 	"meshify/internal/output"
@@ -20,22 +37,8 @@ import (
 	"meshify/internal/state"
 	"meshify/internal/verify"
 	"meshify/internal/workflow"
-	"net"
-	"net/http"
-	"net/url"
-	"os"
-	"os/exec"
-	"os/user"
-	"path/filepath"
-	"regexp"
-	"sort"
-	"strconv"
-	"strings"
-	"time"
 
 	"golang.org/x/net/http/httpproxy"
-
-	tlscomponent "meshify/internal/components/tls"
 )
 
 type stagedFileInstaller interface {
@@ -44,6 +47,10 @@ type stagedFileInstaller interface {
 
 type headscalePackageInstaller interface {
 	Install(ctx stdcontext.Context, plan headscale.InstallPlan) ([]host.Result, error)
+}
+
+type legoInstaller interface {
+	Install(ctx stdcontext.Context, plan legocomponent.InstallPlan) ([]host.Result, error)
 }
 
 type nginxSiteActivator interface {
@@ -58,11 +65,12 @@ const (
 	deployCheckpointPackageManagerReady          = "package-manager-ready"
 	deployCheckpointHostDependenciesInstalled    = "host-dependencies-installed"
 	deployCheckpointPackageArchitectureConfirmed = "package-architecture-confirmed"
+	deployCheckpointLegoInstalled                = "lego-installed"
 	deployCheckpointHeadscalePackageInstalled    = "headscale-package-installed"
 	deployCheckpointRuntimeAssetsInstalled       = "runtime-assets-installed"
 	deployCheckpointTLSBootstrapReady            = "tls-bootstrap-ready"
-	deployCheckpointCertbotCommandReady          = "certbot-command-ready"
-	deployCheckpointCertbotCommandDeferred       = "certbot-command-deferred"
+	deployCheckpointLegoCommandReady             = "lego-command-ready"
+	deployCheckpointLegoCommandDeferred          = "lego-command-deferred"
 	deployCheckpointCertificateIssued            = "certificate-issued"
 	deployCheckpointNginxActivated               = "nginx-site-activated"
 	deployCheckpointSystemdDaemonReloaded        = "systemd-daemon-reloaded"
@@ -86,6 +94,8 @@ var (
 	hashRemoteArtifactFn          = hashRemoteArtifact
 	lookupOfficialPackageDigestFn = lookupOfficialPackageDigest
 	stageRuntimeFilesFn           = render.StageRuntime
+	statDNSCredentialsFileFn      = os.Stat
+	readDNSCredentialsFileFn      = os.ReadFile
 	newDeployFileInstallerFn      = func(executor host.Executor, privilege host.PrivilegeStrategy) stagedFileInstaller {
 		if privilege.RequiresSudo() {
 			return host.NewFileInstaller(host.NewCommandFileSystem(executor), "")
@@ -97,6 +107,7 @@ var (
 	newHostExecutorFn          = func(env map[string]string) host.Executor { return host.NewExecutor(nil, env) }
 	newHostSystemdFn           = func(executor host.Executor) host.Systemd { return host.NewSystemd(executor) }
 	newHeadscaleInstallerFn    = func(executor host.Executor) headscalePackageInstaller { return headscale.NewInstaller(executor) }
+	newLegoInstallerFn         = func(executor host.Executor) legoInstaller { return legocomponent.NewInstaller(executor) }
 	newNginxActivatorFn        = func(executor host.Executor) nginxSiteActivator { return nginx.NewActivator(executor) }
 	newHeadscaleOnboarderFn    = func(executor host.Executor) headscaleOnboarder { return headscale.NewOnboarding(executor) }
 )
@@ -106,6 +117,7 @@ var requiredFirewallPorts = []string{"80/tcp", "443/tcp", "3478/udp"}
 var knownConflictServices = []string{"headscale", "nginx", "apache2", "caddy", "traefik"}
 
 var ufwStatusColumnSeparator = regexp.MustCompile(`[[:space:]]{2,}`)
+var dnsEnvFileKeyPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 var ufwApplicationProfilePorts = map[string][]string{
 	"nginx full":  {"80/tcp", "443/tcp"},
@@ -268,9 +280,9 @@ func runDeploy(ctx context, args []string) error {
 		if err != nil {
 			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 				Step:         "plan host dependencies",
-				Operation:    "selecting Nginx, certbot, and DNS-01 plugin packages",
-				Impact:       "meshify cannot install certificate tooling until ACME provider settings map to supported packages",
-				Remediation:  []string{"Use a supported DNS-01 provider or switch default.acme_challenge to http-01, then rerun deploy."},
+				Operation:    "selecting Nginx and archive installation helper packages",
+				Impact:       "meshify cannot install HTTPS ingress and pinned release artifacts until host dependencies are known",
+				Remediation:  []string{"Use a supported platform architecture or switch package source settings, then rerun deploy."},
 				RetryCommand: deployRetryCommand(options.configPath),
 				Cause:        err,
 			})
@@ -278,8 +290,8 @@ func runDeploy(ctx context, args []string) error {
 		if _, err := privilegedExecutor.AptGet(stdcontext.Background(), "update"); err != nil {
 			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 				Step:         "install host dependencies",
-				Operation:    "refreshing package metadata before installing Nginx, certbot, and ACME plugins",
-				Impact:       "meshify cannot install the reverse proxy and certificate tooling until package metadata refresh succeeds",
+				Operation:    "refreshing package metadata before installing Nginx and artifact helper packages",
+				Impact:       "meshify cannot install the reverse proxy and pinned release artifacts until package metadata refresh succeeds",
 				Remediation:  []string{"Fix apt repository access, proxy settings, or package locks, then rerun deploy."},
 				RetryCommand: deployRetryCommand(options.configPath),
 				Cause:        err,
@@ -289,14 +301,41 @@ func runDeploy(ctx context, args []string) error {
 		if _, err := privilegedExecutor.AptGet(stdcontext.Background(), installArgs...); err != nil {
 			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 				Step:         "install host dependencies",
-				Operation:    "installing Nginx, certbot, and ACME plugin packages through apt-get",
-				Impact:       "meshify cannot configure HTTPS ingress until Nginx, certbot, and selected ACME plugins are installed",
+				Operation:    "installing Nginx and artifact helper packages through apt-get",
+				Impact:       "meshify cannot configure HTTPS ingress or install pinned release artifacts until host dependencies are installed",
 				Remediation:  []string{"Fix apt repository access or install the listed dependency packages manually, then rerun deploy."},
 				RetryCommand: deployRetryCommand(options.configPath),
 				Cause:        err,
 			})
 		}
 		if err := recordDeployCheckpoint(formatter, checkpointStore, &checkpoint, deployCheckpointHostDependenciesInstalled, options.configPath); err != nil {
+			return err
+		}
+	}
+
+	if !deployPhaseCompleted(checkpoint, deployCheckpointLegoInstalled) {
+		installPlan, err := legocomponent.NewInstallPlan(cfg, legocomponent.InstallPlanOptions{})
+		if err != nil {
+			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
+				Step:         "plan lego install",
+				Operation:    "selecting the pinned lego v4.35.2 Linux archive and SHA-256 digest",
+				Impact:       "meshify cannot continue certificate automation until the lego release artifact is fully pinned",
+				Remediation:  []string{"Use advanced.platform.arch amd64 or arm64, then rerun deploy."},
+				RetryCommand: deployRetryCommand(options.configPath),
+				Cause:        err,
+			})
+		}
+		if _, err := newLegoInstallerFn(privilegedExecutor).Install(stdcontext.Background(), installPlan); err != nil {
+			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
+				Step:         "install lego binary",
+				Operation:    "downloading, verifying, and installing the pinned lego v4.35.2 archive to /opt/meshify/bin/lego",
+				Impact:       "meshify cannot continue ACME automation until the pinned lego binary is installed",
+				Remediation:  []string{"Fix GitHub release reachability, proxy settings, archive cache permissions, or digest mismatches, then rerun deploy."},
+				RetryCommand: deployRetryCommand(options.configPath),
+				Cause:        err,
+			})
+		}
+		if err := recordDeployCheckpoint(formatter, checkpointStore, &checkpoint, deployCheckpointLegoInstalled, options.configPath); err != nil {
 			return err
 		}
 	}
@@ -332,7 +371,7 @@ func runDeploy(ctx context, args []string) error {
 
 	if !deployPhaseCompleted(checkpoint, deployCheckpointRuntimeAssetsInstalled) {
 		var err error
-		stagedFiles, err = stageRuntimeFilesFn(cfg)
+		stagedFiles, err = stageDeployFiles(cfg)
 		if err != nil {
 			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 				Step:         "render runtime assets",
@@ -398,7 +437,7 @@ func runDeploy(ctx context, args []string) error {
 				Step:         "activate Nginx site",
 				Operation:    "enabling the Headscale Nginx site, testing config, and reloading Nginx",
 				Impact:       "meshify cannot expose the HTTP-01 webroot, HTTPS control plane, or DERP WebSocket endpoint until Nginx accepts the site",
-				Remediation:  []string{"Fix the Nginx config test output, certificate paths, or service reload issue, then rerun deploy."},
+				Remediation:  []string{"Fix the Nginx config test output, conflicting default_server sites, certificate paths, or service reload issue, then rerun deploy."},
 				RetryCommand: deployRetryCommand(options.configPath),
 				Cause:        err,
 			})
@@ -408,34 +447,45 @@ func runDeploy(ctx context, args []string) error {
 		}
 	}
 
-	if !deployPhaseCompleted(checkpoint, deployCheckpointCertbotCommandReady, deployCheckpointCertbotCommandDeferred) {
-		certbotResult, err := executor.Certbot(stdcontext.Background(), "--version")
+	if !deployPhaseCompleted(checkpoint, deployCheckpointLegoCommandReady) {
+		legoResult, err := executor.Run(stdcontext.Background(), host.Command{Name: legocomponent.BinaryPath, Args: []string{"--version"}})
 		if err != nil {
-			if host.CommandMissing(certbotResult, err, "certbot") {
-				if err := recordDeployCheckpoint(formatter, checkpointStore, &checkpoint, deployCheckpointCertbotCommandDeferred, options.configPath); err != nil {
+			if host.CommandMissing(legoResult, err, legocomponent.BinaryPath, "lego") {
+				if err := recordDeployCheckpoint(formatter, checkpointStore, &checkpoint, deployCheckpointLegoCommandDeferred, options.configPath); err != nil {
 					return err
 				}
+				return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
+					Step:         "check lego command",
+					Operation:    "running /opt/meshify/bin/lego --version to confirm certificate tooling reachability",
+					Impact:       "meshify cannot issue the public TLS certificate, activate the final HTTPS site, or complete deploy until lego is available",
+					Remediation:  []string{"Rerun deploy so meshify can reinstall the pinned lego binary, or fix /opt/meshify/bin/lego permissions."},
+					RetryCommand: deployRetryCommand(options.configPath),
+					Cause:        err,
+				})
 			} else {
 				return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
-					Step:         "check certbot command",
-					Operation:    "running certbot --version to confirm certificate tooling reachability",
-					Impact:       "certificate-related host changes cannot continue until certbot commands succeed",
-					Remediation:  []string{"Install certbot or correct its PATH visibility, then rerun deploy."},
+					Step:         "check lego command",
+					Operation:    "running /opt/meshify/bin/lego --version to confirm certificate tooling reachability",
+					Impact:       "certificate-related host changes cannot continue until lego commands succeed",
+					Remediation:  []string{"Rerun deploy so meshify can reinstall the pinned lego binary, or fix /opt/meshify/bin/lego permissions."},
 					RetryCommand: deployRetryCommand(options.configPath),
 					Cause:        err,
 				})
 			}
-		} else if err := recordDeployCheckpoint(formatter, checkpointStore, &checkpoint, deployCheckpointCertbotCommandReady, options.configPath); err != nil {
-			return err
+		} else {
+			removeDeployCheckpoint(&checkpoint, deployCheckpointLegoCommandDeferred)
+			if err := recordDeployCheckpoint(formatter, checkpointStore, &checkpoint, deployCheckpointLegoCommandReady, options.configPath); err != nil {
+				return err
+			}
 		}
 	}
 
-	if deployPhaseCompleted(checkpoint, deployCheckpointCertbotCommandReady) && !deployPhaseCompleted(checkpoint, deployCheckpointCertificateIssued) {
+	if deployPhaseCompleted(checkpoint, deployCheckpointLegoCommandReady) && !deployPhaseCompleted(checkpoint, deployCheckpointCertificateIssued) {
 		certificatePlan, err := tlscomponent.NewCertificatePlan(cfg)
 		if err != nil {
 			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 				Step:         "plan certificate issuance",
-				Operation:    "building the certbot command for the configured ACME challenge",
+				Operation:    "building the lego command for the configured ACME challenge",
 				Impact:       "meshify cannot request the public TLS certificate until ACME inputs are valid",
 				Remediation:  []string{"Fix default.acme_challenge, default.certificate_email, or DNS-01 provider settings, then rerun deploy."},
 				RetryCommand: deployRetryCommand(options.configPath),
@@ -445,7 +495,7 @@ func runDeploy(ctx context, args []string) error {
 		if _, err := privilegedExecutor.Run(stdcontext.Background(), certificatePlan.Command); err != nil {
 			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 				Step:         "issue certificate",
-				Operation:    "running certbot for the Headscale public hostname",
+				Operation:    "running lego for the Headscale public hostname",
 				Impact:       "meshify cannot activate the HTTPS Nginx site until a fullchain certificate is available",
 				Remediation:  []string{"Fix ACME reachability, DNS-01 credentials, or rate-limit issues, then rerun deploy."},
 				RetryCommand: deployRetryCommand(options.configPath),
@@ -463,7 +513,7 @@ func runDeploy(ctx context, args []string) error {
 				Step:         "activate Nginx site",
 				Operation:    "enabling the Headscale Nginx site, testing config, and reloading Nginx",
 				Impact:       "meshify cannot expose the HTTPS control plane or DERP WebSocket endpoint until Nginx accepts the site",
-				Remediation:  []string{"Fix the Nginx config test output, certificate paths, or service reload issue, then rerun deploy."},
+				Remediation:  []string{"Fix the Nginx config test output, conflicting default_server sites, certificate paths, or service reload issue, then rerun deploy."},
 				RetryCommand: deployRetryCommand(options.configPath),
 				Cause:        err,
 			})
@@ -473,13 +523,21 @@ func runDeploy(ctx context, args []string) error {
 		}
 	}
 
-	if !deployPhaseCompleted(checkpoint, deployCheckpointSystemdDaemonReloaded, deployCheckpointSystemdDaemonReloadDeferred) {
+	if !deployPhaseCompleted(checkpoint, deployCheckpointSystemdDaemonReloaded) {
 		systemdResult, err := systemd.DaemonReload(stdcontext.Background())
 		if err != nil {
 			if systemdCommandDeferred(systemdResult, err) {
 				if err := recordDeployCheckpoint(formatter, checkpointStore, &checkpoint, deployCheckpointSystemdDaemonReloadDeferred, options.configPath); err != nil {
 					return err
 				}
+				return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
+					Step:         "reload systemd",
+					Operation:    "running systemctl daemon-reload to confirm service manager reachability",
+					Impact:       "meshify cannot enable services, start the renewal timer, or prepare onboarding until systemd is available",
+					Remediation:  []string{"Run deploy on a booted systemd host, or fix systemctl bus access, then rerun deploy."},
+					RetryCommand: deployRetryCommand(options.configPath),
+					Cause:        err,
+				})
 			} else {
 				return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 					Step:         "reload systemd",
@@ -490,18 +548,34 @@ func runDeploy(ctx context, args []string) error {
 					Cause:        err,
 				})
 			}
-		} else if err := recordDeployCheckpoint(formatter, checkpointStore, &checkpoint, deployCheckpointSystemdDaemonReloaded, options.configPath); err != nil {
-			return err
+		} else {
+			removeDeployCheckpoint(&checkpoint, deployCheckpointSystemdDaemonReloadDeferred)
+			if err := recordDeployCheckpoint(formatter, checkpointStore, &checkpoint, deployCheckpointSystemdDaemonReloaded, options.configPath); err != nil {
+				return err
+			}
 		}
 	}
 
-	if deployPhaseCompleted(checkpoint, deployCheckpointSystemdDaemonReloaded) && !deployPhaseCompleted(checkpoint, deployCheckpointServicesEnabled) {
-		if _, err := systemd.Enable(stdcontext.Background(), headscale.ServiceName, "nginx.service"); err != nil {
+	if deployPhaseCompleted(checkpoint, deployCheckpointSystemdDaemonReloaded) &&
+		deployPhaseCompleted(checkpoint, deployCheckpointCertificateIssued) &&
+		deployPhaseCompleted(checkpoint, deployCheckpointNginxActivated) &&
+		!deployPhaseCompleted(checkpoint, deployCheckpointServicesEnabled) {
+		if _, err := systemd.Enable(stdcontext.Background(), headscale.ServiceName, "nginx.service", tlscomponent.RenewTimer); err != nil {
 			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 				Step:         "enable services",
-				Operation:    "enabling Headscale and Nginx systemd units",
-				Impact:       "services may not restart after reboot until systemd enablement succeeds",
+				Operation:    "enabling Headscale, Nginx, and meshify lego renewal systemd units",
+				Impact:       "services or certificate renewals may not restart after reboot until systemd enablement succeeds",
 				Remediation:  []string{"Fix systemd access or unit availability, then rerun deploy."},
+				RetryCommand: deployRetryCommand(options.configPath),
+				Cause:        err,
+			})
+		}
+		if _, err := systemd.Start(stdcontext.Background(), tlscomponent.RenewTimer); err != nil {
+			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
+				Step:         "start renewal timer",
+				Operation:    "starting the meshify lego renewal timer",
+				Impact:       "certificate renewal will not run automatically until the timer starts",
+				Remediation:  []string{"Inspect 'systemctl status meshify-lego-renew.timer', fix the timer unit, and rerun deploy."},
 				RetryCommand: deployRetryCommand(options.configPath),
 				Cause:        err,
 			})
@@ -551,9 +625,25 @@ func runDeploy(ctx context, args []string) error {
 	}
 
 	if !deployPhaseCompleted(checkpoint, deployCheckpointStaticVerifyPassed) {
+		if missing := missingRequiredDeployCheckpoints(checkpoint,
+			deployCheckpointCertificateIssued,
+			deployCheckpointNginxActivated,
+			deployCheckpointSystemdDaemonReloaded,
+			deployCheckpointServicesEnabled,
+			deployCheckpointOnboardingReady,
+		); len(missing) > 0 {
+			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
+				Step:         "complete deploy prerequisites",
+				Operation:    "checking required deploy checkpoints before static verification",
+				Impact:       "meshify cannot call the deployment ready until certificate issuance, Nginx activation, renewal scheduling, services, and onboarding complete",
+				Remediation:  []string{"Rerun deploy after fixing the earlier deferred or failed host step."},
+				RetryCommand: deployRetryCommand(options.configPath),
+				Cause:        fmt.Errorf("missing required checkpoints: %s", strings.Join(missing, ", ")),
+			})
+		}
 		if stagedFiles == nil {
 			var err error
-			stagedFiles, err = stageRuntimeFilesFn(cfg)
+			stagedFiles, err = stageDeployFiles(cfg)
 			if err != nil {
 				return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 					Step:         "render runtime assets for verification",
@@ -1007,6 +1097,25 @@ func detectPackageSourceState(cfg config.Config) preflight.PackageSourceState {
 		FilePath:       strings.TrimSpace(cfg.Advanced.PackageSource.FilePath),
 		ExpectedSHA256: strings.TrimSpace(cfg.Advanced.PackageSource.SHA256),
 	}
+	if legoArchive, err := legocomponent.NewArchivePlan(cfg, legocomponent.InstallPlanOptions{}); err == nil {
+		state.LegoVersion = legoArchive.Version
+		state.LegoURL = legoArchive.SourceURL
+		state.LegoExpectedSHA256 = legoArchive.ExpectedSHA256
+		if state.LegoURL != "" {
+			state.LegoReachabilityChecked, state.LegoReachable, state.LegoReachabilityDetail = probePackageURLFn(probeClient, state.LegoURL)
+			if state.LegoReachable && state.LegoExpectedSHA256 != "" {
+				actualSHA256, err := hashRemoteArtifactFn(artifactClient, state.LegoURL)
+				if err == nil {
+					state.LegoIntegrityChecked = true
+					state.LegoActualSHA256 = actualSHA256
+				} else {
+					state.LegoReachabilityDetail = appendProbeDetail(state.LegoReachabilityDetail, fmt.Sprintf("SHA-256 probe failed: %s", err))
+				}
+			}
+		}
+	} else {
+		state.LegoReachabilityDetail = err.Error()
+	}
 
 	switch state.Mode {
 	case config.PackageSourceModeDirect:
@@ -1061,10 +1170,12 @@ func detectPackageSourceState(cfg config.Config) preflight.PackageSourceState {
 
 func detectACMEState(cfg config.Config) preflight.ACMEState {
 	state := preflight.ACMEState{
-		Challenge:        strings.TrimSpace(cfg.Default.ACMEChallenge),
-		ServerHost:       parseServerHost(cfg.Default.ServerURL),
-		CertificateEmail: strings.TrimSpace(cfg.Default.CertificateEmail),
-		DNSProvider:      strings.TrimSpace(cfg.Advanced.DNS01.Provider),
+		Challenge:            strings.TrimSpace(cfg.Default.ACMEChallenge),
+		ServerHost:           parseServerHost(cfg.Default.ServerURL),
+		CertificateEmail:     strings.TrimSpace(cfg.Default.CertificateEmail),
+		DNSProvider:          strings.TrimSpace(cfg.Advanced.DNS01.Provider),
+		DNSCredentialsFile:   strings.TrimSpace(cfg.Advanced.DNS01.CredentialsFile),
+		DNSCredentialEnvFile: strings.TrimSpace(cfg.Advanced.DNS01.EnvFile),
 	}
 
 	switch state.Challenge {
@@ -1077,7 +1188,7 @@ func detectACMEState(cfg config.Config) preflight.ACMEState {
 		if state.DNSProvider == "" {
 			return state
 		}
-		state.DNSCredentialsChecked, state.DNSCredentialsReady, state.DNSCredentialsDetail = detectDNSCredentialState(state.DNSProvider)
+		state.DNSCredentialsChecked, state.DNSCredentialsReady, state.DNSCredentialsDetail = detectDNSCredentialState(cfg.Advanced.DNS01)
 	}
 
 	return state
@@ -1321,16 +1432,7 @@ func packageArch(cfg config.Config) string {
 }
 
 func deployHostDependencyPackages(cfg config.Config) ([]string, error) {
-	packages := []string{"nginx", "certbot"}
-	if cfg.Default.ACMEChallenge != config.ACMEChallengeDNS01 {
-		return packages, nil
-	}
-	pluginName, err := tlscomponent.DNSPluginName(cfg.Advanced.DNS01.Provider)
-	if err != nil {
-		return nil, err
-	}
-	packages = append(packages, "python3-certbot-"+pluginName)
-	return packages, nil
+	return []string{"nginx", "ca-certificates", "curl", "tar", "openssl"}, cfg.Validate()
 }
 
 func hashRemoteArtifact(client *http.Client, rawURL string) (string, error) {
@@ -1443,71 +1545,241 @@ func hashLocalFile(filePath string) (string, error) {
 	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
-func detectDNSCredentialState(provider string) (bool, bool, string) {
-	combos := dnsCredentialCombos(provider)
-	if len(combos) == 0 {
-		return false, false, fmt.Sprintf("Automatic DNS credential detection is not implemented for provider %q.", strings.TrimSpace(provider))
+func stageDeployFiles(cfg config.Config) ([]render.StagedFile, error) {
+	return stageRuntimeFilesFn(cfg)
+}
+
+func stageDeployFingerprintFiles(cfg config.Config) ([]render.StagedFile, error) {
+	return stageRuntimeFilesFn(cfg)
+}
+
+func detectDNSCredentialState(dns01 config.DNS01Config) (bool, bool, string) {
+	providerInfo, err := tlscomponent.DNSProvider(dns01.Provider)
+	if err != nil {
+		return false, false, err.Error()
 	}
 
-	env := nonEmptyEnvironmentByKey()
-	relevantKeys := dnsCredentialKeys(combos)
-	present := []string{}
-	for _, key := range relevantKeys {
-		if _, ok := env[key]; ok {
-			present = append(present, key)
+	envFile := strings.TrimSpace(dns01.EnvFile)
+	if envFile != "" {
+		env, ready, detail := inspectDNSEnvFile(envFile)
+		if !ready {
+			return true, false, fmt.Sprintf("DNS provider %q env_file is not ready: %s", providerInfo.LegoCode, detail)
 		}
+		if env != nil {
+			if err := acmecatalog.ValidateDNSProviderEnvironment(providerInfo.LegoCode, env); err != nil {
+				return true, false, err.Error()
+			}
+			if ready, detail := inspectDNSCredentialEnvFileReferences(providerInfo.LegoCode, env); !ready {
+				return true, false, fmt.Sprintf("DNS provider %q env_file contains credential file references that are not ready: %s.", providerInfo.LegoCode, detail)
+			}
+		}
+		return true, true, fmt.Sprintf("Using lego env_file for DNS provider %q: %s. %s", providerInfo.LegoCode, envFile, detail)
+	}
+	env := nonEmptyEnvironmentByKey()
+	if providerInfo.LegoCode == "route53" && route53RawSecretEnvironmentPresent(env) && strings.TrimSpace(env["AWS_SHARED_CREDENTIALS_FILE"]) == "" {
+		return true, false, "Detected Route53 AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY in the current environment, but meshify will not pass raw AWS secrets through sudo or systemd. Use advanced.dns01.env_file for DNS-01 deploy and renewal."
+	}
+	if providerInfo.AmbientCredentialsSupported {
+		detail := fmt.Sprintf("Using lego ambient credential chain for DNS provider %q; confirm deploy and meshify-lego-renew.service run with the same host identity.", providerInfo.LegoCode)
+		if providerInfo.LegoCode == "gcloud" {
+			detail += " For gcloud, confirm Google Cloud metadata also provides the project, or set advanced.dns01.env_file with GCE_PROJECT."
+		}
+		return true, true, detail
+	}
+	return true, false, fmt.Sprintf("DNS provider %q requires advanced.dns01.env_file so initial issuance and meshify-lego-renew.service use the same provider environment.", providerInfo.LegoCode)
+}
+
+func inspectDNSCredentialsFile(filePath string) (bool, string) {
+	info, err := statDNSCredentialsFileFn(filePath)
+	if err != nil {
+		if os.IsPermission(err) {
+			return false, fmt.Sprintf("%s cannot be inspected by the current user; verify it is a root-owned private credentials file before retrying.", filePath)
+		}
+		return false, fmt.Sprintf("%s cannot be inspected: %v.", filePath, err)
+	}
+	if !info.Mode().IsRegular() {
+		return false, fmt.Sprintf("%s is not a regular credentials file.", filePath)
+	}
+	if info.Size() == 0 {
+		return false, fmt.Sprintf("%s is empty.", filePath)
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		return false, fmt.Sprintf("%s must be readable only by root; remove group/other permissions before retrying.", filePath)
+	}
+	if uid, ok := fileOwnerUID(info); ok && uid != 0 {
+		return false, fmt.Sprintf("%s must be owned by root before meshify uses it as a DNS credentials file.", filePath)
 	}
 
-	for _, combo := range combos {
-		matched, ok := matchDNSCredentialCombo(combo, env)
+	file, err := os.Open(filePath)
+	if err != nil {
+		if os.IsPermission(err) {
+			return true, "Root-owned private credentials file exists but is not readable by the current user; lego will read it through deploy privileges."
+		}
+		return false, fmt.Sprintf("%s cannot be opened: %v.", filePath, err)
+	}
+	_ = file.Close()
+	return true, "Root-owned private credentials file exists and is readable by the current user."
+}
+
+func inspectDNSEnvFile(filePath string) (map[string]string, bool, string) {
+	ready, detail := inspectDNSCredentialsFile(filePath)
+	if !ready {
+		return nil, false, detail
+	}
+	content, readDetail, err := readDNSCredentialEnvFile(filePath)
+	if err != nil {
+		return nil, false, fmt.Sprintf("%s cannot be opened for validation: %s.", filePath, err)
+	}
+	if readDetail != "" {
+		detail = strings.TrimSpace(detail + " " + readDetail)
+	}
+	env, syntaxDetail := parseDNSEnvFileContent(content)
+	if syntaxDetail != "" {
+		return env, false, fmt.Sprintf("%s contains unsupported syntax for systemd EnvironmentFile: %s. Use KEY=value lines without export.", filePath, syntaxDetail)
+	}
+	if len(env) == 0 {
+		return env, false, fmt.Sprintf("%s does not contain any KEY=value environment assignments.", filePath)
+	}
+	return env, true, detail
+}
+
+func readDNSCredentialEnvFile(filePath string) ([]byte, string, error) {
+	content, err := readDNSCredentialsFileFn(filePath)
+	if err == nil {
+		return content, "", nil
+	}
+	if !os.IsPermission(err) {
+		return nil, "", err
+	}
+
+	content, detail, ok := readDNSCredentialEnvFileWithPrivilege(filePath)
+	if !ok {
+		return nil, "", fmt.Errorf("%s", detail)
+	}
+	return content, detail, nil
+}
+
+func readDNSCredentialEnvFileWithPrivilege(filePath string) ([]byte, string, bool) {
+	permissions := detectPermissionStateFn()
+	if !permissions.IsRoot && !permissions.SudoWorks {
+		return nil, "the current user cannot read it and deploy privileges are not available for secret-safe validation", false
+	}
+
+	executor := newHostExecutorFn(nil).WithPrivilege(deployPrivilegeStrategy(permissions))
+	result, err := executor.Run(stdcontext.Background(), host.Command{
+		Name:        "cat",
+		Args:        []string{"--", filePath},
+		DisplayName: "cat",
+		DisplayArgs: []string{"--", "<dns-env-file>"},
+	})
+	if err != nil {
+		return nil, "deploy privileges could not read the env file without exposing secret values", false
+	}
+	return []byte(result.Stdout), "Validated env_file content through deploy privileges without printing secret values.", true
+}
+
+func parseDNSEnvFileContent(content []byte) (map[string]string, string) {
+	env := map[string]string{}
+	for lineNumber, rawLine := range strings.Split(string(content), "\n") {
+		line := strings.TrimSpace(rawLine)
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+			continue
+		}
+		if strings.HasPrefix(line, "export ") {
+			return env, fmt.Sprintf("line %d uses shell export syntax", lineNumber+1)
+		}
+		key, value, ok := strings.Cut(line, "=")
 		if !ok {
 			continue
 		}
-		sort.Strings(matched)
-		return true, true, fmt.Sprintf("Detected credential set for DNS provider %q via %s.", strings.TrimSpace(provider), strings.Join(matched, ", "))
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if !dnsEnvFileKeyPattern.MatchString(key) {
+			return env, fmt.Sprintf("line %d uses an invalid environment variable name", lineNumber+1)
+		}
+		value = unquoteDNSEnvValue(value)
+		if key == "" || value == "" {
+			continue
+		}
+		env[key] = value
 	}
-
-	required := describeDNSCredentialCombos(combos)
-	if len(present) == 0 {
-		return true, false, fmt.Sprintf("No complete credential set detected for DNS provider %q. Need one of: %s.", strings.TrimSpace(provider), strings.Join(required, "; "))
-	}
-	sort.Strings(present)
-	return true, false, fmt.Sprintf("Detected incomplete credential environment for DNS provider %q. Need one of: %s. Present: %s.", strings.TrimSpace(provider), strings.Join(required, "; "), strings.Join(present, ", "))
+	return env, ""
 }
 
-func dnsCredentialCombos(provider string) [][][]string {
-	canonical, err := tlscomponent.CanonicalDNSProvider(provider)
+func unquoteDNSEnvValue(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) >= 2 {
+		first := value[0]
+		last := value[len(value)-1]
+		if first == last && (first == '"' || first == '\'') {
+			return value[1 : len(value)-1]
+		}
+	}
+	if unquoted, err := strconv.Unquote(value); err == nil {
+		return unquoted
+	}
+	return value
+}
+
+func route53RawSecretEnvironmentPresent(env map[string]string) bool {
+	_, hasAccessKey := env["AWS_ACCESS_KEY_ID"]
+	_, hasSecretKey := env["AWS_SECRET_ACCESS_KEY"]
+	return hasAccessKey && hasSecretKey
+}
+
+func inspectDNSCredentialEnvFileReferences(provider string, env map[string]string) (bool, string) {
+	invalidDetails := []string{}
+	for key, value := range env {
+		if !dnsCredentialEnvironmentValueIsFile(provider, key) {
+			continue
+		}
+		if !filepath.IsAbs(value) {
+			invalidDetails = append(invalidDetails, fmt.Sprintf("%s: referenced credential file path %q must be absolute so deploy and systemd renewal use the same runtime path", key, value))
+			continue
+		}
+		ready, detail := inspectDNSCredentialsFile(value)
+		if !ready {
+			invalidDetails = append(invalidDetails, fmt.Sprintf("%s: %s", key, detail))
+		}
+	}
+	invalidDetails = uniqueStrings(invalidDetails)
+	sort.Strings(invalidDetails)
+	if len(invalidDetails) > 0 {
+		return false, strings.Join(invalidDetails, "; ")
+	}
+	return true, ""
+}
+
+func supportedDNSCredentialFileEnvKeys(provider string) map[string]struct{} {
+	keys, err := acmecatalog.SupportedDNSProviderEnvFileVars(provider)
 	if err != nil {
 		return nil
 	}
-
-	switch canonical {
-	case "cloudflare":
-		return [][][]string{
-			{
-				{"CLOUDFLARE_EMAIL", "CF_API_EMAIL"},
-				{"CLOUDFLARE_API_KEY", "CF_API_KEY"},
-			},
-			{
-				{"CLOUDFLARE_DNS_API_TOKEN", "CF_DNS_API_TOKEN"},
-			},
-		}
-	case "route53":
-		return [][][]string{{{"AWS_ACCESS_KEY_ID"}, {"AWS_SECRET_ACCESS_KEY"}}}
-	case "digitalocean":
-		return [][][]string{{{"DO_AUTH_TOKEN"}}}
-	case "google":
-		return [][][]string{{{"GCE_SERVICE_ACCOUNT", "GCE_SERVICE_ACCOUNT_FILE", "GOOGLE_APPLICATION_CREDENTIALS"}}}
-	case "azure":
-		return [][][]string{{
-			{"AZURE_CLIENT_ID"},
-			{"AZURE_CLIENT_SECRET"},
-			{"AZURE_TENANT_ID"},
-			{"AZURE_SUBSCRIPTION_ID"},
-			{"AZURE_RESOURCE_GROUP"},
-		}}
+	seen := map[string]struct{}{}
+	for _, key := range keys {
+		seen[key] = struct{}{}
 	}
-	return nil
+	return seen
+}
+
+func dnsCredentialEnvironmentValueIsFile(provider string, key string) bool {
+	canonical, err := tlscomponent.CanonicalDNSProvider(provider)
+	if err != nil {
+		return false
+	}
+
+	key = strings.TrimSpace(key)
+	switch key {
+	case "AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE", "GCE_SERVICE_ACCOUNT_FILE", "GOOGLE_APPLICATION_CREDENTIALS":
+		return true
+	}
+	if canonical == "route53" && strings.HasPrefix(key, "AWS_") && strings.HasSuffix(key, "_FILE") {
+		return false
+	}
+	if _, ok := supportedDNSCredentialFileEnvKeys(canonical)[key]; ok {
+		return true
+	}
+	return false
 }
 
 func nonEmptyEnvironmentByKey() map[string]string {
@@ -1527,34 +1799,36 @@ func nonEmptyEnvironmentByKey() map[string]string {
 	return env
 }
 
-func dnsCredentialKeys(combos [][][]string) []string {
-	keys := []string{}
-	for _, combo := range combos {
-		for _, group := range combo {
-			keys = append(keys, group...)
-		}
+func fileOwnerUID(info os.FileInfo) (uint64, bool) {
+	sys := reflect.ValueOf(info.Sys())
+	if !sys.IsValid() {
+		return 0, false
 	}
-	keys = uniqueStrings(keys)
-	sort.Strings(keys)
-	return keys
-}
-
-func matchDNSCredentialCombo(combo [][]string, env map[string]string) ([]string, bool) {
-	matched := []string{}
-	for _, group := range combo {
-		groupMatched := ""
-		for _, candidate := range group {
-			if _, ok := env[candidate]; ok {
-				groupMatched = candidate
-				break
-			}
+	if sys.Kind() == reflect.Pointer {
+		if sys.IsNil() {
+			return 0, false
 		}
-		if groupMatched == "" {
-			return nil, false
-		}
-		matched = append(matched, groupMatched)
+		sys = sys.Elem()
 	}
-	return uniqueStrings(matched), true
+	if sys.Kind() != reflect.Struct {
+		return 0, false
+	}
+	uid := sys.FieldByName("Uid")
+	if !uid.IsValid() {
+		return 0, false
+	}
+	switch uid.Kind() {
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return uid.Uint(), true
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		value := uid.Int()
+		if value < 0 {
+			return 0, false
+		}
+		return uint64(value), true
+	default:
+		return 0, false
+	}
 }
 
 func defaultCheckpointPath(configPath string) string {
@@ -1585,12 +1859,18 @@ func deployProxyEnv(cfg config.Config) map[string]string {
 
 func newDeployHTTPClient(proxy config.ProxyConfig, timeout time.Duration) *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	if strings.TrimSpace(proxy.HTTPProxy) == "" && strings.TrimSpace(proxy.HTTPSProxy) == "" {
+	if !deployProxyConfigured(proxy) {
 		return &http.Client{Timeout: timeout, Transport: transport}
 	}
 
 	transport.Proxy = deployProxyFunc(proxy)
 	return &http.Client{Timeout: timeout, Transport: transport}
+}
+
+func deployProxyConfigured(proxy config.ProxyConfig) bool {
+	return strings.TrimSpace(proxy.HTTPProxy) != "" ||
+		strings.TrimSpace(proxy.HTTPSProxy) != "" ||
+		strings.TrimSpace(proxy.NoProxy) != ""
 }
 
 func httpClientOrDefault(client *http.Client, timeout time.Duration) *http.Client {
@@ -1622,6 +1902,37 @@ func deployPhaseCompleted(checkpoint state.Checkpoint, names ...string) bool {
 		}
 	}
 	return false
+}
+
+func removeDeployCheckpoint(checkpoint *state.Checkpoint, name string) {
+	if checkpoint == nil {
+		return
+	}
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return
+	}
+	filtered := checkpoint.CompletedCheckpoints[:0]
+	for _, completed := range checkpoint.CompletedCheckpoints {
+		if strings.TrimSpace(completed) == trimmed {
+			continue
+		}
+		filtered = append(filtered, completed)
+	}
+	checkpoint.CompletedCheckpoints = filtered
+	if strings.TrimSpace(checkpoint.CurrentCheckpoint) == trimmed {
+		checkpoint.CurrentCheckpoint = ""
+	}
+}
+
+func missingRequiredDeployCheckpoints(checkpoint state.Checkpoint, names ...string) []string {
+	missing := []string{}
+	for _, name := range names {
+		if !deployPhaseCompleted(checkpoint, name) {
+			missing = append(missing, name)
+		}
+	}
+	return missing
 }
 
 func recordDeployCheckpoint(formatter output.Formatter, store state.Store, checkpoint *state.Checkpoint, name string, configPath string) error {
@@ -1771,7 +2082,7 @@ func summarizeModifiedPaths(paths []string) string {
 }
 
 func deployDesiredStateDigest(cfg config.Config) (string, error) {
-	stagedFiles, err := stageRuntimeFilesFn(cfg)
+	stagedFiles, err := stageDeployFingerprintFiles(cfg)
 	if err != nil {
 		return "", err
 	}
@@ -1827,8 +2138,12 @@ func deployDesiredStateDigestForStaged(cfg config.Config, stagedFiles []render.S
 
 func deferredCheckpointWarnings(completedCheckpoints []string) []string {
 	warnings := make([]string, 0, 2)
-	if containsCompletedCheckpoint(completedCheckpoints, deployCheckpointCertbotCommandDeferred) {
-		warnings = append(warnings, "certbot is not installed; certificate issuance and Nginx activation were deferred")
+	if containsCompletedCheckpoint(completedCheckpoints, deployCheckpointLegoCommandDeferred) {
+		if containsCompletedCheckpoint(completedCheckpoints, deployCheckpointNginxActivated) {
+			warnings = append(warnings, "lego is not installed; public certificate issuance was deferred and Nginx remains on the temporary HTTP-01 bootstrap certificate")
+		} else {
+			warnings = append(warnings, "lego is not installed; certificate issuance and Nginx activation were deferred")
+		}
 	}
 	if containsCompletedCheckpoint(completedCheckpoints, deployCheckpointSystemdDaemonReloadDeferred) {
 		warnings = append(warnings, "systemd is unavailable; service enablement and onboarding were deferred")

@@ -3,11 +3,13 @@ package workflow
 
 import (
 	"fmt"
-	"meshify/internal/config"
-	"meshify/internal/output"
 	"net/url"
 	"path/filepath"
 	"strings"
+
+	tlscomponent "meshify/internal/components/tls"
+	"meshify/internal/config"
+	"meshify/internal/output"
 )
 
 type InitMode string
@@ -146,7 +148,14 @@ func (result InitResult) nextSteps(configPath string) []string {
 		} else {
 			steps = append(steps, "Review the generated advanced section before deploy, especially package source, proxy, DNS-01, architecture, and public IP overrides.")
 			if result.Config.Default.ACMEChallenge == config.ACMEChallengeDNS01 {
-				steps = append(steps, "Provide DNS-01 provider credentials through the host environment, not this config file.")
+				if provider, err := tlscomponent.DNSProvider(result.Config.Advanced.DNS01.Provider); err == nil && provider.AmbientCredentialsSupported && strings.TrimSpace(result.Config.Advanced.DNS01.EnvFile) == "" {
+					steps = append(steps, "Confirm the selected lego DNS provider's ambient credentials are available to both deploy and systemd renewal.")
+					if provider.LegoCode == "gcloud" {
+						steps = append(steps, "For gcloud ambient mode, confirm Google Cloud metadata also provides the project; otherwise set an env file with GCE_PROJECT.")
+					}
+				} else {
+					steps = append(steps, "Prepare the root-only DNS-01 env file required by the selected lego provider.")
+				}
 			}
 		}
 	}
@@ -181,14 +190,19 @@ func collectAdvancedFields(prompter output.Prompter, cfg *config.Config) error {
 
 	if cfg.Default.ACMEChallenge == config.ACMEChallengeDNS01 {
 		if cfg.Advanced.DNS01.Provider, err = prompter.Text("DNS-01 provider", output.TextPrompt{
-			Help:     "Credentials stay outside the config file and should come from the host environment",
+			Help:     "Use a lego DNS provider: " + tlscomponent.SupportedDNSProviderNames() + " (google is accepted as a gcloud alias)",
 			Validate: validateDNS01Provider,
 		}); err != nil {
 			return err
 		}
 
-		if cfg.Advanced.DNS01.Zone, err = prompter.Text("DNS-01 zone", output.TextPrompt{
-			Help: "Optional. Leave empty to let the provider determine the zone automatically.",
+		providerInfo, err := tlscomponent.DNSProvider(cfg.Advanced.DNS01.Provider)
+		if err != nil {
+			return err
+		}
+		if cfg.Advanced.DNS01.EnvFile, err = prompter.Text("DNS-01 env file", output.TextPrompt{
+			Help:     dns01EnvFileHelp(providerInfo),
+			Validate: validateDNS01EnvFile(providerInfo),
 		}); err != nil {
 			return err
 		}
@@ -340,10 +354,30 @@ func validateCertificateEmail(value string) error {
 }
 
 func validateDNS01Provider(value string) error {
-	candidate := config.ExampleConfig()
-	candidate.Default.ACMEChallenge = config.ACMEChallengeDNS01
-	candidate.Advanced.DNS01.Provider = value
-	return candidate.Validate()
+	_, err := tlscomponent.DNSProvider(value)
+	return err
+}
+
+func dns01EnvFileHelp(provider tlscomponent.DNSProviderInfo) string {
+	if provider.AmbientCredentialsSupported {
+		if provider.LegoCode == "gcloud" {
+			return "Optional for gcloud when the host has ambient credentials available to both deploy and systemd renewal and Google Cloud metadata provides the project. If metadata does not provide the project, set an absolute path to a root-only env file with GCE_PROJECT; the same env file may carry non-secret settings such as GCE_ZONE_ID. Store raw DNS secrets in separate root-only files and reference them with lego _FILE variables."
+		}
+		return fmt.Sprintf("Optional for %s when the host has ambient credentials available to both deploy and systemd renewal. If set, use an absolute path to a root-only env file for non-secret provider settings or provider _FILE references; store raw DNS secrets in separate root-only files and reference them with lego _FILE variables.", provider.LegoCode)
+	}
+	return fmt.Sprintf("Required for %s. Use an absolute path to a root-only env file. Store raw DNS secrets in separate root-only files and reference them with lego _FILE variables.", provider.LegoCode)
+}
+
+func validateDNS01EnvFile(provider tlscomponent.DNSProviderInfo) func(string) error {
+	return func(value string) error {
+		value = strings.TrimSpace(value)
+
+		candidate := config.ExampleConfig()
+		candidate.Default.ACMEChallenge = config.ACMEChallengeDNS01
+		candidate.Advanced.DNS01.Provider = provider.Name
+		candidate.Advanced.DNS01.EnvFile = value
+		return candidate.Validate()
+	}
 }
 
 func validateMirrorURL(value string) error {

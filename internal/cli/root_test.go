@@ -9,6 +9,7 @@ import (
 	"errors"
 	"meshify/internal/assets"
 	"meshify/internal/components/headscale"
+	legocomponent "meshify/internal/components/lego"
 	"meshify/internal/config"
 	"meshify/internal/host"
 	"meshify/internal/output"
@@ -229,6 +230,9 @@ func TestExecute_DeployJSONSummary(t *testing.T) {
 		return true, true, rawURL + " returned 200."
 	}
 	hashRemoteArtifactFn = func(_ *http.Client, rawURL string) (string, error) {
+		if sha, ok := testLegoArchiveHash(t, rawURL); ok {
+			return sha, nil
+		}
 		return strings.Repeat("a", 64), nil
 	}
 	lookupOfficialPackageDigestFn = func(_ *http.Client, version string, arch string) (string, error) {
@@ -358,6 +362,9 @@ func TestExecute_DeployJSONBlocksOnManualHostChecks(t *testing.T) {
 		return true, true, rawURL + " returned 200."
 	}
 	hashRemoteArtifactFn = func(_ *http.Client, rawURL string) (string, error) {
+		if sha, ok := testLegoArchiveHash(t, rawURL); ok {
+			return sha, nil
+		}
 		return strings.Repeat("a", 64), nil
 	}
 	lookupOfficialPackageDigestFn = func(_ *http.Client, version string, arch string) (string, error) {
@@ -397,7 +404,7 @@ func TestExecute_DeployJSONBlocksOnManualHostChecks(t *testing.T) {
 	}
 }
 
-func TestDetectDNSCredentialStateRequiresCompleteProviderCredentials(t *testing.T) {
+func TestDetectDNSCredentialStateRequiresOfficialProviderCredentials(t *testing.T) {
 	clearEnv := func(keys ...string) {
 		t.Helper()
 		for _, key := range keys {
@@ -405,7 +412,7 @@ func TestDetectDNSCredentialStateRequiresCompleteProviderCredentials(t *testing.
 		}
 	}
 
-	t.Run("cloudflare email alone is not enough", func(t *testing.T) {
+	t.Run("cloudflare env_file is validated with official lego environment", func(t *testing.T) {
 		clearEnv(
 			"CLOUDFLARE_EMAIL",
 			"CLOUDFLARE_API_KEY",
@@ -416,42 +423,350 @@ func TestDetectDNSCredentialStateRequiresCompleteProviderCredentials(t *testing.
 			"CLOUDFLARE_ZONE_API_TOKEN",
 			"CF_ZONE_API_TOKEN",
 		)
-		t.Setenv("CLOUDFLARE_EMAIL", "ops@example.com")
+		dir := t.TempDir()
+		tokenFile := filepath.Join(dir, "cloudflare-token")
+		if err := os.WriteFile(tokenFile, []byte("token-value\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+		envFile := filepath.Join(dir, "cloudflare.env")
+		if err := os.WriteFile(envFile, []byte("CLOUDFLARE_DNS_API_TOKEN_FILE="+tokenFile+"\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+		withRootOwnedStatForPaths(t, tokenFile, envFile)
 
-		checked, ready, detail := detectDNSCredentialState("cloudflare")
+		checked, ready, detail := detectDNSCredentialState(config.DNS01Config{Provider: "cloudflare", EnvFile: envFile})
+		if !checked {
+			t.Fatal("checked = false, want true")
+		}
+		if !ready {
+			t.Fatalf("ready = false, want true; detail = %q", detail)
+		}
+		if !strings.Contains(detail, "lego env_file") || !strings.Contains(detail, envFile) {
+			t.Fatalf("detail = %q, want env_file guidance", detail)
+		}
+	})
+
+	t.Run("cloudflare unreadable env_file is validated through deploy privileges", func(t *testing.T) {
+		dir := t.TempDir()
+		tokenFile := filepath.Join(dir, "cloudflare-token")
+		if err := os.WriteFile(tokenFile, []byte("token-value\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+		envFile := filepath.Join(dir, "cloudflare.env")
+		if err := os.WriteFile(envFile, []byte("CLOUDFLARE_DNS_API_TOKEN_FILE="+tokenFile+"\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+		withRootOwnedStatForPaths(t, tokenFile, envFile)
+		previousRead := readDNSCredentialsFileFn
+		previousPermission := detectPermissionStateFn
+		previousExecutor := newHostExecutorFn
+		runner := &scriptedHostRunner{}
+		t.Cleanup(func() {
+			readDNSCredentialsFileFn = previousRead
+			detectPermissionStateFn = previousPermission
+			newHostExecutorFn = previousExecutor
+		})
+		readDNSCredentialsFileFn = func(string) ([]byte, error) {
+			return nil, &os.PathError{Op: "open", Path: envFile, Err: os.ErrPermission}
+		}
+		detectPermissionStateFn = func() preflight.PermissionState {
+			return preflight.PermissionState{User: "deployer", SudoInstalled: true, SudoWorks: true}
+		}
+		runner.run = func(command host.Command) (host.Result, error) {
+			actual := unwrapMaybeSudoHostCommand(command)
+			if actual.Name != "cat" {
+				t.Fatalf("command = %q, want privileged cat", command.String())
+			}
+			return host.Result{Command: command, Stdout: "CLOUDFLARE_DNS_API_TOKEN_FILE=" + tokenFile + "\n"}, nil
+		}
+		newHostExecutorFn = func(env map[string]string) host.Executor {
+			return host.NewExecutor(runner, env)
+		}
+
+		checked, ready, detail := detectDNSCredentialState(config.DNS01Config{Provider: "cloudflare", EnvFile: envFile})
+		if !checked {
+			t.Fatal("checked = false, want true")
+		}
+		if !ready {
+			t.Fatalf("ready = false, want true; detail = %q", detail)
+		}
+		if !strings.Contains(detail, "Validated env_file content through deploy privileges") {
+			t.Fatalf("detail = %q, want privileged validation detail", detail)
+		}
+		if len(runner.commands) != 1 || runner.commands[0].Name != "sudo" || strings.Contains(runner.commands[0].String(), envFile) {
+			t.Fatalf("commands = %#v, want sudo validation with redacted display path", runner.commands)
+		}
+	})
+
+	t.Run("cloudflare unreadable env_file is not ready without deploy privileges", func(t *testing.T) {
+		dir := t.TempDir()
+		tokenFile := filepath.Join(dir, "cloudflare-token")
+		if err := os.WriteFile(tokenFile, []byte("token-value\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+		envFile := filepath.Join(dir, "cloudflare.env")
+		if err := os.WriteFile(envFile, []byte("CLOUDFLARE_DNS_API_TOKEN_FILE="+tokenFile+"\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+		withRootOwnedStatForPaths(t, tokenFile, envFile)
+		previousRead := readDNSCredentialsFileFn
+		previousPermission := detectPermissionStateFn
+		t.Cleanup(func() {
+			readDNSCredentialsFileFn = previousRead
+			detectPermissionStateFn = previousPermission
+		})
+		readDNSCredentialsFileFn = func(string) ([]byte, error) {
+			return nil, &os.PathError{Op: "open", Path: envFile, Err: os.ErrPermission}
+		}
+		detectPermissionStateFn = func() preflight.PermissionState {
+			return preflight.PermissionState{User: "deployer", SudoInstalled: true}
+		}
+
+		checked, ready, detail := detectDNSCredentialState(config.DNS01Config{Provider: "cloudflare", EnvFile: envFile})
+		if !checked {
+			t.Fatal("checked = false, want true")
+		}
+		if ready {
+			t.Fatal("ready = true, want false without privileged validation")
+		}
+		if !strings.Contains(detail, "deploy privileges are not available") {
+			t.Fatalf("detail = %q, want privilege validation failure", detail)
+		}
+	})
+
+	t.Run("cloudflare env_file with group or other permissions is not ready", func(t *testing.T) {
+		envFile := filepath.Join(t.TempDir(), "cloudflare.env")
+		if err := os.WriteFile(envFile, []byte("CLOUDFLARE_DNS_API_TOKEN=token-value\n"), 0o644); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+
+		checked, ready, detail := detectDNSCredentialState(config.DNS01Config{Provider: "cloudflare", EnvFile: envFile})
+		if !checked {
+			t.Fatal("checked = false, want true")
+		}
+		if ready {
+			t.Fatal("ready = true, want false for world-readable credential env_file")
+		}
+		if !strings.Contains(detail, "readable only by root") {
+			t.Fatalf("detail = %q, want file permission guidance", detail)
+		}
+	})
+
+	t.Run("cloudflare env_file with invalid variables is not ready", func(t *testing.T) {
+		envFile := filepath.Join(t.TempDir(), "cloudflare.env")
+		if err := os.WriteFile(envFile, []byte("UNRELATED_TOKEN=token-value\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+		withRootOwnedStatForPaths(t, envFile)
+
+		checked, ready, detail := detectDNSCredentialState(config.DNS01Config{
+			Provider: "cloudflare",
+			EnvFile:  envFile,
+		})
 		if !checked {
 			t.Fatal("checked = false, want true")
 		}
 		if ready {
 			t.Fatal("ready = true, want false")
 		}
-		if !strings.Contains(detail, "CLOUDFLARE_EMAIL") {
-			t.Fatalf("detail = %q, want present-variable detail", detail)
+		if !strings.Contains(detail, "env_file for DNS provider cloudflare") {
+			t.Fatalf("detail = %q, want env_file detail", detail)
 		}
 	})
 
-	t.Run("cloudflare dns api token is sufficient", func(t *testing.T) {
-		clearEnv(
-			"CLOUDFLARE_EMAIL",
-			"CLOUDFLARE_API_KEY",
-			"CF_API_EMAIL",
-			"CF_API_KEY",
-			"CLOUDFLARE_DNS_API_TOKEN",
-			"CF_DNS_API_TOKEN",
-			"CLOUDFLARE_ZONE_API_TOKEN",
-			"CF_ZONE_API_TOKEN",
-		)
-		t.Setenv("CLOUDFLARE_DNS_API_TOKEN", "token-value")
+	t.Run("cloudflare env_file with raw token is not ready", func(t *testing.T) {
+		envFile := filepath.Join(t.TempDir(), "cloudflare.env")
+		if err := os.WriteFile(envFile, []byte("CLOUDFLARE_DNS_API_TOKEN=token-value\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+		withRootOwnedStatForPaths(t, envFile)
 
-		checked, ready, detail := detectDNSCredentialState("cloudflare")
+		checked, ready, detail := detectDNSCredentialState(config.DNS01Config{
+			Provider: "cloudflare",
+			EnvFile:  envFile,
+		})
 		if !checked {
 			t.Fatal("checked = false, want true")
 		}
-		if !ready {
-			t.Fatal("ready = false, want true")
+		if ready {
+			t.Fatal("ready = true, want false for raw DNS token in systemd env_file")
 		}
-		if !strings.Contains(detail, "CLOUDFLARE_DNS_API_TOKEN") {
-			t.Fatalf("detail = %q, want matched-token detail", detail)
+		if !strings.Contains(detail, "CLOUDFLARE_DNS_API_TOKEN must not be set directly") {
+			t.Fatalf("detail = %q, want raw-secret rejection", detail)
+		}
+	})
+
+	t.Run("cloudflare missing token file referenced by env_file is not ready", func(t *testing.T) {
+		missingFile := filepath.Join(t.TempDir(), "missing-cf-token")
+		envFile := filepath.Join(t.TempDir(), "cloudflare.env")
+		if err := os.WriteFile(envFile, []byte("CF_DNS_API_TOKEN_FILE="+missingFile+"\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+		withRootOwnedStatForPaths(t, envFile)
+
+		checked, ready, detail := detectDNSCredentialState(config.DNS01Config{
+			Provider: "cloudflare",
+			EnvFile:  envFile,
+		})
+		if !checked {
+			t.Fatal("checked = false, want true")
+		}
+		if ready {
+			t.Fatal("ready = true, want false for missing Cloudflare token file")
+		}
+		if !strings.Contains(detail, "credential file references") || !strings.Contains(detail, "CF_DNS_API_TOKEN_FILE") || !strings.Contains(detail, missingFile) {
+			t.Fatalf("detail = %q, want Cloudflare _FILE reference failure", detail)
+		}
+	})
+
+	t.Run("cloudflare relative token file referenced by env_file is not ready", func(t *testing.T) {
+		envFile := filepath.Join(t.TempDir(), "cloudflare.env")
+		if err := os.WriteFile(envFile, []byte("CF_DNS_API_TOKEN_FILE=cf-token\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+		withRootOwnedStatForPaths(t, envFile)
+
+		checked, ready, detail := detectDNSCredentialState(config.DNS01Config{
+			Provider: "cloudflare",
+			EnvFile:  envFile,
+		})
+		if !checked {
+			t.Fatal("checked = false, want true")
+		}
+		if ready {
+			t.Fatal("ready = true, want false for relative Cloudflare token file")
+		}
+		if !strings.Contains(detail, "CF_DNS_API_TOKEN_FILE") || !strings.Contains(detail, "must be absolute") {
+			t.Fatalf("detail = %q, want relative _FILE path failure", detail)
+		}
+	})
+
+	t.Run("digitalocean missing token file referenced by env_file is not ready", func(t *testing.T) {
+		missingFile := filepath.Join(t.TempDir(), "missing-do-token")
+		envFile := filepath.Join(t.TempDir(), "digitalocean.env")
+		if err := os.WriteFile(envFile, []byte("DO_AUTH_TOKEN_FILE="+missingFile+"\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+		withRootOwnedStatForPaths(t, envFile)
+
+		checked, ready, detail := detectDNSCredentialState(config.DNS01Config{
+			Provider: "digitalocean",
+			EnvFile:  envFile,
+		})
+		if !checked {
+			t.Fatal("checked = false, want true")
+		}
+		if ready {
+			t.Fatal("ready = true, want false for missing DigitalOcean token file")
+		}
+		if !strings.Contains(detail, "credential file references") || !strings.Contains(detail, "DO_AUTH_TOKEN_FILE") || !strings.Contains(detail, missingFile) {
+			t.Fatalf("detail = %q, want DigitalOcean _FILE reference failure", detail)
+		}
+	})
+
+	t.Run("digitalocean raw token in env_file is not ready", func(t *testing.T) {
+		envFile := filepath.Join(t.TempDir(), "digitalocean.env")
+		if err := os.WriteFile(envFile, []byte("DO_AUTH_TOKEN=token-value\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+		withRootOwnedStatForPaths(t, envFile)
+
+		checked, ready, detail := detectDNSCredentialState(config.DNS01Config{
+			Provider: "digitalocean",
+			EnvFile:  envFile,
+		})
+		if !checked {
+			t.Fatal("checked = false, want true")
+		}
+		if ready {
+			t.Fatal("ready = true, want false for raw DigitalOcean token in systemd env_file")
+		}
+		if !strings.Contains(detail, "DO_AUTH_TOKEN must not be set directly") {
+			t.Fatalf("detail = %q, want raw DigitalOcean token rejection", detail)
+		}
+	})
+
+	t.Run("cloudflare env_file with shell export syntax is not ready", func(t *testing.T) {
+		envFile := filepath.Join(t.TempDir(), "cloudflare.env")
+		if err := os.WriteFile(envFile, []byte("export CLOUDFLARE_DNS_API_TOKEN=token-value\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+		withRootOwnedStatForPaths(t, envFile)
+
+		checked, ready, detail := detectDNSCredentialState(config.DNS01Config{
+			Provider: "cloudflare",
+			EnvFile:  envFile,
+		})
+		if !checked {
+			t.Fatal("checked = false, want true")
+		}
+		if ready {
+			t.Fatal("ready = true, want false for shell export syntax")
+		}
+		if !strings.Contains(detail, "systemd EnvironmentFile") || !strings.Contains(detail, "without export") {
+			t.Fatalf("detail = %q, want systemd EnvironmentFile syntax guidance", detail)
+		}
+	})
+
+	t.Run("cloudflare env_file with invalid variable name is not ready", func(t *testing.T) {
+		envFile := filepath.Join(t.TempDir(), "cloudflare.env")
+		if err := os.WriteFile(envFile, []byte("CF-DNS-API-TOKEN=token-value\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+		withRootOwnedStatForPaths(t, envFile)
+
+		checked, ready, detail := detectDNSCredentialState(config.DNS01Config{
+			Provider: "cloudflare",
+			EnvFile:  envFile,
+		})
+		if !checked {
+			t.Fatal("checked = false, want true")
+		}
+		if ready {
+			t.Fatal("ready = true, want false for invalid env_file variable name")
+		}
+		if !strings.Contains(detail, "systemd EnvironmentFile") || !strings.Contains(detail, "invalid environment variable name") {
+			t.Fatalf("detail = %q, want invalid variable name guidance", detail)
+		}
+	})
+
+	t.Run("cloudflare env_file with lowercase variable name is not ready", func(t *testing.T) {
+		envFile := filepath.Join(t.TempDir(), "cloudflare.env")
+		if err := os.WriteFile(envFile, []byte("cf_dns_api_token=token-value\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+		withRootOwnedStatForPaths(t, envFile)
+
+		checked, ready, detail := detectDNSCredentialState(config.DNS01Config{
+			Provider: "cloudflare",
+			EnvFile:  envFile,
+		})
+		if !checked {
+			t.Fatal("checked = false, want true")
+		}
+		if ready {
+			t.Fatal("ready = true, want false for lowercase lego variable")
+		}
+		if !strings.Contains(detail, "exact uppercase lego variable name CF_DNS_API_TOKEN") {
+			t.Fatalf("detail = %q, want exact uppercase variable guidance", detail)
+		}
+	})
+
+	t.Run("cloudflare missing env_file is not ready", func(t *testing.T) {
+		missingFile := filepath.Join(t.TempDir(), "missing-cloudflare.env")
+
+		checked, ready, detail := detectDNSCredentialState(config.DNS01Config{
+			Provider: "cloudflare",
+			EnvFile:  missingFile,
+		})
+		if !checked {
+			t.Fatal("checked = false, want true")
+		}
+		if ready {
+			t.Fatal("ready = true, want false")
+		}
+		if !strings.Contains(detail, "not ready") || !strings.Contains(detail, missingFile) {
+			t.Fatalf("detail = %q, want missing env_file detail", detail)
 		}
 	})
 
@@ -459,68 +774,480 @@ func TestDetectDNSCredentialStateRequiresCompleteProviderCredentials(t *testing.
 		clearEnv("CLOUDFLARE_DNS_API_TOKEN", "CF_DNS_API_TOKEN")
 		t.Setenv("CLOUDFLARE_DNS_API_TOKEN", "token-value")
 
-		checked, ready, detail := detectDNSCredentialState("not-cloudflare")
+		checked, ready, detail := detectDNSCredentialState(config.DNS01Config{Provider: "not-cloudflare"})
 		if checked {
 			t.Fatal("checked = true, want false for unsupported provider alias")
 		}
 		if ready {
 			t.Fatal("ready = true, want false for unsupported provider alias")
 		}
-		if !strings.Contains(detail, "not implemented") {
+		if !strings.Contains(detail, "unsupported DNS-01 provider") {
 			t.Fatalf("detail = %q, want unsupported-provider detail", detail)
 		}
 	})
 
-	t.Run("azure subscription alone is not enough", func(t *testing.T) {
+	t.Run("route53 raw access key pair is not deploy-ready across sudo", func(t *testing.T) {
 		clearEnv(
-			"AZURE_CLIENT_ID",
-			"AZURE_CLIENT_SECRET",
-			"AZURE_TENANT_ID",
-			"AZURE_SUBSCRIPTION_ID",
-			"AZURE_RESOURCE_GROUP",
+			"AWS_ACCESS_KEY_ID",
+			"AWS_SECRET_ACCESS_KEY",
+			"AWS_CONFIG_FILE",
+			"AWS_SHARED_CREDENTIALS_FILE",
 		)
-		t.Setenv("AZURE_SUBSCRIPTION_ID", "subscription")
+		t.Setenv("AWS_ACCESS_KEY_ID", "key")
+		t.Setenv("AWS_SECRET_ACCESS_KEY", "secret")
 
-		checked, ready, detail := detectDNSCredentialState("azure")
+		checked, ready, detail := detectDNSCredentialState(config.DNS01Config{Provider: "route53"})
 		if !checked {
 			t.Fatal("checked = false, want true")
 		}
 		if ready {
-			t.Fatal("ready = true, want false")
+			t.Fatal("ready = true, want false for raw AWS secrets that meshify will not pass through sudo")
 		}
-		if !strings.Contains(detail, "AZURE_SUBSCRIPTION_ID") {
-			t.Fatalf("detail = %q, want present-variable detail", detail)
-		}
-		if !strings.Contains(detail, "AZURE_CLIENT_ID") {
-			t.Fatalf("detail = %q, want missing-variable guidance", detail)
+		if !strings.Contains(detail, "will not pass raw AWS secrets") || !strings.Contains(detail, "advanced.dns01.env_file") {
+			t.Fatalf("detail = %q, want safe Route53 credential guidance", detail)
 		}
 	})
 
-	t.Run("azure full service principal set is sufficient", func(t *testing.T) {
+	t.Run("route53 shared credentials file in env_file is sufficient", func(t *testing.T) {
+		credentialsFile := filepath.Join(t.TempDir(), "credentials")
+		if err := os.WriteFile(credentialsFile, []byte("[default]\naws_access_key_id=key\naws_secret_access_key=secret\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+		envFile := filepath.Join(t.TempDir(), "route53.env")
+		content := "# meshify route53\n; systemd-style comment\nignored note\nAWS_SHARED_CREDENTIALS_FILE='" + credentialsFile + "'\n"
+		if err := os.WriteFile(envFile, []byte(content), 0o600); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+		withRootOwnedStatForPaths(t, credentialsFile, envFile)
 		clearEnv(
-			"AZURE_CLIENT_ID",
-			"AZURE_CLIENT_SECRET",
-			"AZURE_TENANT_ID",
-			"AZURE_SUBSCRIPTION_ID",
-			"AZURE_RESOURCE_GROUP",
+			"AWS_ACCESS_KEY_ID",
+			"AWS_SECRET_ACCESS_KEY",
+			"AWS_CONFIG_FILE",
+			"AWS_SHARED_CREDENTIALS_FILE",
 		)
-		t.Setenv("AZURE_CLIENT_ID", "client")
-		t.Setenv("AZURE_CLIENT_SECRET", "secret")
-		t.Setenv("AZURE_TENANT_ID", "tenant")
-		t.Setenv("AZURE_SUBSCRIPTION_ID", "subscription")
-		t.Setenv("AZURE_RESOURCE_GROUP", "group")
 
-		checked, ready, detail := detectDNSCredentialState("azure")
+		checked, ready, detail := detectDNSCredentialState(config.DNS01Config{Provider: "route53", EnvFile: envFile})
 		if !checked {
 			t.Fatal("checked = false, want true")
 		}
 		if !ready {
 			t.Fatal("ready = false, want true")
 		}
-		if !strings.Contains(detail, "AZURE_CLIENT_ID") {
-			t.Fatalf("detail = %q, want matched-variable detail", detail)
+		if !strings.Contains(detail, "lego env_file") || !strings.Contains(detail, envFile) {
+			t.Fatalf("detail = %q, want env_file detail", detail)
 		}
 	})
+
+	t.Run("route53 hosted zone only env_file can supplement ambient credentials", func(t *testing.T) {
+		envFile := filepath.Join(t.TempDir(), "route53.env")
+		if err := os.WriteFile(envFile, []byte("AWS_HOSTED_ZONE_ID=Z1234567890\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+		withRootOwnedStatForPaths(t, envFile)
+		clearEnv(
+			"AWS_ACCESS_KEY_ID",
+			"AWS_SECRET_ACCESS_KEY",
+			"AWS_CONFIG_FILE",
+			"AWS_SHARED_CREDENTIALS_FILE",
+		)
+
+		checked, ready, detail := detectDNSCredentialState(config.DNS01Config{Provider: "route53", EnvFile: envFile})
+		if !checked {
+			t.Fatal("checked = false, want true")
+		}
+		if !ready {
+			t.Fatalf("ready = false, want true for AWS_HOSTED_ZONE_ID plus ambient credentials; detail = %q", detail)
+		}
+		if !strings.Contains(detail, "lego env_file") || !strings.Contains(detail, envFile) {
+			t.Fatalf("detail = %q, want env_file detail", detail)
+		}
+	})
+
+	t.Run("route53 raw key pair in env_file is not ready", func(t *testing.T) {
+		envFile := filepath.Join(t.TempDir(), "route53.env")
+		if err := os.WriteFile(envFile, []byte("AWS_ACCESS_KEY_ID=key\nAWS_SECRET_ACCESS_KEY=secret\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+		withRootOwnedStatForPaths(t, envFile)
+		clearEnv(
+			"AWS_ACCESS_KEY_ID",
+			"AWS_SECRET_ACCESS_KEY",
+			"AWS_CONFIG_FILE",
+			"AWS_SHARED_CREDENTIALS_FILE",
+		)
+
+		checked, ready, detail := detectDNSCredentialState(config.DNS01Config{Provider: "route53", EnvFile: envFile})
+		if !checked {
+			t.Fatal("checked = false, want true")
+		}
+		if ready {
+			t.Fatal("ready = true, want false for raw Route53 secrets in systemd env_file")
+		}
+		if !strings.Contains(detail, "AWS_ACCESS_KEY_ID must not be set directly") {
+			t.Fatalf("detail = %q, want raw AWS credential rejection", detail)
+		}
+	})
+
+	t.Run("route53 missing shared credentials file referenced by env_file is not ready", func(t *testing.T) {
+		missingFile := filepath.Join(t.TempDir(), "missing-aws-config")
+		envFile := filepath.Join(t.TempDir(), "route53.env")
+		if err := os.WriteFile(envFile, []byte("AWS_SHARED_CREDENTIALS_FILE="+missingFile+"\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+		withRootOwnedStatForPaths(t, envFile)
+		clearEnv(
+			"AWS_ACCESS_KEY_ID",
+			"AWS_SECRET_ACCESS_KEY",
+			"AWS_CONFIG_FILE",
+			"AWS_SHARED_CREDENTIALS_FILE",
+		)
+
+		checked, ready, detail := detectDNSCredentialState(config.DNS01Config{Provider: "route53", EnvFile: envFile})
+		if !checked {
+			t.Fatal("checked = false, want true")
+		}
+		if ready {
+			t.Fatal("ready = true, want false")
+		}
+		if !strings.Contains(detail, "credential file references") || !strings.Contains(detail, missingFile) {
+			t.Fatalf("detail = %q, want missing config file detail", detail)
+		}
+	})
+
+	t.Run("route53 without env_file uses ambient credential chain", func(t *testing.T) {
+		clearEnv(
+			"AWS_ACCESS_KEY_ID",
+			"AWS_SECRET_ACCESS_KEY",
+			"AWS_CONFIG_FILE",
+			"AWS_SHARED_CREDENTIALS_FILE",
+		)
+
+		checked, ready, detail := detectDNSCredentialState(config.DNS01Config{Provider: "route53"})
+		if !checked {
+			t.Fatal("checked = false, want true")
+		}
+		if !ready {
+			t.Fatal("ready = false, want true for route53 ambient credentials")
+		}
+		if !strings.Contains(detail, "ambient credential chain") {
+			t.Fatalf("detail = %q, want ambient credential detail", detail)
+		}
+	})
+
+	t.Run("google application credentials with project in env_file is sufficient", func(t *testing.T) {
+		credentialsFile := filepath.Join(t.TempDir(), "google.json")
+		if err := os.WriteFile(credentialsFile, []byte(`{"type":"service_account"}`+"\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+		envFile := filepath.Join(t.TempDir(), "gcloud.env")
+		if err := os.WriteFile(envFile, []byte("GCE_PROJECT=meshify-project\nGOOGLE_APPLICATION_CREDENTIALS="+credentialsFile+"\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+		withRootOwnedStatForPaths(t, credentialsFile, envFile)
+		clearEnv(
+			"GCE_PROJECT",
+			"GCE_SERVICE_ACCOUNT",
+			"GCE_SERVICE_ACCOUNT_FILE",
+			"GOOGLE_APPLICATION_CREDENTIALS",
+			"GOOGLE_APPLICATION_CREDENTIALS_FILE",
+		)
+
+		checked, ready, detail := detectDNSCredentialState(config.DNS01Config{Provider: "google", EnvFile: envFile})
+		if !checked {
+			t.Fatal("checked = false, want true")
+		}
+		if !ready {
+			t.Fatal("ready = false, want true")
+		}
+		if !strings.Contains(detail, "lego env_file") || !strings.Contains(detail, envFile) {
+			t.Fatalf("detail = %q, want env_file detail", detail)
+		}
+	})
+
+	t.Run("google application credentials without project in env_file can use metadata project", func(t *testing.T) {
+		credentialsFile := filepath.Join(t.TempDir(), "google.json")
+		if err := os.WriteFile(credentialsFile, []byte(`{"type":"service_account"}`+"\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+		envFile := filepath.Join(t.TempDir(), "gcloud.env")
+		if err := os.WriteFile(envFile, []byte("GOOGLE_APPLICATION_CREDENTIALS="+credentialsFile+"\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+		withRootOwnedStatForPaths(t, credentialsFile, envFile)
+		clearEnv(
+			"GCE_PROJECT",
+			"GCE_SERVICE_ACCOUNT",
+			"GCE_SERVICE_ACCOUNT_FILE",
+			"GOOGLE_APPLICATION_CREDENTIALS",
+			"GOOGLE_APPLICATION_CREDENTIALS_FILE",
+		)
+
+		checked, ready, detail := detectDNSCredentialState(config.DNS01Config{Provider: "google", EnvFile: envFile})
+		if !checked {
+			t.Fatal("checked = false, want true")
+		}
+		if !ready {
+			t.Fatalf("ready = false, want true for GOOGLE_APPLICATION_CREDENTIALS plus ambient project; detail = %q", detail)
+		}
+		if !strings.Contains(detail, "lego env_file") || !strings.Contains(detail, envFile) {
+			t.Fatalf("detail = %q, want env_file detail", detail)
+		}
+	})
+
+	t.Run("google zone id only env_file can supplement ambient credentials", func(t *testing.T) {
+		envFile := filepath.Join(t.TempDir(), "gcloud.env")
+		if err := os.WriteFile(envFile, []byte("GCE_ZONE_ID=meshify-zone\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+		withRootOwnedStatForPaths(t, envFile)
+		clearEnv(
+			"GCE_PROJECT",
+			"GCE_SERVICE_ACCOUNT",
+			"GCE_SERVICE_ACCOUNT_FILE",
+			"GOOGLE_APPLICATION_CREDENTIALS",
+			"GOOGLE_APPLICATION_CREDENTIALS_FILE",
+		)
+
+		checked, ready, detail := detectDNSCredentialState(config.DNS01Config{Provider: "google", EnvFile: envFile})
+		if !checked {
+			t.Fatal("checked = false, want true")
+		}
+		if !ready {
+			t.Fatalf("ready = false, want true for GCE_ZONE_ID plus ambient credentials; detail = %q", detail)
+		}
+		if !strings.Contains(detail, "lego env_file") || !strings.Contains(detail, envFile) {
+			t.Fatalf("detail = %q, want env_file detail", detail)
+		}
+	})
+
+	t.Run("google project only in env_file can supplement ambient ADC", func(t *testing.T) {
+		envFile := filepath.Join(t.TempDir(), "gcloud.env")
+		if err := os.WriteFile(envFile, []byte("GCE_PROJECT=meshify-project\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+		withRootOwnedStatForPaths(t, envFile)
+		clearEnv(
+			"GCE_PROJECT",
+			"GCE_SERVICE_ACCOUNT",
+			"GCE_SERVICE_ACCOUNT_FILE",
+			"GOOGLE_APPLICATION_CREDENTIALS",
+			"GOOGLE_APPLICATION_CREDENTIALS_FILE",
+		)
+
+		checked, ready, detail := detectDNSCredentialState(config.DNS01Config{Provider: "google", EnvFile: envFile})
+		if !checked {
+			t.Fatal("checked = false, want true")
+		}
+		if !ready {
+			t.Fatalf("ready = false, want true for GCE_PROJECT plus ambient ADC; detail = %q", detail)
+		}
+		if !strings.Contains(detail, "lego env_file") || !strings.Contains(detail, envFile) {
+			t.Fatalf("detail = %q, want env_file detail", detail)
+		}
+	})
+
+	t.Run("google official gcloud service account file in env_file is sufficient", func(t *testing.T) {
+		credentialsFile := filepath.Join(t.TempDir(), "gcloud.json")
+		if err := os.WriteFile(credentialsFile, []byte(`{"type":"service_account","project_id":"meshify-project"}`+"\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+		envFile := filepath.Join(t.TempDir(), "gcloud.env")
+		if err := os.WriteFile(envFile, []byte("GCE_SERVICE_ACCOUNT_FILE="+credentialsFile+"\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+		withRootOwnedStatForPaths(t, credentialsFile, envFile)
+		clearEnv(
+			"GCE_PROJECT",
+			"GCE_SERVICE_ACCOUNT",
+			"GCE_SERVICE_ACCOUNT_FILE",
+			"GOOGLE_APPLICATION_CREDENTIALS",
+			"GOOGLE_APPLICATION_CREDENTIALS_FILE",
+		)
+
+		checked, ready, detail := detectDNSCredentialState(config.DNS01Config{Provider: "google", EnvFile: envFile})
+		if !checked {
+			t.Fatal("checked = false, want true")
+		}
+		if !ready {
+			t.Fatalf("ready = false, want true; detail = %q", detail)
+		}
+		if !strings.Contains(detail, "lego env_file") || !strings.Contains(detail, envFile) {
+			t.Fatalf("detail = %q, want env_file detail", detail)
+		}
+	})
+
+	t.Run("google official gcloud impersonation in env_file is sufficient", func(t *testing.T) {
+		envFile := filepath.Join(t.TempDir(), "gcloud.env")
+		if err := os.WriteFile(envFile, []byte("GCE_PROJECT=meshify-project\nGCE_IMPERSONATE_SERVICE_ACCOUNT=target-sa@meshify-project.iam.gserviceaccount.com\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+		withRootOwnedStatForPaths(t, envFile)
+		clearEnv(
+			"GCE_PROJECT",
+			"GCE_IMPERSONATE_SERVICE_ACCOUNT",
+			"GCE_SERVICE_ACCOUNT",
+			"GCE_SERVICE_ACCOUNT_FILE",
+			"GOOGLE_APPLICATION_CREDENTIALS",
+			"GOOGLE_APPLICATION_CREDENTIALS_FILE",
+		)
+
+		checked, ready, detail := detectDNSCredentialState(config.DNS01Config{Provider: "google", EnvFile: envFile})
+		if !checked {
+			t.Fatal("checked = false, want true")
+		}
+		if !ready {
+			t.Fatalf("ready = false, want true; detail = %q", detail)
+		}
+		if !strings.Contains(detail, "lego env_file") || !strings.Contains(detail, envFile) {
+			t.Fatalf("detail = %q, want env_file detail", detail)
+		}
+	})
+
+	t.Run("google missing application credentials file referenced by env_file is not ready", func(t *testing.T) {
+		missingFile := filepath.Join(t.TempDir(), "missing-google.json")
+		envFile := filepath.Join(t.TempDir(), "gcloud.env")
+		if err := os.WriteFile(envFile, []byte("GCE_PROJECT=meshify-project\nGOOGLE_APPLICATION_CREDENTIALS="+missingFile+"\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+		withRootOwnedStatForPaths(t, envFile)
+		clearEnv(
+			"GCE_PROJECT",
+			"GCE_SERVICE_ACCOUNT",
+			"GCE_SERVICE_ACCOUNT_FILE",
+			"GOOGLE_APPLICATION_CREDENTIALS",
+			"GOOGLE_APPLICATION_CREDENTIALS_FILE",
+		)
+
+		checked, ready, detail := detectDNSCredentialState(config.DNS01Config{Provider: "google", EnvFile: envFile})
+		if !checked {
+			t.Fatal("checked = false, want true")
+		}
+		if ready {
+			t.Fatal("ready = true, want false")
+		}
+		if !strings.Contains(detail, "credential file references") || !strings.Contains(detail, missingFile) {
+			t.Fatalf("detail = %q, want missing Google credentials file detail", detail)
+		}
+	})
+
+	t.Run("google without env_file uses ambient credential chain", func(t *testing.T) {
+		clearEnv(
+			"GCE_PROJECT",
+			"GCE_SERVICE_ACCOUNT",
+			"GCE_SERVICE_ACCOUNT_FILE",
+			"GOOGLE_APPLICATION_CREDENTIALS",
+			"GOOGLE_APPLICATION_CREDENTIALS_FILE",
+		)
+
+		checked, ready, detail := detectDNSCredentialState(config.DNS01Config{Provider: "google"})
+		if !checked {
+			t.Fatal("checked = false, want true")
+		}
+		if !ready {
+			t.Fatal("ready = false, want true for gcloud ambient credentials")
+		}
+		if !strings.Contains(detail, "ambient credential chain") {
+			t.Fatalf("detail = %q, want ambient credential detail", detail)
+		}
+	})
+}
+
+func TestStageDeployFilesUsesMeshifyLegoRenewalAssets(t *testing.T) {
+	cfg := config.ExampleConfig()
+	cfg.Default.ACMEChallenge = config.ACMEChallengeDNS01
+	cfg.Advanced.DNS01.Provider = "route53"
+	cfg.Advanced.DNS01.EnvFile = "/etc/meshify/dns01/route53.env"
+
+	files, err := stageDeployFiles(cfg)
+	if err != nil {
+		t.Fatalf("stageDeployFiles() error = %v", err)
+	}
+	byHostPath := map[string]render.StagedFile{}
+	for _, file := range files {
+		byHostPath[file.HostPath] = file
+		if strings.Contains(file.HostPath, "certbot") || strings.Contains(file.HostPath, "letsencrypt") {
+			t.Fatalf("staged files include legacy certbot asset %#v", file)
+		}
+	}
+	if _, ok := byHostPath["/etc/systemd/system/meshify-lego-renew.service"]; !ok {
+		t.Fatalf("staged files = %#v, want lego renewal service", files)
+	}
+	if _, ok := byHostPath["/etc/systemd/system/meshify-lego-renew.timer"]; !ok {
+		t.Fatalf("staged files = %#v, want lego renewal timer", files)
+	}
+}
+
+func TestInspectDNSCredentialsFileDoesNotApproveUninspectablePath(t *testing.T) {
+	previousStat := statDNSCredentialsFileFn
+	t.Cleanup(func() {
+		statDNSCredentialsFileFn = previousStat
+	})
+	statDNSCredentialsFileFn = func(path string) (os.FileInfo, error) {
+		return nil, &os.PathError{Op: "stat", Path: path, Err: os.ErrPermission}
+	}
+
+	ready, detail := inspectDNSCredentialsFile("/root/cloudflare.ini")
+	if ready {
+		t.Fatalf("ready = true, want false when current user cannot inspect file metadata; detail = %q", detail)
+	}
+	if !strings.Contains(detail, "cannot be inspected") {
+		t.Fatalf("detail = %q, want inspection failure guidance", detail)
+	}
+}
+
+func withRootOwnedStatForPaths(t *testing.T, paths ...string) {
+	t.Helper()
+	previousStat := statDNSCredentialsFileFn
+	pathSet := map[string]struct{}{}
+	for _, path := range paths {
+		pathSet[path] = struct{}{}
+	}
+	t.Cleanup(func() {
+		statDNSCredentialsFileFn = previousStat
+	})
+	statDNSCredentialsFileFn = func(path string) (os.FileInfo, error) {
+		info, err := os.Stat(path)
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := pathSet[path]; !ok {
+			return info, nil
+		}
+		return rootOwnedFileInfo{FileInfo: info}, nil
+	}
+}
+
+type rootOwnedFileInfo struct {
+	os.FileInfo
+}
+
+func (info rootOwnedFileInfo) Sys() any {
+	return struct {
+		Uid uint32
+	}{Uid: 0}
+}
+
+func TestDeployDesiredStateDigestIgnoresShellCredentialSecretValues(t *testing.T) {
+	cfg := config.ExampleConfig()
+	cfg.Default.ACMEChallenge = config.ACMEChallengeDNS01
+	cfg.Advanced.DNS01.Provider = "route53"
+	cfg.Advanced.DNS01.EnvFile = "/etc/meshify/dns01/route53.env"
+
+	t.Setenv("AWS_ACCESS_KEY_ID", "key")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "first-secret")
+	first, err := deployDesiredStateDigest(cfg)
+	if err != nil {
+		t.Fatalf("deployDesiredStateDigest(first) error = %v", err)
+	}
+
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "second-secret")
+	second, err := deployDesiredStateDigest(cfg)
+	if err != nil {
+		t.Fatalf("deployDesiredStateDigest(second) error = %v", err)
+	}
+	if first != second {
+		t.Fatalf("desired state digest changed after secret value changed: first=%q second=%q", first, second)
+	}
 }
 
 func TestParseUFWAllowedPortsRecognizesApplicationProfiles(t *testing.T) {
@@ -712,7 +1439,7 @@ func TestExecute_DeployInstallsRuntimeAssetsAndStatusShowsPersistedCheckpoint(t 
 	if !strings.Contains(stdout, "checkpoint path: "+checkpointPath) {
 		t.Fatalf("stdout = %q, want checkpoint path %q", stdout, checkpointPath)
 	}
-	if !strings.Contains(stdout, "modified paths: 4 total: /etc/headscale/config.yaml") {
+	if !strings.Contains(stdout, "modified paths: 6 total: /etc/headscale/config.yaml") {
 		t.Fatalf("stdout = %q, want modified path details", stdout)
 	}
 	if got := len(runner.commands); got < 18 {
@@ -742,11 +1469,12 @@ func TestExecute_DeployInstallsRuntimeAssetsAndStatusShowsPersistedCheckpoint(t 
 		"package-manager-ready",
 		"package-architecture-confirmed",
 		"host-dependencies-installed",
+		"lego-installed",
 		"headscale-package-installed",
 		"runtime-assets-installed",
 		"tls-bootstrap-ready",
 		"nginx-site-activated",
-		"certbot-command-ready",
+		"lego-command-ready",
 		"certificate-issued",
 		"systemd-daemon-reloaded",
 		"services-enabled",
@@ -758,8 +1486,8 @@ func TestExecute_DeployInstallsRuntimeAssetsAndStatusShowsPersistedCheckpoint(t 
 	if checkpoint.DesiredStateDigest == "" {
 		t.Fatal("DesiredStateDigest = empty, want persisted desired state fingerprint")
 	}
-	if len(checkpoint.ModifiedPaths) != 4 {
-		t.Fatalf("len(ModifiedPaths) = %d, want 4", len(checkpoint.ModifiedPaths))
+	if len(checkpoint.ModifiedPaths) != 6 {
+		t.Fatalf("len(ModifiedPaths) = %d, want 6", len(checkpoint.ModifiedPaths))
 	}
 	if len(checkpoint.ActivationHistory) != 2 {
 		t.Fatalf("len(ActivationHistory) = %d, want 2", len(checkpoint.ActivationHistory))
@@ -789,10 +1517,10 @@ func TestExecute_DeployInstallsRuntimeAssetsAndStatusShowsPersistedCheckpoint(t 
 	if strings.Contains(statusStdout, "current checkpoint:") {
 		t.Fatalf("status stdout = %q, do not want resumable checkpoint after successful deploy", statusStdout)
 	}
-	if !strings.Contains(statusStdout, "completed checkpoints: package-manager-ready, package-architecture-confirmed, host-dependencies-installed, headscale-package-installed, runtime-assets-installed, tls-bootstrap-ready, nginx-site-activated, certbot-command-ready, certificate-issued, systemd-daemon-reloaded, services-enabled, onboarding-ready, static-verify-passed") {
+	if !strings.Contains(statusStdout, "completed checkpoints: package-manager-ready, package-architecture-confirmed, host-dependencies-installed, lego-installed, headscale-package-installed, runtime-assets-installed, tls-bootstrap-ready, nginx-site-activated, lego-command-ready, certificate-issued, systemd-daemon-reloaded, services-enabled, onboarding-ready, static-verify-passed") {
 		t.Fatalf("status stdout = %q, want checkpoint history", statusStdout)
 	}
-	if !strings.Contains(statusStdout, "modified paths: 4 total: /etc/headscale/config.yaml") {
+	if !strings.Contains(statusStdout, "modified paths: 6 total: /etc/headscale/config.yaml") {
 		t.Fatalf("status stdout = %q, want modified path details", statusStdout)
 	}
 	if !strings.Contains(statusStdout, "checkpoint path: "+checkpointPath) {
@@ -885,15 +1613,20 @@ func TestDetectPackageSourceStateUsesHeadscaleComponentOfficialPackageURLs(t *te
 	})
 
 	var probedURL string
-	var hashedURL string
+	var probedURLs []string
+	var hashedURLs []string
 	var lookupVersion string
 	var lookupArch string
 	probePackageURLFn = func(_ *http.Client, rawURL string) (bool, bool, string) {
 		probedURL = rawURL
+		probedURLs = append(probedURLs, rawURL)
 		return true, true, rawURL + " returned 200."
 	}
 	hashRemoteArtifactFn = func(_ *http.Client, rawURL string) (string, error) {
-		hashedURL = rawURL
+		hashedURLs = append(hashedURLs, rawURL)
+		if sha, ok := testLegoArchiveHash(t, rawURL); ok {
+			return sha, nil
+		}
 		return strings.Repeat("a", 64), nil
 	}
 	lookupOfficialPackageDigestFn = func(_ *http.Client, version string, arch string) (string, error) {
@@ -906,14 +1639,21 @@ func TestDetectPackageSourceStateUsesHeadscaleComponentOfficialPackageURLs(t *te
 	if probedURL != packagePlan.SourceURL {
 		t.Fatalf("probedURL = %q, want component SourceURL %q", probedURL, packagePlan.SourceURL)
 	}
-	if hashedURL != packagePlan.SourceURL {
-		t.Fatalf("hashedURL = %q, want component SourceURL %q", hashedURL, packagePlan.SourceURL)
+	if !slices.Contains(probedURLs, packagePlan.SourceURL) {
+		t.Fatalf("probedURLs = %#v, want Headscale component SourceURL %q", probedURLs, packagePlan.SourceURL)
+	}
+	if !slices.Contains(hashedURLs, packagePlan.SourceURL) {
+		t.Fatalf("hashedURLs = %#v, want Headscale component SourceURL %q", hashedURLs, packagePlan.SourceURL)
 	}
 	if lookupVersion != packagePlan.Version || lookupArch != packagePlan.Arch {
 		t.Fatalf("lookup version/arch = %q/%q, want %q/%q", lookupVersion, lookupArch, packagePlan.Version, packagePlan.Arch)
 	}
 	if state.ExpectedSHA256 != strings.Repeat("a", 64) {
 		t.Fatalf("ExpectedSHA256 = %q, want official digest", state.ExpectedSHA256)
+	}
+	legoURL := legocomponent.OfficialArchiveURL(legocomponent.Version, config.ArchAMD64)
+	if !slices.Contains(probedURLs, legoURL) || !slices.Contains(hashedURLs, legoURL) {
+		t.Fatalf("probedURLs = %#v hashedURLs = %#v, want lego URL %q", probedURLs, hashedURLs, legoURL)
 	}
 }
 
@@ -997,7 +1737,7 @@ func TestExecute_DeployChecksArchitectureBeforePackageMutations(t *testing.T) {
 	}
 }
 
-func TestExecute_DeployDNS01InstallsSelectedCertbotPlugin(t *testing.T) {
+func TestExecute_DeployDNS01InstallsHostDependenciesWithoutCertbotPlugins(t *testing.T) {
 	baseDir := t.TempDir()
 	configPath := filepath.Join(baseDir, "meshify.yaml")
 	if err := config.WriteExampleFile(configPath); err != nil {
@@ -1009,6 +1749,7 @@ func TestExecute_DeployDNS01InstallsSelectedCertbotPlugin(t *testing.T) {
 	}
 	cfg.Default.ACMEChallenge = config.ACMEChallengeDNS01
 	cfg.Advanced.DNS01.Provider = "cloudflare"
+	cfg.Advanced.DNS01.EnvFile = "/etc/meshify/dns01/cloudflare.env"
 	if err := cfg.WriteFile(configPath); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
@@ -1075,14 +1816,117 @@ func TestExecute_DeployDNS01InstallsSelectedCertbotPlugin(t *testing.T) {
 			continue
 		}
 		foundInstall = true
-		for _, want := range []string{"nginx", "certbot", "python3-certbot-dns-cloudflare"} {
+		for _, want := range []string{"nginx", "ca-certificates", "curl", "tar", "openssl"} {
 			if !strings.Contains(args, want) {
 				t.Fatalf("apt-get install args = %q, want %q", args, want)
+			}
+		}
+		for _, unwanted := range []string{"certbot", "python3-certbot"} {
+			if strings.Contains(args, unwanted) {
+				t.Fatalf("apt-get install args = %q, want no %q", args, unwanted)
 			}
 		}
 	}
 	if !foundInstall {
 		t.Fatalf("commands = %#v, want apt-get install command", runner.commands)
+	}
+}
+
+func TestExecute_DeployDNS01SourcesEnvFileThroughSudo(t *testing.T) {
+	baseDir := t.TempDir()
+	configPath := filepath.Join(baseDir, "meshify.yaml")
+	if err := config.WriteExampleFile(configPath); err != nil {
+		t.Fatalf("WriteExampleFile() error = %v", err)
+	}
+	cfg, err := config.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	cfg.Default.ACMEChallenge = config.ACMEChallengeDNS01
+	cfg.Advanced.DNS01.Provider = "cloudflare"
+	cfg.Advanced.DNS01.EnvFile = "/etc/meshify/dns01/cloudflare.env"
+	if err := cfg.WriteFile(configPath); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	stubPassingDeployPreflight(t)
+	detectPermissionStateFn = func() preflight.PermissionState {
+		return preflight.PermissionState{User: "deployer", SudoWorks: true}
+	}
+	detectACMEStateFn = func(config.Config) preflight.ACMEState {
+		return preflight.ACMEState{
+			DNSCredentialsChecked: true,
+			DNSCredentialsReady:   true,
+			DNSCredentialsDetail:  "test cloudflare env_file ready",
+		}
+	}
+
+	hostRoot := filepath.Join(baseDir, "host")
+	checkpointPath := filepath.Join(baseDir, "state", "checkpoint.json")
+	previousInstaller := newDeployFileInstallerFn
+	previousCheckpointPath := checkpointPathForConfigFn
+	previousStore := checkpointStoreForConfigFn
+	previousExecutor := newHostExecutorFn
+	previousSystemd := newHostSystemdFn
+	runner := &scriptedHostRunner{}
+	t.Cleanup(func() {
+		newDeployFileInstallerFn = previousInstaller
+		checkpointPathForConfigFn = previousCheckpointPath
+		checkpointStoreForConfigFn = previousStore
+		newHostExecutorFn = previousExecutor
+		newHostSystemdFn = previousSystemd
+	})
+	newDeployFileInstallerFn = func(_ host.Executor, _ host.PrivilegeStrategy) stagedFileInstaller {
+		return host.NewFileInstaller(nil, hostRoot)
+	}
+	checkpointPathForConfigFn = func(string) string {
+		return checkpointPath
+	}
+	checkpointStoreForConfigFn = func(string) state.Store {
+		return state.NewStore(checkpointPath)
+	}
+	runner.run = func(command host.Command) (host.Result, error) {
+		return successfulDeployHostResult(command)
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+	newHostSystemdFn = func(executor host.Executor) host.Systemd {
+		return host.NewSystemd(executor)
+	}
+
+	_, stderr, err := runCLI(t, "deploy", "--config", configPath)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+
+	foundLegoIssue := false
+	for _, command := range runner.commands {
+		actual := unwrapMaybeSudoHostCommand(command)
+		if actual.Name != "sh" || !strings.Contains(strings.Join(actual.Args, " "), "meshify-lego-dns01") {
+			continue
+		}
+		foundLegoIssue = true
+		if command.Name != "sudo" {
+			t.Fatalf("lego issuance command = %q, want sudo-wrapped command", command.String())
+		}
+		actualArgs := strings.Join(actual.Args, " ")
+		if !strings.Contains(actualArgs, "/etc/meshify/dns01/cloudflare.env") {
+			t.Fatalf("sudo shell args = %q, want env_file path", actualArgs)
+		}
+		display := command.String()
+		if !strings.Contains(display, "/opt/meshify/bin/lego --path /var/lib/meshify/lego") || !strings.Contains(display, "--dns cloudflare") {
+			t.Fatalf("lego display command = %q, want lego DNS-01 command", display)
+		}
+		if strings.Contains(display, "/etc/meshify/dns01/cloudflare.env") {
+			t.Fatalf("lego display command = %q, want env_file hidden from display", display)
+		}
+	}
+	if !foundLegoIssue {
+		t.Fatalf("commands = %#v, want lego issuance shell wrapper", runner.commands)
 	}
 }
 
@@ -1111,6 +1955,7 @@ func TestExecute_DeployResumesFromRecordedCheckpoint(t *testing.T) {
 			deployCheckpointPackageManagerReady,
 			deployCheckpointPackageArchitectureConfirmed,
 			deployCheckpointHostDependenciesInstalled,
+			deployCheckpointLegoInstalled,
 			deployCheckpointHeadscalePackageInstalled,
 			deployCheckpointRuntimeAssetsInstalled,
 		},
@@ -1150,7 +1995,7 @@ func TestExecute_DeployResumesFromRecordedCheckpoint(t *testing.T) {
 	runner.run = func(command host.Command) (host.Result, error) {
 		actual := unwrapMaybeSudoHostCommand(command)
 		switch actual.Name {
-		case "apt-get", "dpkg", "curl", "sha256sum":
+		case "apt-get", "dpkg", "curl", "sha256sum", "tar", "chmod":
 			t.Fatalf("unexpected resumed host command %q", command.String())
 		}
 		return successfulDeployHostResult(command)
@@ -1178,8 +2023,16 @@ func TestExecute_DeployResumesFromRecordedCheckpoint(t *testing.T) {
 	if got := len(runner.commands); got < 10 {
 		t.Fatalf("len(commands) = %d, want resumed certificate/service/onboarding commands", got)
 	}
-	if runner.commands[0].Name != "mkdir" || runner.commands[6].Name != "certbot" {
-		t.Fatalf("commands = %#v, want HTTP-01 bootstrap before certbot", runner.commands)
+	foundLegoIssue := false
+	for _, command := range runner.commands {
+		actual := unwrapMaybeSudoHostCommand(command)
+		if actual.Name == legocomponent.BinaryPath && strings.Join(actual.Args, " ") != "--version" {
+			foundLegoIssue = true
+			break
+		}
+	}
+	if runner.commands[0].Name != "mkdir" || !foundLegoIssue {
+		t.Fatalf("commands = %#v, want HTTP-01 bootstrap before lego issuance", runner.commands)
 	}
 
 	checkpoint, err := state.NewStore(checkpointPath).Load()
@@ -1193,11 +2046,12 @@ func TestExecute_DeployResumesFromRecordedCheckpoint(t *testing.T) {
 		deployCheckpointPackageManagerReady,
 		deployCheckpointPackageArchitectureConfirmed,
 		deployCheckpointHostDependenciesInstalled,
+		deployCheckpointLegoInstalled,
 		deployCheckpointHeadscalePackageInstalled,
 		deployCheckpointRuntimeAssetsInstalled,
 		deployCheckpointTLSBootstrapReady,
 		deployCheckpointNginxActivated,
-		deployCheckpointCertbotCommandReady,
+		deployCheckpointLegoCommandReady,
 		deployCheckpointCertificateIssued,
 		deployCheckpointSystemdDaemonReloaded,
 		deployCheckpointServicesEnabled,
@@ -1271,7 +2125,8 @@ func TestExecute_DeployIgnoresCompletedCheckpointWhenDesiredStateChanges(t *test
 	if err != nil {
 		t.Fatalf("stageRuntimeFilesFn(updated) error = %v", err)
 	}
-	updatedDigest, err := deployDesiredStateDigestForStaged(updatedCfg, expectedStagedFiles)
+	expectedDeployFiles := append([]render.StagedFile(nil), expectedStagedFiles...)
+	updatedDigest, err := deployDesiredStateDigestForStaged(updatedCfg, expectedDeployFiles)
 	if err != nil {
 		t.Fatalf("deployDesiredStateDigestForStaged(updated) error = %v", err)
 	}
@@ -1425,7 +2280,136 @@ func TestDeployDesiredStateDigestTracksStagedRuntimeOutput(t *testing.T) {
 	}
 }
 
-func TestExecute_DeployDefersUnavailableHostCommandsAndStatusShowsCheckpointHistory(t *testing.T) {
+func TestExecute_DeployDeferredMissingLegoPersistsFailureAndStatusShowsCheckpoint(t *testing.T) {
+	baseDir := t.TempDir()
+	configPath := filepath.Join(baseDir, "meshify.yaml")
+	if err := config.WriteExampleFile(configPath); err != nil {
+		t.Fatalf("WriteExampleFile() error = %v", err)
+	}
+
+	stubPassingDeployPreflight(t)
+
+	hostRoot := filepath.Join(baseDir, "host")
+	checkpointPath := filepath.Join(baseDir, "state", "checkpoint.json")
+	previousInstaller := newDeployFileInstallerFn
+	previousCheckpointPath := checkpointPathForConfigFn
+	previousStore := checkpointStoreForConfigFn
+	previousExecutor := newHostExecutorFn
+	previousSystemd := newHostSystemdFn
+	runner := &scriptedHostRunner{}
+	t.Cleanup(func() {
+		newDeployFileInstallerFn = previousInstaller
+		checkpointPathForConfigFn = previousCheckpointPath
+		checkpointStoreForConfigFn = previousStore
+		newHostExecutorFn = previousExecutor
+		newHostSystemdFn = previousSystemd
+	})
+	newDeployFileInstallerFn = func(_ host.Executor, _ host.PrivilegeStrategy) stagedFileInstaller {
+		return host.NewFileInstaller(nil, hostRoot)
+	}
+	checkpointPathForConfigFn = func(string) string {
+		return checkpointPath
+	}
+	checkpointStoreForConfigFn = func(string) state.Store {
+		return state.NewStore(checkpointPath)
+	}
+	legoVersionChecks := 0
+	runner.run = func(command host.Command) (host.Result, error) {
+		switch command.Name {
+		case "apt-get", "mkdir", "sh", "curl", "sha256sum", "tar", "chmod", "ln", "nginx":
+			return host.Result{}, nil
+		case "/opt/meshify/bin/lego":
+			if strings.Join(command.Args, " ") == "--version" {
+				legoVersionChecks++
+			}
+			if legoVersionChecks > 1 && strings.Join(command.Args, " ") == "--version" {
+				result := host.Result{Command: command}
+				return result, &host.CommandError{Result: result, Err: exec.ErrNotFound}
+			}
+			return host.Result{}, nil
+		case "dpkg":
+			return host.Result{Stdout: "amd64\n"}, nil
+		case "systemctl":
+			result := host.Result{Command: command, Stderr: "Failed to connect to bus: No such file or directory"}
+			return result, &host.CommandError{Result: result, Err: errors.New("exit status 1")}
+		default:
+			t.Fatalf("unexpected host command %q", command.String())
+			return host.Result{}, nil
+		}
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+	newHostSystemdFn = func(executor host.Executor) host.Systemd {
+		return host.NewSystemd(executor)
+	}
+
+	stdout, stderr, err := runCLI(t, "deploy", "--config", configPath)
+	if err == nil {
+		t.Fatal("Execute() error = nil, want deferred lego failure")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	if !strings.Contains(err.Error(), "check lego command failed") {
+		t.Fatalf("error = %q, want lego command failure", err.Error())
+	}
+	if !strings.Contains(stdout, "meshify deploy: check lego command failed: running /opt/meshify/bin/lego --version to confirm certificate tooling reachability") {
+		t.Fatalf("stdout = %q, want deferred lego failure summary", stdout)
+	}
+	if strings.Contains(stdout, "Join at least two clients") {
+		t.Fatalf("stdout = %q, do not want client join next step before certificate issuance", stdout)
+	}
+
+	checkpoint, err := state.NewStore(checkpointPath).Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if checkpoint.CurrentCheckpoint != deployCheckpointLegoCommandDeferred {
+		t.Fatalf("CurrentCheckpoint = %q, want %q", checkpoint.CurrentCheckpoint, deployCheckpointLegoCommandDeferred)
+	}
+	if want := []string{
+		deployCheckpointPackageManagerReady,
+		deployCheckpointPackageArchitectureConfirmed,
+		deployCheckpointHostDependenciesInstalled,
+		deployCheckpointLegoInstalled,
+		deployCheckpointHeadscalePackageInstalled,
+		deployCheckpointRuntimeAssetsInstalled,
+		deployCheckpointTLSBootstrapReady,
+		deployCheckpointNginxActivated,
+		deployCheckpointLegoCommandDeferred,
+	}; strings.Join(checkpoint.CompletedCheckpoints, ",") != strings.Join(want, ",") {
+		t.Fatalf("CompletedCheckpoints = %v, want %v", checkpoint.CompletedCheckpoints, want)
+	}
+	if checkpoint.LastFailure == nil || checkpoint.LastFailure.Step != "check lego command" {
+		t.Fatalf("LastFailure = %#v, want lego command failure", checkpoint.LastFailure)
+	}
+
+	statusStdout, statusStderr, err := runCLI(t, "status", "--config", configPath)
+	if err != nil {
+		t.Fatalf("status Execute() error = %v", err)
+	}
+	if statusStderr != "" {
+		t.Fatalf("status stderr = %q, want empty", statusStderr)
+	}
+	if !strings.Contains(statusStdout, "meshify status: check lego command failed: running /opt/meshify/bin/lego --version to confirm certificate tooling reachability") {
+		t.Fatalf("status stdout = %q, want persisted lego failure summary", statusStdout)
+	}
+	if !strings.Contains(statusStdout, "current checkpoint: lego-command-deferred") {
+		t.Fatalf("status stdout = %q, want deferred current checkpoint", statusStdout)
+	}
+	if !strings.Contains(statusStdout, "completed checkpoints: package-manager-ready, package-architecture-confirmed, host-dependencies-installed, lego-installed, headscale-package-installed, runtime-assets-installed, tls-bootstrap-ready, nginx-site-activated, lego-command-deferred") {
+		t.Fatalf("status stdout = %q, want deferred checkpoint history", statusStdout)
+	}
+	if !strings.Contains(statusStdout, "warnings: lego is not installed; public certificate issuance was deferred and Nginx remains on the temporary HTTP-01 bootstrap certificate") {
+		t.Fatalf("status stdout = %q, want deferred lego warning", statusStdout)
+	}
+	if !strings.Contains(statusStdout, "minimum client version: Tailscale >= v1.74.0") {
+		t.Fatalf("status stdout = %q, want minimum client version", statusStdout)
+	}
+}
+
+func TestExecute_DeployDeferredSystemdPersistsFailureBeforeServicesAndOnboarding(t *testing.T) {
 	baseDir := t.TempDir()
 	configPath := filepath.Join(baseDir, "meshify.yaml")
 	if err := config.WriteExampleFile(configPath); err != nil {
@@ -1459,16 +2443,14 @@ func TestExecute_DeployDefersUnavailableHostCommandsAndStatusShowsCheckpointHist
 		return state.NewStore(checkpointPath)
 	}
 	runner.run = func(command host.Command) (host.Result, error) {
-		switch command.Name {
-		case "apt-get", "mkdir", "sh", "curl", "sha256sum", "ln", "nginx":
-			return host.Result{}, nil
+		actual := unwrapMaybeSudoHostCommand(command)
+		switch actual.Name {
+		case "apt-get", "mkdir", "sh", "curl", "sha256sum", "tar", "chmod", "ln", "nginx", "/opt/meshify/bin/lego":
+			return host.Result{Command: command}, nil
 		case "dpkg":
-			return host.Result{Stdout: "amd64\n"}, nil
-		case "certbot":
-			result := host.Result{Command: command}
-			return result, &host.CommandError{Result: result, Err: exec.ErrNotFound}
+			return host.Result{Command: command, Stdout: "amd64\n"}, nil
 		case "systemctl":
-			result := host.Result{Command: command, Stderr: "Failed to connect to bus: No such file or directory"}
+			result := host.Result{Command: command, Stderr: "Failed to connect to bus: No such file or directory", ExitCode: 1}
 			return result, &host.CommandError{Result: result, Err: errors.New("exit status 1")}
 		default:
 			t.Fatalf("unexpected host command %q", command.String())
@@ -1483,39 +2465,51 @@ func TestExecute_DeployDefersUnavailableHostCommandsAndStatusShowsCheckpointHist
 	}
 
 	stdout, stderr, err := runCLI(t, "deploy", "--config", configPath)
-	if err != nil {
-		t.Fatalf("Execute() error = %v", err)
+	if err == nil {
+		t.Fatal("Execute() error = nil, want deferred systemd failure")
 	}
 	if stderr != "" {
 		t.Fatalf("stderr = %q, want empty", stderr)
 	}
-	if !strings.Contains(stdout, "meshify deploy: preflight passed, server components were installed, runtime assets were applied, and verification checks passed") {
-		t.Fatalf("stdout = %q, want deploy success summary", stdout)
+	if !strings.Contains(err.Error(), "reload systemd failed") {
+		t.Fatalf("error = %q, want systemd reload failure", err.Error())
 	}
-	if !strings.Contains(stdout, "warnings: certbot is not installed; certificate issuance and Nginx activation were deferred; systemd is unavailable; service enablement and onboarding were deferred") {
-		t.Fatalf("stdout = %q, want deferred command warnings", stdout)
+	if !strings.Contains(stdout, "meshify deploy: reload systemd failed: running systemctl daemon-reload to confirm service manager reachability") {
+		t.Fatalf("stdout = %q, want deferred systemd failure summary", stdout)
+	}
+	if strings.Contains(stdout, "Join at least two clients") {
+		t.Fatalf("stdout = %q, do not want client join next step before service readiness", stdout)
 	}
 
 	checkpoint, err := state.NewStore(checkpointPath).Load()
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if checkpoint.CurrentCheckpoint != "" {
-		t.Fatalf("CurrentCheckpoint = %q, want empty after successful deploy finalization", checkpoint.CurrentCheckpoint)
+	if checkpoint.CurrentCheckpoint != deployCheckpointSystemdDaemonReloadDeferred {
+		t.Fatalf("CurrentCheckpoint = %q, want %q", checkpoint.CurrentCheckpoint, deployCheckpointSystemdDaemonReloadDeferred)
 	}
 	if want := []string{
 		deployCheckpointPackageManagerReady,
 		deployCheckpointPackageArchitectureConfirmed,
 		deployCheckpointHostDependenciesInstalled,
+		deployCheckpointLegoInstalled,
 		deployCheckpointHeadscalePackageInstalled,
 		deployCheckpointRuntimeAssetsInstalled,
 		deployCheckpointTLSBootstrapReady,
 		deployCheckpointNginxActivated,
-		deployCheckpointCertbotCommandDeferred,
+		deployCheckpointLegoCommandReady,
+		deployCheckpointCertificateIssued,
 		deployCheckpointSystemdDaemonReloadDeferred,
-		deployCheckpointStaticVerifyPassed,
 	}; strings.Join(checkpoint.CompletedCheckpoints, ",") != strings.Join(want, ",") {
 		t.Fatalf("CompletedCheckpoints = %v, want %v", checkpoint.CompletedCheckpoints, want)
+	}
+	if checkpoint.LastFailure == nil || checkpoint.LastFailure.Step != "reload systemd" {
+		t.Fatalf("LastFailure = %#v, want systemd failure", checkpoint.LastFailure)
+	}
+	for _, notWant := range []string{deployCheckpointServicesEnabled, deployCheckpointOnboardingReady, deployCheckpointStaticVerifyPassed} {
+		if slices.Contains(checkpoint.CompletedCheckpoints, notWant) {
+			t.Fatalf("CompletedCheckpoints = %v, do not want %s", checkpoint.CompletedCheckpoints, notWant)
+		}
 	}
 
 	statusStdout, statusStderr, err := runCLI(t, "status", "--config", configPath)
@@ -1525,24 +2519,119 @@ func TestExecute_DeployDefersUnavailableHostCommandsAndStatusShowsCheckpointHist
 	if statusStderr != "" {
 		t.Fatalf("status stderr = %q, want empty", statusStderr)
 	}
-	if !strings.Contains(statusStdout, "meshify status: config is valid; last deploy context is available") {
-		t.Fatalf("status stdout = %q, want last deploy summary", statusStdout)
+	if !strings.Contains(statusStdout, "meshify status: reload systemd failed: running systemctl daemon-reload to confirm service manager reachability") {
+		t.Fatalf("status stdout = %q, want persisted systemd failure summary", statusStdout)
 	}
-	if !strings.Contains(statusStdout, "completed checkpoints: package-manager-ready, package-architecture-confirmed, host-dependencies-installed, headscale-package-installed, runtime-assets-installed, tls-bootstrap-ready, nginx-site-activated, certbot-command-deferred, systemd-daemon-reload-deferred, static-verify-passed") {
-		t.Fatalf("status stdout = %q, want deferred checkpoint history", statusStdout)
+	if !strings.Contains(statusStdout, "current checkpoint: systemd-daemon-reload-deferred") {
+		t.Fatalf("status stdout = %q, want deferred systemd current checkpoint", statusStdout)
 	}
-	if !strings.Contains(statusStdout, "warnings: certbot is not installed; certificate issuance and Nginx activation were deferred; systemd is unavailable; service enablement and onboarding were deferred") {
-		t.Fatalf("status stdout = %q, want deferred command warnings", statusStdout)
-	}
-	if !strings.Contains(statusStdout, "minimum client version: Tailscale >= v1.74.0") {
-		t.Fatalf("status stdout = %q, want minimum client version", statusStdout)
-	}
-	if strings.Contains(statusStdout, "current checkpoint:") {
-		t.Fatalf("status stdout = %q, do not want resumable checkpoint after successful deploy", statusStdout)
+	if !strings.Contains(statusStdout, "warnings: systemd is unavailable; service enablement and onboarding were deferred") {
+		t.Fatalf("status stdout = %q, want systemd warning", statusStdout)
 	}
 }
 
-func TestExecute_DeployUsesSudoOnlyForPrivilegedHostMutationsAndDefersMissingCertbot(t *testing.T) {
+func TestExecute_DeployRerunClearsDeferredLegoCheckpointAfterSuccess(t *testing.T) {
+	baseDir := t.TempDir()
+	configPath := filepath.Join(baseDir, "meshify.yaml")
+	if err := config.WriteExampleFile(configPath); err != nil {
+		t.Fatalf("WriteExampleFile() error = %v", err)
+	}
+	cfg, err := config.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	desiredStateDigest, err := deployDesiredStateDigest(cfg)
+	if err != nil {
+		t.Fatalf("deployDesiredStateDigest() error = %v", err)
+	}
+
+	stubPassingDeployPreflight(t)
+
+	checkpointPath := filepath.Join(baseDir, "state", "checkpoint.json")
+	if err := state.NewStore(checkpointPath).Save(state.Checkpoint{
+		DesiredStateDigest: desiredStateDigest,
+		CurrentCheckpoint:  deployCheckpointLegoCommandDeferred,
+		CompletedCheckpoints: []string{
+			deployCheckpointPackageManagerReady,
+			deployCheckpointPackageArchitectureConfirmed,
+			deployCheckpointHostDependenciesInstalled,
+			deployCheckpointLegoInstalled,
+			deployCheckpointHeadscalePackageInstalled,
+			deployCheckpointRuntimeAssetsInstalled,
+			deployCheckpointTLSBootstrapReady,
+			deployCheckpointNginxActivated,
+			deployCheckpointLegoCommandDeferred,
+		},
+		LastFailure: &workflow.FailureSnapshot{
+			Summary: "check lego command failed: running /opt/meshify/bin/lego --version to confirm certificate tooling reachability",
+			Step:    "check lego command",
+		},
+	}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	previousInstaller := newDeployFileInstallerFn
+	previousCheckpointPath := checkpointPathForConfigFn
+	previousStore := checkpointStoreForConfigFn
+	previousExecutor := newHostExecutorFn
+	previousSystemd := newHostSystemdFn
+	runner := &scriptedHostRunner{}
+	t.Cleanup(func() {
+		newDeployFileInstallerFn = previousInstaller
+		checkpointPathForConfigFn = previousCheckpointPath
+		checkpointStoreForConfigFn = previousStore
+		newHostExecutorFn = previousExecutor
+		newHostSystemdFn = previousSystemd
+	})
+	newDeployFileInstallerFn = func(_ host.Executor, _ host.PrivilegeStrategy) stagedFileInstaller {
+		return stubFileInstaller{err: errors.New("unexpected file install during deferred rerun")}
+	}
+	checkpointPathForConfigFn = func(string) string {
+		return checkpointPath
+	}
+	checkpointStoreForConfigFn = func(string) state.Store {
+		return state.NewStore(checkpointPath)
+	}
+	runner.run = func(command host.Command) (host.Result, error) {
+		return successfulDeployHostResult(command)
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+	newHostSystemdFn = func(executor host.Executor) host.Systemd {
+		return host.NewSystemd(executor)
+	}
+
+	stdout, stderr, err := runCLI(t, "deploy", "--config", configPath)
+	if err != nil {
+		t.Fatalf("Execute() error = %v; stdout = %q", err, stdout)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	if strings.Contains(stdout, "lego is not installed") {
+		t.Fatalf("stdout = %q, want deferred warning cleared after successful rerun", stdout)
+	}
+
+	checkpoint, err := state.NewStore(checkpointPath).Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if checkpoint.CurrentCheckpoint != "" {
+		t.Fatalf("CurrentCheckpoint = %q, want empty after successful rerun", checkpoint.CurrentCheckpoint)
+	}
+	if checkpoint.LastFailure != nil {
+		t.Fatalf("LastFailure = %#v, want nil after successful rerun", checkpoint.LastFailure)
+	}
+	if slices.Contains(checkpoint.CompletedCheckpoints, deployCheckpointLegoCommandDeferred) {
+		t.Fatalf("CompletedCheckpoints = %v, want deferred checkpoint removed after successful rerun", checkpoint.CompletedCheckpoints)
+	}
+	if !slices.Contains(checkpoint.CompletedCheckpoints, deployCheckpointLegoCommandReady) {
+		t.Fatalf("CompletedCheckpoints = %v, want lego ready checkpoint", checkpoint.CompletedCheckpoints)
+	}
+}
+
+func TestExecute_DeployUsesSudoOnlyForPrivilegedHostMutationsAndDefersMissingLego(t *testing.T) {
 	baseDir := t.TempDir()
 	configPath := filepath.Join(baseDir, "meshify.yaml")
 	if err := config.WriteExampleFile(configPath); err != nil {
@@ -1594,9 +2683,18 @@ func TestExecute_DeployUsesSudoOnlyForPrivilegedHostMutationsAndDefersMissingCer
 				t.Fatalf("package mutation was not sudo-wrapped: %q", command.String())
 			}
 			return host.Result{Command: command}, nil
-		case "mkdir", "sh", "curl", "sha256sum", "ln", "nginx":
+		case "mkdir", "sh", "curl", "sha256sum", "tar", "chmod", "ln", "nginx":
 			if command.Name != "sudo" {
 				t.Fatalf("privileged mutation was not sudo-wrapped: %q", command.String())
+			}
+			return host.Result{Command: command}, nil
+		case "/opt/meshify/bin/lego":
+			if strings.Join(actual.Args, " ") == "--version" && command.Name != "sudo" {
+				result := host.Result{Command: command}
+				return result, &host.CommandError{Result: result, Err: exec.ErrNotFound}
+			}
+			if command.Name != "sudo" {
+				t.Fatalf("privileged lego command was not sudo-wrapped: %q", command.String())
 			}
 			return host.Result{Command: command}, nil
 		case "dpkg":
@@ -1604,18 +2702,6 @@ func TestExecute_DeployUsesSudoOnlyForPrivilegedHostMutationsAndDefersMissingCer
 				t.Fatalf("architecture probe was sudo-wrapped: %q", command.String())
 			}
 			return host.Result{Command: command, Stdout: "amd64\n"}, nil
-		case "certbot":
-			if strings.Join(actual.Args, " ") == "--version" {
-				if command.Name == "sudo" {
-					t.Fatalf("certbot probe was sudo-wrapped: %q", command.String())
-				}
-				result := host.Result{Command: command}
-				return result, &host.CommandError{Result: result, Err: exec.ErrNotFound}
-			}
-			if command.Name != "sudo" {
-				t.Fatalf("certificate mutation was not sudo-wrapped: %q", command.String())
-			}
-			return host.Result{Command: command}, nil
 		case "systemctl":
 			if command.Name != "sudo" {
 				t.Fatalf("systemd mutation was not sudo-wrapped: %q", command.String())
@@ -1646,28 +2732,31 @@ func TestExecute_DeployUsesSudoOnlyForPrivilegedHostMutationsAndDefersMissingCer
 	}
 
 	stdout, stderr, err := runCLI(t, "deploy", "--config", configPath)
-	if err != nil {
-		t.Fatalf("Execute() error = %v; stdout = %q", err, stdout)
+	if err == nil {
+		t.Fatal("Execute() error = nil, want deferred lego failure")
 	}
 	if stderr != "" {
 		t.Fatalf("stderr = %q, want empty", stderr)
 	}
-	if !strings.Contains(stdout, "warnings: certbot is not installed; certificate issuance and Nginx activation were deferred") {
-		t.Fatalf("stdout = %q, want certbot deferred warning", stdout)
+	if !strings.Contains(err.Error(), "check lego command failed") {
+		t.Fatalf("error = %q, want lego command failure", err.Error())
+	}
+	if !strings.Contains(stdout, "meshify deploy: check lego command failed") {
+		t.Fatalf("stdout = %q, want lego deferred failure", stdout)
 	}
 
 	checkpoint, err := state.NewStore(checkpointPath).Load()
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if !slices.Contains(checkpoint.CompletedCheckpoints, deployCheckpointCertbotCommandDeferred) {
-		t.Fatalf("CompletedCheckpoints = %v, want certbot deferred checkpoint", checkpoint.CompletedCheckpoints)
+	if !slices.Contains(checkpoint.CompletedCheckpoints, deployCheckpointLegoCommandDeferred) {
+		t.Fatalf("CompletedCheckpoints = %v, want lego deferred checkpoint", checkpoint.CompletedCheckpoints)
 	}
-	if !slices.Contains(checkpoint.CompletedCheckpoints, deployCheckpointSystemdDaemonReloaded) {
-		t.Fatalf("CompletedCheckpoints = %v, want successful systemd reload checkpoint", checkpoint.CompletedCheckpoints)
+	if slices.Contains(checkpoint.CompletedCheckpoints, deployCheckpointSystemdDaemonReloaded) {
+		t.Fatalf("CompletedCheckpoints = %v, do not want systemd checkpoint after deferred lego", checkpoint.CompletedCheckpoints)
 	}
-	if checkpoint.CurrentCheckpoint != "" {
-		t.Fatalf("CurrentCheckpoint = %q, want empty after successful deploy finalization", checkpoint.CurrentCheckpoint)
+	if checkpoint.CurrentCheckpoint != deployCheckpointLegoCommandDeferred {
+		t.Fatalf("CurrentCheckpoint = %q, want %q", checkpoint.CurrentCheckpoint, deployCheckpointLegoCommandDeferred)
 	}
 	if len(runner.commands) == 0 {
 		t.Fatal("commands = nil, want host commands")
@@ -1694,12 +2783,13 @@ func TestExecute_DeployUsesSudoOnlyForPrivilegedHostMutationsAndDefersMissingCer
 				t.Fatalf("architecture probe was sudo-wrapped: %q", command.String())
 			}
 			sawUnprivilegedProbe = true
-		case "certbot":
+		case "/opt/meshify/bin/lego":
 			if strings.Join(actual.Args, " ") == "--version" {
-				if command.Name == "sudo" {
-					t.Fatalf("certbot probe was sudo-wrapped: %q", command.String())
+				if command.Name != "sudo" {
+					sawUnprivilegedProbe = true
+					continue
 				}
-				sawUnprivilegedProbe = true
+				sawPrivilegedMutation = true
 				continue
 			}
 			if command.Name != "sudo" {
@@ -1752,6 +2842,8 @@ func TestExecute_DeployUsesConfiguredProxyForGoPreflightProbes(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Host == "packages.invalid" && r.URL.Path == "/headscale.deb":
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write(packageBody)
+		case r.Method == http.MethodHead && r.URL.Host == "github.com" && strings.Contains(r.URL.Path, "/go-acme/lego/releases/download/"):
+			w.WriteHeader(http.StatusOK)
 		case r.Method == http.MethodGet && r.URL.Host == "hs-proxy.invalid" && r.URL.Path == "/.well-known/acme-challenge/meshify-preflight":
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("ok"))
@@ -1829,8 +2921,18 @@ func TestExecute_DeployUsesConfiguredProxyForGoPreflightProbes(t *testing.T) {
 	}
 	detectPackageSourceStateFn = detectPackageSourceState
 	detectACMEStateFn = detectACMEState
-	probePackageURLFn = probePackageURL
-	hashRemoteArtifactFn = hashRemoteArtifact
+	probePackageURLFn = func(client *http.Client, rawURL string) (bool, bool, string) {
+		if strings.Contains(rawURL, "github.com/go-acme/lego") {
+			return true, true, rawURL + " returned 200."
+		}
+		return probePackageURL(client, rawURL)
+	}
+	hashRemoteArtifactFn = func(client *http.Client, rawURL string) (string, error) {
+		if sha, ok := testLegoArchiveHash(t, rawURL); ok {
+			return sha, nil
+		}
+		return hashRemoteArtifact(client, rawURL)
+	}
 	lookupOfficialPackageDigestFn = lookupOfficialPackageDigest
 	newDeployFileInstallerFn = func(_ host.Executor, _ host.PrivilegeStrategy) stagedFileInstaller {
 		return stubFileInstaller{}
@@ -1943,6 +3045,14 @@ func TestDeployProxyFuncHonorsStandardNoProxySemantics(t *testing.T) {
 				t.Fatalf("deployProxyFunc() = %q, want %q", got, tc.wantProxy)
 			}
 		})
+	}
+}
+
+func TestDeployProxyConfiguredTreatsNoProxyAsExplicitProxyConfiguration(t *testing.T) {
+	t.Parallel()
+
+	if !deployProxyConfigured(config.ProxyConfig{NoProxy: "packages.invalid"}) {
+		t.Fatal("deployProxyConfigured() = false, want true when no_proxy is configured")
 	}
 }
 
@@ -2380,18 +3490,15 @@ func TestExecute_DeployUsesSudoForPrivilegedHostMutations(t *testing.T) {
 				t.Fatalf("architecture probe was sudo-wrapped: %q", command.String())
 			}
 			return host.Result{Command: command, Stdout: "amd64\n"}, nil
-		case "certbot":
+		case "/opt/meshify/bin/lego":
 			if strings.Join(actual.Args, " ") == "--version" {
-				if command.Name == "sudo" {
-					t.Fatalf("certbot probe was sudo-wrapped: %q", command.String())
-				}
 				return host.Result{Command: command}, nil
 			}
 			if command.Name != "sudo" {
 				t.Fatalf("certificate mutation was not sudo-wrapped: %q", command.String())
 			}
 			return host.Result{Command: command}, nil
-		case "mkdir", "sh", "chmod", "curl", "sha256sum", "ln", "nginx", "systemctl":
+		case "mkdir", "sh", "chmod", "curl", "sha256sum", "tar", "ln", "nginx", "systemctl":
 			if command.Name != "sudo" {
 				t.Fatalf("privileged mutation was not sudo-wrapped: %q", command.String())
 			}
@@ -2782,6 +3889,17 @@ func (installer stubFileInstaller) Install(_ []render.StagedFile) ([]host.FileIn
 	return append([]host.FileInstallResult(nil), installer.results...), installer.err
 }
 
+func stagedFileByHostPath(t *testing.T, files []render.StagedFile, hostPath string) render.StagedFile {
+	t.Helper()
+	for _, file := range files {
+		if file.HostPath == hostPath {
+			return file
+		}
+	}
+	t.Fatalf("staged files = %#v, want host path %s", files, hostPath)
+	return render.StagedFile{}
+}
+
 func unwrapMaybeSudoHostCommand(command host.Command) host.Command {
 	if command.Name != "sudo" {
 		return command
@@ -2819,11 +3937,27 @@ func successfulDeployHostResult(command host.Command) (host.Result, error) {
 		default:
 			return host.Result{Command: command}, nil
 		}
-	case "apt-get", "mkdir", "sh", "curl", "sha256sum", "certbot", "ln", "nginx", "systemctl":
+	case "apt-get", "mkdir", "sh", "curl", "sha256sum", "tar", "chmod", "/opt/meshify/bin/lego", "ln", "nginx", "systemctl":
 		return host.Result{Command: command}, nil
 	default:
 		return host.Result{Command: command}, nil
 	}
+}
+
+func testLegoArchiveHash(t *testing.T, rawURL string) (string, bool) {
+	t.Helper()
+	if !strings.Contains(rawURL, "lego_") {
+		return "", false
+	}
+	arch := config.ArchAMD64
+	if strings.Contains(rawURL, "_arm64") {
+		arch = config.ArchARM64
+	}
+	sha, err := legocomponent.ArchiveSHA256(arch)
+	if err != nil {
+		t.Fatalf("ArchiveSHA256() error = %v", err)
+	}
+	return sha, true
 }
 
 type scriptedHostRunner struct {
@@ -2897,6 +4031,9 @@ func stubPassingDeployPreflight(t *testing.T) {
 		return true, true, rawURL + " returned 200."
 	}
 	hashRemoteArtifactFn = func(_ *http.Client, rawURL string) (string, error) {
+		if sha, ok := testLegoArchiveHash(t, rawURL); ok {
+			return sha, nil
+		}
 		return strings.Repeat("a", 64), nil
 	}
 	lookupOfficialPackageDigestFn = func(_ *http.Client, version string, arch string) (string, error) {
@@ -3025,12 +4162,15 @@ func TestExecute_DeployAndVerifyJSONInvalidConfig(t *testing.T) {
 	}
 }
 
-func TestExecute_VerifyIncludesFailedCheckDetails(t *testing.T) {
+func TestExecute_VerifyReportsInvalidConfigDetails(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "meshify.yaml")
-	cfg := config.ExampleConfig()
-	cfg.Default.ACMEChallenge = config.ACMEChallengeDNS01
-	cfg.Advanced.DNS01.Provider = "unsupported"
-	if err := cfg.WriteFile(configPath); err != nil {
+	data, err := config.ExampleYAML()
+	if err != nil {
+		t.Fatalf("ExampleYAML() error = %v", err)
+	}
+	raw := strings.Replace(string(data), `acme_challenge: "http-01"`, `acme_challenge: "dns-01"`, 1)
+	raw = strings.Replace(raw, `provider: ""`, `provider: "unsupported"`, 1)
+	if err := os.WriteFile(configPath, []byte(raw), 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
@@ -3041,11 +4181,11 @@ func TestExecute_VerifyIncludesFailedCheckDetails(t *testing.T) {
 	if stderr != "" {
 		t.Fatalf("stderr = %q, want empty", stderr)
 	}
-	if !strings.Contains(stdout, "meshify verify: 1 verification checks failed") {
-		t.Fatalf("stdout = %q, want failed verify summary", stdout)
+	if !strings.Contains(stdout, "meshify verify: config file exists but failed validation") {
+		t.Fatalf("stdout = %q, want invalid-config summary", stdout)
 	}
-	if !strings.Contains(stdout, "check certificate-plan: fail: unsupported DNS-01 provider \"unsupported\"") {
-		t.Fatalf("stdout = %q, want failed check detail", stdout)
+	if !strings.Contains(stdout, "unsupported DNS-01 provider \"unsupported\"") {
+		t.Fatalf("stdout = %q, want unsupported provider detail", stdout)
 	}
 
 	jsonStdout, jsonStderr, err := runCLI(t, "verify", "--config", configPath, "--format", "json")
@@ -3059,12 +4199,12 @@ func TestExecute_VerifyIncludesFailedCheckDetails(t *testing.T) {
 	if err := json.Unmarshal([]byte(jsonStdout), &response); err != nil {
 		t.Fatalf("json.Unmarshal() error = %v; stdout = %q", err, jsonStdout)
 	}
-	if response.Status != "failed" {
-		t.Fatalf("response.Status = %q, want failed", response.Status)
+	if response.Status != "invalid-config" {
+		t.Fatalf("response.Status = %q, want invalid-config", response.Status)
 	}
-	value, ok := fieldValue(response.Fields, "check certificate-plan")
+	value, ok := fieldValue(response.Fields, "details")
 	if !ok || !strings.Contains(value, "unsupported DNS-01 provider \"unsupported\"") {
-		t.Fatalf("check certificate-plan field = %q, %v; fields = %#v", value, ok, response.Fields)
+		t.Fatalf("details field = %q, %v; fields = %#v", value, ok, response.Fields)
 	}
 }
 

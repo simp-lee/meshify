@@ -27,7 +27,7 @@ func ParseOSRelease(content string) PlatformInfo {
 			continue
 		}
 		key = strings.TrimSpace(key)
-		value = strings.Trim(strings.TrimSpace(value), `"`)
+		value = parseOSReleaseValue(value)
 		switch key {
 		case "ID":
 			info.ID = value
@@ -38,6 +38,50 @@ func ParseOSRelease(content string) PlatformInfo {
 		}
 	}
 	return info
+}
+
+func parseOSReleaseValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+
+	if quote := value[0]; quote == '"' || quote == '\'' {
+		return parseQuotedOSReleaseValue(value[1:], quote)
+	}
+
+	return unescapeOSReleaseValue(value, 0)
+}
+
+func parseQuotedOSReleaseValue(value string, quote byte) string {
+	var builder strings.Builder
+	for index := 0; index < len(value); index++ {
+		character := value[index]
+		if character == quote {
+			return builder.String()
+		}
+		if quote == '"' && character == '\\' && index+1 < len(value) {
+			index++
+			builder.WriteByte(value[index])
+			continue
+		}
+		builder.WriteByte(character)
+	}
+	return builder.String()
+}
+
+func unescapeOSReleaseValue(value string, start int) string {
+	var builder strings.Builder
+	for index := start; index < len(value); index++ {
+		character := value[index]
+		if character == '\\' && index+1 < len(value) {
+			index++
+			builder.WriteByte(value[index])
+			continue
+		}
+		builder.WriteByte(character)
+	}
+	return builder.String()
 }
 
 func CheckPlatform(info PlatformInfo) CheckResult {

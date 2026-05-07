@@ -155,7 +155,7 @@ func TestRunInitCollectsAdvancedGuidedConfig(t *testing.T) {
 			"tailnet.example.com",
 			"ops@example.com",
 			"cloudflare",
-			"example.com",
+			"/etc/meshify/dns01/cloudflare.env",
 			config.DefaultHeadscaleVersion,
 			"https://mirror.example.com/headscale.deb",
 			strings.Repeat("a", 64),
@@ -187,6 +187,9 @@ func TestRunInitCollectsAdvancedGuidedConfig(t *testing.T) {
 	if result.Config.Advanced.DNS01.Provider != "cloudflare" {
 		t.Fatalf("DNS01.Provider = %q, want %q", result.Config.Advanced.DNS01.Provider, "cloudflare")
 	}
+	if result.Config.Advanced.DNS01.EnvFile != "/etc/meshify/dns01/cloudflare.env" {
+		t.Fatalf("DNS01.EnvFile = %q, want env path", result.Config.Advanced.DNS01.EnvFile)
+	}
 	if result.Config.Advanced.PackageSource.Mode != config.PackageSourceModeMirror {
 		t.Fatalf("PackageSource.Mode = %q, want %q", result.Config.Advanced.PackageSource.Mode, config.PackageSourceModeMirror)
 	}
@@ -205,7 +208,7 @@ func TestRunInitCollectsAdvancedGuidedConfig(t *testing.T) {
 		t.Fatalf("config source = %q, want %q", response.Fields[1].Value, "guided advanced")
 	}
 	assertContainsStep(t, response.NextSteps, "Review the generated advanced section before deploy")
-	assertContainsStep(t, response.NextSteps, "Provide DNS-01 provider credentials through the host environment")
+	assertContainsStep(t, response.NextSteps, "Prepare the root-only DNS-01 env file")
 	assertContainsStep(t, response.NextSteps, "meshify deploy --config meshify.yaml")
 	assertContainsStep(t, response.NextSteps, "meshify verify --config meshify.yaml")
 }

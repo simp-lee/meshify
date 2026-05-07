@@ -52,7 +52,11 @@ type ProxyConfig struct {
 
 type DNS01Config struct {
 	Provider string `yaml:"provider"`
-	Zone     string `yaml:"zone"`
+	EnvFile  string `yaml:"env_file"`
+
+	// Deprecated: retained only so in-memory legacy configs fail validation
+	// explicitly. YAML loading rejects credentials_file as an unknown field.
+	CredentialsFile string `yaml:"-"`
 }
 
 type NetworkConfig struct {

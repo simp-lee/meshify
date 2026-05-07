@@ -2,20 +2,26 @@ package tls
 
 import (
 	"fmt"
-	"meshify/internal/config"
-	"slices"
 	"strings"
+
+	"meshify/internal/acme"
+	legocomponent "meshify/internal/components/lego"
+	"meshify/internal/config"
 )
 
 const (
-	WebrootPath    = "/var/www/certbot"
-	DeployHookPath = "/etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh"
+	LegoBinaryPath = legocomponent.BinaryPath
+	LegoDataPath   = "/var/lib/meshify/lego"
+	WebrootPath    = "/var/lib/meshify/acme-challenges"
+	RunHookPath    = "/usr/local/lib/meshify/hooks/install-lego-cert-and-reload-nginx.sh"
+	RenewService   = "meshify-lego-renew.service"
+	RenewTimer     = "meshify-lego-renew.timer"
 )
 
 type ChallengePlan struct {
 	Challenge string
 	Provider  string
-	Zone      string
+	EnvFile   string
 	Webroot   string
 }
 
@@ -27,80 +33,46 @@ func NewChallengePlan(cfg config.Config) (ChallengePlan, error) {
 	case config.ACMEChallengeHTTP01:
 		return ChallengePlan{Challenge: config.ACMEChallengeHTTP01, Webroot: WebrootPath}, nil
 	case config.ACMEChallengeDNS01:
-		provider, err := CanonicalDNSProvider(cfg.Advanced.DNS01.Provider)
+		provider, err := acme.CanonicalDNSProvider(cfg.Advanced.DNS01.Provider)
 		if err != nil {
 			return ChallengePlan{}, err
 		}
 		return ChallengePlan{
 			Challenge: config.ACMEChallengeDNS01,
 			Provider:  provider,
-			Zone:      strings.TrimSpace(cfg.Advanced.DNS01.Zone),
+			EnvFile:   strings.TrimSpace(cfg.Advanced.DNS01.EnvFile),
 		}, nil
 	default:
 		return ChallengePlan{}, fmt.Errorf("unsupported ACME challenge %q", cfg.Default.ACMEChallenge)
 	}
 }
 
-type DNSProviderInfo struct {
-	Name   string
-	Plugin string
-	Alias  []string
+func StableTLSDir(serverName string) string {
+	return "/etc/meshify/tls/" + strings.TrimSpace(serverName)
 }
 
-var supportedDNSProviders = []DNSProviderInfo{
-	{Name: "cloudflare", Plugin: "dns-cloudflare", Alias: []string{"cloudflare", "dns-cloudflare"}},
-	{Name: "route53", Plugin: "dns-route53", Alias: []string{"route53", "aws", "dns-route53"}},
-	{Name: "digitalocean", Plugin: "dns-digitalocean", Alias: []string{"digitalocean", "do", "dns-digitalocean"}},
-	{Name: "google", Plugin: "dns-google", Alias: []string{"google", "gcloud", "gce", "dns-google"}},
-	{Name: "azure", Plugin: "dns-azure", Alias: []string{"azure", "dns-azure"}},
+func StableFullchainPath(serverName string) string {
+	return StableTLSDir(serverName) + "/fullchain.pem"
 }
+
+func StablePrivateKeyPath(serverName string) string {
+	return StableTLSDir(serverName) + "/privkey.pem"
+}
+
+type DNSProviderInfo = acme.DNSProviderInfo
 
 func SupportedDNSProviders() []DNSProviderInfo {
-	providers := make([]DNSProviderInfo, 0, len(supportedDNSProviders))
-	for _, provider := range supportedDNSProviders {
-		provider.Alias = append([]string(nil), provider.Alias...)
-		providers = append(providers, provider)
-	}
-	return providers
+	return acme.SupportedDNSProviders()
+}
+
+func SupportedDNSProviderNames() string {
+	return acme.SupportedDNSProviderNames()
 }
 
 func CanonicalDNSProvider(provider string) (string, error) {
-	normalized := normalizeProviderAlias(provider)
-	if normalized == "" {
-		return "", fmt.Errorf("DNS-01 provider is required")
-	}
-	for _, supported := range supportedDNSProviders {
-		if slices.Contains(supported.Alias, normalized) {
-			return supported.Name, nil
-		}
-	}
-	return "", fmt.Errorf("unsupported DNS-01 provider %q; supported providers: %s", strings.TrimSpace(provider), supportedDNSProviderNames())
+	return acme.CanonicalDNSProvider(provider)
 }
 
-func DNSPluginName(provider string) (string, error) {
-	canonical, err := CanonicalDNSProvider(provider)
-	if err != nil {
-		return "", err
-	}
-	for _, supported := range supportedDNSProviders {
-		if supported.Name == canonical {
-			return supported.Plugin, nil
-		}
-	}
-	return "", fmt.Errorf("unsupported DNS-01 provider %q; supported providers: %s", strings.TrimSpace(provider), supportedDNSProviderNames())
-}
-
-func normalizeProviderAlias(provider string) string {
-	provider = strings.ToLower(strings.TrimSpace(provider))
-	provider = strings.ReplaceAll(provider, "_", "-")
-	provider = strings.Join(strings.Fields(provider), "-")
-	return provider
-}
-
-func supportedDNSProviderNames() string {
-	names := make([]string, 0, len(supportedDNSProviders))
-	for _, supported := range supportedDNSProviders {
-		names = append(names, supported.Name)
-	}
-	return strings.Join(names, ", ")
+func DNSProvider(provider string) (DNSProviderInfo, error) {
+	return acme.DNSProvider(provider)
 }

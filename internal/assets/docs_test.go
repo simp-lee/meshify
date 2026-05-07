@@ -75,6 +75,7 @@ func TestRootReadmePointsToPrimaryDocs(t *testing.T) {
 		"meshify verify --config meshify.yaml",
 		"meshify status --config meshify.yaml",
 		"Debian 13, Ubuntu 24.04 LTS",
+		"pinned lego v4.35.2",
 		"deploy/docs/quickstart.md",
 		"deploy/docs/onboarding.md",
 		"deploy/docs/troubleshooting.md",
@@ -112,6 +113,16 @@ func TestClientGuidesAreSelfContained(t *testing.T) {
 				t.Fatalf("%s missing client walkthrough detail %q", path, want)
 			}
 		}
+		if strings.Contains(content, "tskey-example") {
+			t.Fatalf("%s contains Tailscale.com-style auth key placeholder", path)
+		}
+		dailySection := content
+		if _, section, ok := strings.Cut(content, "## Daily Operations"); ok {
+			dailySection = section
+		}
+		if strings.Contains(dailySection, "--auth-key") {
+			t.Fatalf("%s daily operations must not suggest reusing a preauth key", path)
+		}
 	}
 }
 
@@ -135,9 +146,22 @@ func TestE2EReleaseGateDocumentsNginxDefaultServerIsolation(t *testing.T) {
 
 	content := readRepoDoc(t, "test", "e2e", "README.md")
 	for _, want := range []string{
-		"configured Nginx `server_name` block uses `fullchain.pem` and does not use `default_server`",
-		"`_` catch-all default server blocks return `444` on HTTP and `421` on HTTPS",
-		"do not proxy to Headscale",
+		"configured Nginx `server_name` blocks use `fullchain.pem`",
+		"explicit HTTP/HTTPS `default_server` catch-all blocks use empty `server_name \"\"`",
+		"return `444` on HTTP and `421` on HTTPS",
+		"never proxy unmatched Host/SNI traffic to Headscale",
+		"HTTP-01 issuance succeeds on a public host",
+		"/var/lib/meshify/acme-challenges",
+		"DNS-01 issuance succeeds on at least one supported lego provider",
+		"Cloudflare or DigitalOcean",
+		"Route53 or gcloud",
+		"lego's ambient credential chain",
+		"Raw DNS tokens or keys live in separate root-only files referenced by lego `_FILE` variables",
+		"`meshify-lego-renew.timer` is enabled and active",
+		"/opt/meshify/bin/lego --version",
+		"v4.35.2",
+		"/etc/meshify/tls/<server>/fullchain.pem",
+		"/etc/meshify/tls/<server>/privkey.pem",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("E2E README missing Nginx default-server release gate %q", want)
@@ -145,6 +169,9 @@ func TestE2EReleaseGateDocumentsNginxDefaultServerIsolation(t *testing.T) {
 	}
 	if strings.Contains(content, "Nginx owns the configured `server_name`, uses `fullchain.pem`, and does not become a `default_server`") {
 		t.Fatal("E2E README contains stale default_server wording")
+	}
+	if strings.Contains(content, "coexistence with other sites depends on the host's existing default server ordering") {
+		t.Fatal("E2E README contains stale default-server ordering caveat")
 	}
 }
 

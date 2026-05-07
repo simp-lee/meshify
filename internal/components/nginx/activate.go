@@ -19,6 +19,10 @@ func EnsureSiteEnabledCommand() host.Command {
 	return host.Command{Name: "ln", Args: []string{"-sfn", SiteAvailablePath, SiteEnabledPath}}
 }
 
+func DisableDefaultSiteCommand() host.Command {
+	return disableDefaultSiteCommand(DefaultSiteEnabledPath, DefaultSiteAvailablePath)
+}
+
 func TestConfigCommand() host.Command {
 	return host.Command{Name: "nginx", Args: []string{"-t"}}
 }
@@ -33,6 +37,7 @@ func FallbackReloadCommand() host.Command {
 
 func (activator Activator) EnableTestAndReload(ctx context.Context) ([]host.Result, error) {
 	commands := []host.Command{
+		DisableDefaultSiteCommand(),
 		EnsureSiteEnabledCommand(),
 		TestConfigCommand(),
 	}
@@ -59,6 +64,41 @@ func (activator Activator) EnableTestAndReload(ctx context.Context) ([]host.Resu
 		return results, fmt.Errorf("systemctl reload nginx.service failed: %w; fallback nginx -s reload failed: %v", err, fallbackErr)
 	}
 	return results, nil
+}
+
+func disableDefaultSiteCommand(enabledPath string, availablePath string) host.Command {
+	script := `set -eu
+enabled=$1
+default_target=$2
+if [ ! -e "$enabled" ] && [ ! -L "$enabled" ]; then
+    exit 0
+fi
+if [ ! -L "$enabled" ]; then
+    echo "$enabled exists but is not a symlink; remove or migrate it before enabling meshify's default_server site" >&2
+    exit 64
+fi
+target=$(readlink -- "$enabled")
+case "$target" in
+    "$default_target"|../sites-available/default)
+        rm -f -- "$enabled"
+        ;;
+    *)
+        resolved=$(readlink -f -- "$enabled" 2>/dev/null || true)
+        resolved_default=$(readlink -f -- "$default_target" 2>/dev/null || true)
+        if [ -n "$resolved" ] && [ -n "$resolved_default" ] && [ "$resolved" = "$resolved_default" ]; then
+            rm -f -- "$enabled"
+        else
+            echo "$enabled points to $target; remove or migrate it before enabling meshify's default_server site" >&2
+            exit 64
+        fi
+        ;;
+esac`
+	return host.Command{
+		Name:        "sh",
+		Args:        []string{"-c", script, "meshify-disable-nginx-default-site", strings.TrimSpace(enabledPath), strings.TrimSpace(availablePath)},
+		DisplayName: "disable-nginx-default-site",
+		DisplayArgs: []string{strings.TrimSpace(enabledPath)},
+	}
 }
 
 func reloadFallbackAllowed(result host.Result, err error) bool {

@@ -1,9 +1,10 @@
 package preflight
 
 import (
-	"meshify/internal/config"
 	"strings"
 	"testing"
+
+	"meshify/internal/config"
 )
 
 func TestBuildReportDoesNotBlockOnAdvisoryManualChecklist(t *testing.T) {
@@ -21,13 +22,20 @@ func TestBuildReportDoesNotBlockOnAdvisoryManualChecklist(t *testing.T) {
 		Firewall: FirewallState{Inspected: true, Active: true, AllowedPorts: []string{"80/tcp", "443/tcp", "3478/udp"}},
 		Services: []ServiceState{},
 		PackageSource: PackageSourceState{
-			Mode:                config.PackageSourceModeDirect,
-			Version:             config.DefaultHeadscaleVersion,
-			ExpectedSHA256:      strings.Repeat("a", 64),
-			ReachabilityChecked: true,
-			Reachable:           true,
-			IntegrityChecked:    true,
-			ActualSHA256:        strings.Repeat("a", 64),
+			Mode:                    config.PackageSourceModeDirect,
+			Version:                 config.DefaultHeadscaleVersion,
+			ExpectedSHA256:          strings.Repeat("a", 64),
+			ReachabilityChecked:     true,
+			Reachable:               true,
+			IntegrityChecked:        true,
+			ActualSHA256:            strings.Repeat("a", 64),
+			LegoVersion:             "v4.35.2",
+			LegoURL:                 "https://github.com/go-acme/lego/releases/download/v4.35.2/lego_v4.35.2_linux_amd64.tar.gz",
+			LegoExpectedSHA256:      strings.Repeat("b", 64),
+			LegoReachabilityChecked: true,
+			LegoReachable:           true,
+			LegoIntegrityChecked:    true,
+			LegoActualSHA256:        strings.Repeat("b", 64),
 		},
 		ACME: ACMEState{HTTP01Checked: true, HTTP01Ready: true},
 	})
@@ -44,4 +52,53 @@ func TestBuildReportDoesNotBlockOnAdvisoryManualChecklist(t *testing.T) {
 	if report.Summary() != "all checks passed" {
 		t.Fatalf("BuildReport() summary = %q, want %q", report.Summary(), "all checks passed")
 	}
+}
+
+func TestBuildReportAllowsDigitalOceanDNS01OnDebian13(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.ExampleConfig()
+	cfg.Default.ACMEChallenge = config.ACMEChallengeDNS01
+	cfg.Advanced.DNS01.Provider = "digitalocean"
+	cfg.Advanced.DNS01.EnvFile = "/etc/meshify/dns01/digitalocean.env"
+
+	report := BuildReport(cfg, Inputs{
+		Permissions: PermissionState{User: "deployer", SudoWorks: true},
+		Platform:    PlatformInfo{ID: "debian", VersionID: "13", PrettyName: "Debian GNU/Linux 13"},
+		DNS:         DNSProbe{Host: "hs.example.com", ResolvedIPs: []string{"8.8.8.8"}},
+		Ports: []PortBinding{
+			{Port: 80, Protocol: "tcp", InUse: false},
+			{Port: 443, Protocol: "tcp", InUse: false},
+			{Port: 3478, Protocol: "udp", InUse: false},
+		},
+		Firewall: FirewallState{Inspected: true, Active: true, AllowedPorts: []string{"80/tcp", "443/tcp", "3478/udp"}},
+		Services: []ServiceState{},
+		PackageSource: PackageSourceState{
+			Mode:                    config.PackageSourceModeDirect,
+			Version:                 config.DefaultHeadscaleVersion,
+			ExpectedSHA256:          strings.Repeat("a", 64),
+			ReachabilityChecked:     true,
+			Reachable:               true,
+			IntegrityChecked:        true,
+			ActualSHA256:            strings.Repeat("a", 64),
+			LegoVersion:             "v4.35.2",
+			LegoURL:                 "https://github.com/go-acme/lego/releases/download/v4.35.2/lego_v4.35.2_linux_amd64.tar.gz",
+			LegoExpectedSHA256:      strings.Repeat("b", 64),
+			LegoReachabilityChecked: true,
+			LegoReachable:           true,
+			LegoIntegrityChecked:    true,
+			LegoActualSHA256:        strings.Repeat("b", 64),
+		},
+		ACME: ACMEState{DNSCredentialsChecked: true, DNSCredentialsReady: true},
+	})
+
+	if report.OverallStatus() != StatusPass {
+		t.Fatalf("BuildReport() overall status = %q, want %q", report.OverallStatus(), StatusPass)
+	}
+	for _, check := range report.Checks {
+		if check.ID == "acme" && check.Status == StatusPass && strings.Contains(strings.Join(check.Findings, "\n"), "DNS-01 env file") {
+			return
+		}
+	}
+	t.Fatalf("BuildReport() checks = %#v, want passing acme check with env file finding", report.Checks)
 }

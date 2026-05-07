@@ -23,8 +23,8 @@ func TestRuntimeCatalogCarriesHostMetadata(t *testing.T) {
 	t.Parallel()
 
 	runtimeAssets := RuntimeCatalog()
-	if len(runtimeAssets) != 4 {
-		t.Fatalf("len(RuntimeCatalog()) = %d, want 4", len(runtimeAssets))
+	if len(runtimeAssets) != 6 {
+		t.Fatalf("len(RuntimeCatalog()) = %d, want 6", len(runtimeAssets))
 	}
 
 	byPath := make(map[string]Asset, len(runtimeAssets))
@@ -43,7 +43,7 @@ func TestRuntimeCatalogCarriesHostMetadata(t *testing.T) {
 			sourcePath:  "templates/etc/headscale/config.yaml.tmpl",
 			contentMode: ContentModeRender,
 			hostPath:    "/etc/headscale/config.yaml",
-			mode:        0o600,
+			mode:        0o644,
 			activations: []Activation{ActivationRestartHeadscale},
 		},
 		{
@@ -61,10 +61,24 @@ func TestRuntimeCatalogCarriesHostMetadata(t *testing.T) {
 			activations: []Activation{ActivationReloadNginx},
 		},
 		{
-			sourcePath:  "templates/etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh",
+			sourcePath:  "templates/usr/local/lib/meshify/hooks/install-lego-cert-and-reload-nginx.sh",
 			contentMode: ContentModeCopy,
-			hostPath:    "/etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh",
+			hostPath:    "/usr/local/lib/meshify/hooks/install-lego-cert-and-reload-nginx.sh",
 			mode:        0o755,
+			activations: nil,
+		},
+		{
+			sourcePath:  "templates/etc/systemd/system/meshify-lego-renew.service.tmpl",
+			contentMode: ContentModeRender,
+			hostPath:    "/etc/systemd/system/meshify-lego-renew.service",
+			mode:        0o644,
+			activations: nil,
+		},
+		{
+			sourcePath:  "templates/etc/systemd/system/meshify-lego-renew.timer",
+			contentMode: ContentModeCopy,
+			hostPath:    "/etc/systemd/system/meshify-lego-renew.timer",
+			mode:        0o644,
 			activations: nil,
 		},
 	}

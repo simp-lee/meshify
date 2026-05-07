@@ -2,15 +2,21 @@ package preflight
 
 import (
 	"fmt"
-	"meshify/internal/config"
 	"strings"
+
+	acmecatalog "meshify/internal/acme"
+	"meshify/internal/config"
 )
 
 type ACMEState struct {
 	Challenge             string `json:"challenge,omitempty"`
 	ServerHost            string `json:"server_host,omitempty"`
 	CertificateEmail      string `json:"certificate_email,omitempty"`
+	PlatformID            string `json:"platform_id,omitempty"`
+	PlatformVersion       string `json:"platform_version,omitempty"`
 	DNSProvider           string `json:"dns_provider,omitempty"`
+	DNSCredentialsFile    string `json:"dns_credentials_file,omitempty"`
+	DNSCredentialEnvFile  string `json:"dns_credential_env_file,omitempty"`
 	HTTP01Checked         bool   `json:"http01_checked"`
 	HTTP01Ready           bool   `json:"http01_ready"`
 	HTTP01Detail          string `json:"http01_detail,omitempty"`
@@ -55,7 +61,7 @@ func CheckACMEPrerequisites(state ACMEState) CheckResult {
 				SeverityWarning,
 				"HTTP-01 challenge routing was not reachable before deploy; meshify will verify it after Nginx is installed.",
 				findings,
-				[]string{"If certbot later fails, confirm public port 80 reaches the meshify-managed Nginx challenge path."},
+				[]string{"If lego later fails, confirm public port 80 reaches the meshify-managed Nginx challenge path."},
 			)
 		}
 		if detail := strings.TrimSpace(state.HTTP01Detail); detail != "" {
@@ -76,6 +82,22 @@ func CheckACMEPrerequisites(state ACMEState) CheckResult {
 			)
 		}
 		findings = append(findings, fmt.Sprintf("DNS-01 provider: %s.", provider))
+		if envFile := strings.TrimSpace(state.DNSCredentialEnvFile); envFile != "" {
+			findings = append(findings, fmt.Sprintf("DNS-01 env file: %s.", envFile))
+		} else if credentialsFile := strings.TrimSpace(state.DNSCredentialsFile); credentialsFile != "" {
+			findings = append(findings, fmt.Sprintf("DNS-01 env file: %s.", credentialsFile))
+		}
+		if _, err := acmecatalog.DNSProvider(provider); err != nil {
+			return newCheckResult(
+				"acme",
+				"ACME prerequisites",
+				StatusFail,
+				SeverityError,
+				"DNS-01 provider is not supported by meshify.",
+				findings,
+				[]string{"Use one of the supported DNS-01 providers for the selected server platform."},
+			)
+		}
 		if !state.DNSCredentialsChecked {
 			if detail := strings.TrimSpace(state.DNSCredentialsDetail); detail != "" {
 				findings = append(findings, fmt.Sprintf("DNS-01 detail: %s.", detail))
@@ -87,7 +109,7 @@ func CheckACMEPrerequisites(state ACMEState) CheckResult {
 				SeverityError,
 				"DNS-01 credentials could not be confirmed automatically.",
 				findings,
-				[]string{"Expose valid DNS-01 provider credentials in the host environment until meshify can detect them before deploy."},
+				[]string{"Prepare the selected provider credentials through a root-only lego env file or a supported ambient credential chain before deploy."},
 			)
 		}
 		if !state.DNSCredentialsReady {
@@ -99,9 +121,9 @@ func CheckACMEPrerequisites(state ACMEState) CheckResult {
 				"ACME prerequisites",
 				StatusFail,
 				SeverityError,
-				"DNS-01 credentials are not ready for certificate issuance.",
+				"DNS-01 credentials are not ready for certificate issuance or renewal.",
 				findings,
-				[]string{"Fix the DNS-01 provider credentials in the host environment before deploy."},
+				[]string{"Fix the DNS-01 provider env file or ambient credentials before deploy."},
 			)
 		}
 		return newCheckResult("acme", "ACME prerequisites", StatusPass, SeverityInfo, "DNS-01 prerequisites look ready for certificate issuance.", findings, nil)

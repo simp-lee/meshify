@@ -431,7 +431,7 @@ func BuildManualChecklists(cfg config.Config) []ManualChecklist {
 
 	switch cfg.Default.ACMEChallenge {
 	case config.ACMEChallengeDNS01:
-		items = append(items, "Confirm DNS-01 provider credentials are present in the host environment before deploy.")
+		items = append(items, "Confirm the DNS-01 provider env file is root-only and ready before deploy.")
 	default:
 		items = append(items, "Confirm HTTP-01 challenge traffic can reach Nginx on 80/tcp without a CDN or upstream proxy blocking /.well-known/acme-challenge/.")
 	}

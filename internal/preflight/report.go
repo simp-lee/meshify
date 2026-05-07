@@ -3,9 +3,10 @@ package preflight
 
 import (
 	"fmt"
-	"meshify/internal/config"
 	"net/url"
 	"strings"
+
+	"meshify/internal/config"
 )
 
 type Status string
@@ -96,8 +97,20 @@ func BuildReport(cfg config.Config, inputs Inputs) Report {
 	if strings.TrimSpace(acme.CertificateEmail) == "" {
 		acme.CertificateEmail = cfg.Default.CertificateEmail
 	}
+	if strings.TrimSpace(acme.PlatformID) == "" {
+		acme.PlatformID = inputs.Platform.ID
+	}
+	if strings.TrimSpace(acme.PlatformVersion) == "" {
+		acme.PlatformVersion = inputs.Platform.VersionID
+	}
 	if strings.TrimSpace(acme.DNSProvider) == "" {
 		acme.DNSProvider = cfg.Advanced.DNS01.Provider
+	}
+	if strings.TrimSpace(acme.DNSCredentialsFile) == "" {
+		acme.DNSCredentialsFile = cfg.Advanced.DNS01.CredentialsFile
+	}
+	if strings.TrimSpace(acme.DNSCredentialEnvFile) == "" {
+		acme.DNSCredentialEnvFile = cfg.Advanced.DNS01.EnvFile
 	}
 
 	return Report{

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/url"
 	"os"
 	"os/exec"
 	"sort"
@@ -112,10 +113,6 @@ func (executor Executor) Dpkg(ctx context.Context, args ...string) (Result, erro
 
 func (executor Executor) Systemctl(ctx context.Context, args ...string) (Result, error) {
 	return executor.Run(ctx, Command{Name: "systemctl", Args: append([]string(nil), args...)})
-}
-
-func (executor Executor) Certbot(ctx context.Context, args ...string) (Result, error) {
-	return executor.Run(ctx, Command{Name: "certbot", Args: append([]string(nil), args...)})
 }
 
 type OSRunner struct{}
@@ -240,8 +237,8 @@ func hasAnyCommandName(values []string, candidates []string) bool {
 
 func ProxyEnv(httpProxy string, httpsProxy string, noProxy string) map[string]string {
 	env := map[string]string{}
-	setProxyEnv(env, "http_proxy", httpProxy)
-	setProxyEnv(env, "https_proxy", httpsProxy)
+	setProxyEnv(env, "http_proxy", normalizeProxyURLForExternalCommands(httpProxy))
+	setProxyEnv(env, "https_proxy", normalizeProxyURLForExternalCommands(httpsProxy))
 	setProxyEnv(env, "no_proxy", noProxy)
 	if len(env) == 0 {
 		return nil
@@ -256,6 +253,22 @@ func setProxyEnv(env map[string]string, key string, value string) {
 	}
 	env[key] = trimmed
 	env[strings.ToUpper(key)] = trimmed
+}
+
+func normalizeProxyURLForExternalCommands(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return ""
+	}
+
+	parsedURL, err := url.Parse(trimmed)
+	if err == nil && parsedURL.Scheme != "" && parsedURL.Host != "" {
+		return trimmed
+	}
+
+	// Go's httpproxy accepts host[:port], but apt and curl expect proxy env
+	// values to be explicit URLs.
+	return "http://" + trimmed
 }
 
 func buildEnvironment(extra map[string]string) []string {

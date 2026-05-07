@@ -50,7 +50,7 @@ func (systemd Systemd) IsActive(ctx context.Context, unit string) (bool, error) 
 	result, err := systemd.executor.Systemctl(ctx, "is-active", unit)
 	state := strings.TrimSpace(result.Stdout)
 	if err == nil {
-		return state == "active", nil
+		return true, nil
 	}
 
 	var commandErr *CommandError
@@ -65,7 +65,7 @@ func (systemd Systemd) IsActive(ctx context.Context, unit string) (bool, error) 
 			state = strings.TrimSpace(commandErr.Result.Stderr)
 		}
 		switch state {
-		case "inactive", "failed", "unknown", "deactivating":
+		case "inactive", "failed", "unknown", "activating", "deactivating", "maintenance":
 			return false, nil
 		}
 	}

@@ -2,9 +2,11 @@ package headscale
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"meshify/internal/host"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -31,6 +33,11 @@ type OnboardingPlan struct {
 type User struct {
 	ID   string
 	Name string
+}
+
+type cliUser struct {
+	ID   uint64 `json:"id"`
+	Name string `json:"name"`
 }
 
 type Onboarding struct {
@@ -77,7 +84,7 @@ func CreateUserCommand(userName string) host.Command {
 }
 
 func ListUsersCommand() host.Command {
-	return HeadscaleCommand("users", "list")
+	return HeadscaleCommand("users", "list", "--output", "json")
 }
 
 func CreatePreAuthKeyCommand(userID string, plan OnboardingPlan) host.Command {
@@ -120,16 +127,68 @@ func (onboarding Onboarding) CreatePreAuthKey(ctx context.Context, plan Onboardi
 
 func FindUserID(output string, userName string) (string, error) {
 	userName = strings.TrimSpace(userName)
+	matches := []User{}
 	for _, user := range ParseUsers(output) {
 		if user.Name == userName {
-			return user.ID, nil
+			matches = append(matches, user)
 		}
+	}
+	if len(matches) > 1 {
+		ids := make([]string, 0, len(matches))
+		for _, user := range matches {
+			ids = append(ids, user.ID)
+		}
+		return "", fmt.Errorf("headscale user %q matched multiple user IDs: %s", userName, strings.Join(ids, ", "))
+	}
+	if len(matches) == 1 {
+		return matches[0].ID, nil
 	}
 	return "", fmt.Errorf("headscale user %q was not found in users list output", userName)
 }
 
 func ParseUsers(output string) []User {
+	if users, ok := parseUsersJSON(output); ok {
+		return users
+	}
+	return parseUsersTable(output)
+}
+
+func parseUsersJSON(output string) ([]User, bool) {
+	output = strings.TrimSpace(output)
+	if output == "" {
+		return nil, false
+	}
+
+	var users []cliUser
+	if err := json.Unmarshal([]byte(output), &users); err == nil {
+		return convertCLIUsers(users), true
+	}
+
+	var wrapped struct {
+		Users []cliUser `json:"users"`
+	}
+	if err := json.Unmarshal([]byte(output), &wrapped); err == nil && wrapped.Users != nil {
+		return convertCLIUsers(wrapped.Users), true
+	}
+
+	return nil, false
+}
+
+func convertCLIUsers(cliUsers []cliUser) []User {
+	users := make([]User, 0, len(cliUsers))
+	for _, user := range cliUsers {
+		name := strings.TrimSpace(user.Name)
+		if user.ID == 0 || name == "" {
+			continue
+		}
+		users = append(users, User{ID: strconv.FormatUint(user.ID, 10), Name: name})
+	}
+	return users
+}
+
+func parseUsersTable(output string) []User {
 	users := []User{}
+	nameColumn := 1
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -140,32 +199,68 @@ func ParseUsers(output string) []User {
 		if len(fields) < 2 {
 			continue
 		}
-		if strings.EqualFold(fields[0], "id") && strings.EqualFold(fields[1], "name") {
+		if column, ok := userNameColumn(fields); ok {
+			nameColumn = column
 			continue
 		}
-		if !looksNumeric(fields[0]) {
+		if !looksNumeric(fields[0]) || nameColumn >= len(fields) {
 			continue
 		}
-		users = append(users, User{ID: fields[0], Name: fields[1]})
+		name := strings.TrimSpace(fields[nameColumn])
+		if name == "" {
+			continue
+		}
+		users = append(users, User{ID: fields[0], Name: name})
 	}
 	return users
 }
 
 func splitTableLine(line string) []string {
-	rawFields := strings.FieldsFunc(line, func(r rune) bool {
-		return r == '|' || r == '\t'
-	})
-	fields := make([]string, 0, len(rawFields))
-	for _, field := range rawFields {
-		field = strings.TrimSpace(field)
-		if field != "" {
+	if strings.Contains(line, "|") {
+		rawFields := strings.Split(line, "|")
+		fields := make([]string, 0, len(rawFields))
+		for index, field := range rawFields {
+			field = strings.TrimSpace(field)
+			if field == "" && (index == 0 || index == len(rawFields)-1) {
+				continue
+			}
 			fields = append(fields, field)
 		}
-	}
-	if len(fields) > 1 {
 		return fields
 	}
+
+	if strings.Contains(line, "\t") {
+		rawFields := strings.Split(line, "\t")
+		fields := make([]string, 0, len(rawFields))
+		for _, field := range rawFields {
+			fields = append(fields, strings.TrimSpace(field))
+		}
+		return fields
+	}
+
 	return strings.Fields(line)
+}
+
+func userNameColumn(fields []string) (int, bool) {
+	if len(fields) == 0 || !strings.EqualFold(strings.TrimSpace(fields[0]), "id") {
+		return 0, false
+	}
+
+	nameColumn := -1
+	for index, field := range fields {
+		switch strings.ToLower(strings.TrimSpace(field)) {
+		case "username":
+			return index, true
+		case "name":
+			if nameColumn == -1 {
+				nameColumn = index
+			}
+		}
+	}
+	if nameColumn == -1 {
+		return 0, false
+	}
+	return nameColumn, true
 }
 
 func commandLooksLikeExistingUser(result host.Result, err error) bool {

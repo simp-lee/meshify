@@ -53,7 +53,7 @@ var catalog = []Asset{
 		Role:        RoleRuntime,
 		ContentMode: ContentModeRender,
 		HostPath:    "/etc/headscale/config.yaml",
-		Mode:        0o600,
+		Mode:        0o644,
 		Activations: []Activation{ActivationRestartHeadscale},
 	},
 	{
@@ -65,11 +65,25 @@ var catalog = []Asset{
 		Activations: []Activation{ActivationRestartHeadscale},
 	},
 	{
-		SourcePath:  "templates/etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh",
+		SourcePath:  "templates/usr/local/lib/meshify/hooks/install-lego-cert-and-reload-nginx.sh",
 		Role:        RoleRuntime,
 		ContentMode: ContentModeCopy,
-		HostPath:    "/etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh",
+		HostPath:    "/usr/local/lib/meshify/hooks/install-lego-cert-and-reload-nginx.sh",
 		Mode:        0o755,
+	},
+	{
+		SourcePath:  "templates/etc/systemd/system/meshify-lego-renew.service.tmpl",
+		Role:        RoleRuntime,
+		ContentMode: ContentModeRender,
+		HostPath:    "/etc/systemd/system/meshify-lego-renew.service",
+		Mode:        0o644,
+	},
+	{
+		SourcePath:  "templates/etc/systemd/system/meshify-lego-renew.timer",
+		Role:        RoleRuntime,
+		ContentMode: ContentModeCopy,
+		HostPath:    "/etc/systemd/system/meshify-lego-renew.timer",
+		Mode:        0o644,
 	},
 	{
 		SourcePath:  "templates/etc/nginx/sites-available/headscale.conf.tmpl",

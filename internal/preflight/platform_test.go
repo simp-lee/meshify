@@ -2,6 +2,26 @@ package preflight
 
 import "testing"
 
+func TestParseOSReleaseSupportsOfficialQuotingAndEscapes(t *testing.T) {
+	t.Parallel()
+
+	info := ParseOSRelease(`
+ID='debian'
+VERSION_ID="13"
+PRETTY_NAME="Debian GNU/Linux 13 \"trixie\""
+`)
+
+	if info.ID != "debian" {
+		t.Fatalf("ID = %q, want debian", info.ID)
+	}
+	if info.VersionID != "13" {
+		t.Fatalf("VersionID = %q, want 13", info.VersionID)
+	}
+	if info.PrettyName != `Debian GNU/Linux 13 "trixie"` {
+		t.Fatalf("PrettyName = %q", info.PrettyName)
+	}
+}
+
 func TestCheckPlatformSupportsLaunchMatrix(t *testing.T) {
 	t.Parallel()
 

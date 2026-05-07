@@ -32,6 +32,21 @@ func TestValidateRuntimeConfigAcceptsRenderedTemplateGuardrails(t *testing.T) {
 	}
 }
 
+func TestParseRuntimeConfigRejectsMultipleYAMLDocuments(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	content := string(renderHeadscaleConfig(t, cfg)) + "\n---\nserver_url: https://shadow.example.com\n"
+
+	_, err := ParseRuntimeConfig([]byte(content))
+	if err == nil {
+		t.Fatal("ParseRuntimeConfig() error = nil, want multiple document failure")
+	}
+	if !strings.Contains(err.Error(), "exactly one YAML document") {
+		t.Fatalf("error = %q, want single document failure", err.Error())
+	}
+}
+
 func TestValidateRuntimeConfigRejectsPublicControlPlaneListeners(t *testing.T) {
 	t.Parallel()
 

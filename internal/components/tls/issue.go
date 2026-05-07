@@ -2,10 +2,11 @@ package tls
 
 import (
 	"fmt"
-	"meshify/internal/config"
-	"meshify/internal/host"
 	"net/url"
 	"strings"
+
+	"meshify/internal/config"
+	"meshify/internal/host"
 )
 
 type CertificatePlan struct {
@@ -32,40 +33,39 @@ func NewCertificatePlan(cfg config.Config) (CertificatePlan, error) {
 	}
 	email := strings.TrimSpace(cfg.Default.CertificateEmail)
 	args := []string{
-		"certonly",
-		"--non-interactive",
-		"--agree-tos",
+		"--path", LegoDataPath,
 		"--email", email,
-		"--cert-name", serverName,
-		"-d", serverName,
-		"--deploy-hook", DeployHookPath,
+		"--domains", serverName,
+		"--accept-tos",
 	}
 	switch challenge.Challenge {
 	case config.ACMEChallengeHTTP01:
-		args = append(args, "--webroot", "--webroot-path", challenge.Webroot)
+		args = append(args, "--http", "--http.webroot", challenge.Webroot)
 	case config.ACMEChallengeDNS01:
-		pluginName, err := DNSPluginName(challenge.Provider)
-		if err != nil {
-			return CertificatePlan{}, err
-		}
-		args = append(args, "--authenticator", pluginName, "--preferred-challenges", "dns")
+		args = append(args, "--dns", challenge.Provider)
 	default:
 		return CertificatePlan{}, fmt.Errorf("unsupported ACME challenge %q", challenge.Challenge)
+	}
+	args = append(args, "run", "--run-hook", RunHookPath)
+
+	command := host.Command{Name: LegoBinaryPath, Args: args}
+	if challenge.Challenge == config.ACMEChallengeDNS01 && strings.TrimSpace(challenge.EnvFile) != "" {
+		command = legoCommandWithEnvFile(challenge.EnvFile, args)
 	}
 	return CertificatePlan{
 		ServerName: serverName,
 		Email:      email,
 		Challenge:  challenge,
-		Fullchain:  "/etc/letsencrypt/live/" + serverName + "/fullchain.pem",
-		PrivKey:    "/etc/letsencrypt/live/" + serverName + "/privkey.pem",
-		Command:    host.Command{Name: "certbot", Args: args},
+		Fullchain:  StableFullchainPath(serverName),
+		PrivKey:    StablePrivateKeyPath(serverName),
+		Command:    command,
 	}, nil
 }
 
 func HTTP01BootstrapCommands(serverName string) []host.Command {
 	serverName = strings.TrimSpace(serverName)
-	fullchain := "/etc/letsencrypt/live/" + serverName + "/fullchain.pem"
-	privKey := "/etc/letsencrypt/live/" + serverName + "/privkey.pem"
+	fullchain := StableFullchainPath(serverName)
+	privKey := StablePrivateKeyPath(serverName)
 	script := `set -eu
 fullchain=$1
 privkey=$2
@@ -76,16 +76,66 @@ if [ ! -s "$fullchain" ] || [ ! -s "$privkey" ]; then
     chmod 0644 "$fullchain"
 fi`
 	return []host.Command{
-		{Name: "mkdir", Args: []string{"-p", "-m", "0755", "--", WebrootPath}},
-		{Name: "mkdir", Args: []string{"-p", "-m", "0755", "--", "/etc/letsencrypt/live/" + serverName}},
+		{Name: "mkdir", Args: []string{"-p", "-m", "0755", "--", WebrootPath, LegoDataPath, StableTLSDir(serverName)}},
 		{Name: "sh", Args: []string{"-c", script, "meshify-tls-bootstrap", fullchain, privKey, serverName}},
 	}
 }
 
-func RenewDryRunCommand(runDeployHooks bool) host.Command {
-	args := []string{"renew", "--dry-run", "--no-random-sleep-on-renew"}
-	if runDeployHooks {
-		args = append(args, "--run-deploy-hooks")
+func legoCommandWithEnvFile(envFile string, legoArgs []string) host.Command {
+	script := `set -eu
+env_file=$1
+shift
+trim_meshify_env_value() {
+    value=$1
+    while :; do
+        case "$value" in
+            " "*) value=${value# } ;;
+            "	"*) value=${value#	} ;;
+            *) break ;;
+        esac
+    done
+    while :; do
+        case "$value" in
+            *" ") value=${value% } ;;
+            *"	") value=${value%	} ;;
+            *) break ;;
+        esac
+    done
+    printf '%s' "$value"
+}
+while IFS= read -r line || [ -n "$line" ]; do
+    line=$(trim_meshify_env_value "$line")
+    case "$line" in
+        ""|"#"*|";"*) continue ;;
+        export\ *)
+            echo "unsupported export syntax in DNS env_file" >&2
+            exit 64
+            ;;
+        *=*) ;;
+        *) continue ;;
+    esac
+    key=$(trim_meshify_env_value "${line%%=*}")
+    value=$(trim_meshify_env_value "${line#*=}")
+    case "$key" in
+        ""|[0-9]*|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_]*)
+            echo "unsupported DNS env_file variable name" >&2
+            exit 64
+            ;;
+    esac
+    case "$value" in
+        \"*\") value=${value#\"}; value=${value%\"} ;;
+        \'*\') value=${value#\'}; value=${value%\'} ;;
+    esac
+    [ -n "$value" ] || continue
+    export "$key=$value"
+done < "$env_file"
+exec "$@"`
+	args := []string{"-c", script, "meshify-lego-dns01", strings.TrimSpace(envFile), LegoBinaryPath}
+	args = append(args, legoArgs...)
+	return host.Command{
+		Name:        "sh",
+		Args:        args,
+		DisplayName: LegoBinaryPath,
+		DisplayArgs: append([]string(nil), legoArgs...),
 	}
-	return host.Command{Name: "certbot", Args: args}
 }

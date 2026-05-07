@@ -48,6 +48,32 @@ func TestStaticReportFailsWhenRuntimeAssetMissing(t *testing.T) {
 	}
 }
 
+func TestStaticReportFailsDNSRenewalServiceWithoutEnvironmentFile(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.Default.ACMEChallenge = config.ACMEChallengeDNS01
+	cfg.Advanced.DNS01.Provider = "cloudflare"
+	cfg.Advanced.DNS01.EnvFile = "/etc/meshify/dns01/cloudflare.env"
+	staged, err := render.StageRuntime(cfg)
+	if err != nil {
+		t.Fatalf("StageRuntime() error = %v", err)
+	}
+	for index := range staged {
+		if staged[index].SourcePath == "templates/etc/systemd/system/meshify-lego-renew.service.tmpl" {
+			staged[index].Content = []byte(strings.ReplaceAll(string(staged[index].Content), "EnvironmentFile=/etc/meshify/dns01/cloudflare.env\n", ""))
+		}
+	}
+
+	report := StaticReport(cfg, staged)
+	if report.Status() != StatusFail {
+		t.Fatalf("Status() = %q, want fail", report.Status())
+	}
+	if !strings.Contains(SummarizeChecks(report.Checks), "fail:renewal-service") {
+		t.Fatalf("checks = %#v, want renewal-service failure", report.Checks)
+	}
+}
+
 func TestRequiredActivationsDeduplicatesRuntimeActions(t *testing.T) {
 	t.Parallel()
 

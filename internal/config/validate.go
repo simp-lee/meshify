@@ -7,6 +7,9 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"unicode"
+
+	"meshify/internal/acme"
 )
 
 type validationErrors []string
@@ -35,6 +38,9 @@ func (c Config) Validate() error {
 		} else {
 			if parsedURL.Scheme != "https" {
 				errs = append(errs, "default.server_url must use https")
+			}
+			if port := parsedURL.Port(); port != "" && port != "443" {
+				errs = append(errs, "default.server_url must not specify a port other than 443")
 			}
 			serverHost = normalizeDomain(parsedURL.Hostname())
 			if serverHost == "" {
@@ -68,6 +74,9 @@ func (c Config) Validate() error {
 		address, err := mail.ParseAddress(email)
 		if err != nil || address.Address != email {
 			errs = append(errs, "default.certificate_email must be a plain email address")
+		}
+		if strings.Contains(email, "%") {
+			errs = append(errs, "default.certificate_email must not contain % because systemd unit files treat it as a specifier")
 		}
 	}
 
@@ -153,8 +162,53 @@ func validatePackageSource(errs *validationErrors, source PackageSourceConfig) {
 
 func validateDNS01(errs *validationErrors, acmeChallenge string, dns01 DNS01Config) {
 	provider := strings.TrimSpace(dns01.Provider)
+	envFile := strings.TrimSpace(dns01.EnvFile)
+	credentialsFile := strings.TrimSpace(dns01.CredentialsFile)
+	var providerInfo acme.DNSProviderInfo
+	providerValid := false
+
+	if credentialsFile != "" {
+		*errs = append(*errs, "advanced.dns01.credentials_file is no longer supported; use advanced.dns01.env_file for lego DNS provider environment")
+	}
 	if acmeChallenge == ACMEChallengeDNS01 && provider == "" {
 		*errs = append(*errs, "advanced.dns01.provider is required when default.acme_challenge is dns-01")
+	}
+	if provider != "" {
+		info, err := acme.DNSProvider(provider)
+		if err != nil {
+			*errs = append(*errs, err.Error())
+		} else {
+			providerInfo = info
+			providerValid = true
+		}
+	}
+	if envFile != "" && provider == "" {
+		*errs = append(*errs, "advanced.dns01.provider is required when advanced.dns01.env_file is set")
+	}
+	if envFile != "" {
+		validateDNSEnvFilePath(errs, envFile)
+	}
+	if acmeChallenge == ACMEChallengeDNS01 && providerValid && envFile == "" && !providerInfo.AmbientCredentialsSupported {
+		*errs = append(*errs, "advanced.dns01.env_file is required for DNS-01 renewal with lego DNS provider "+providerInfo.LegoCode)
+	}
+}
+
+func validateDNSEnvFilePath(errs *validationErrors, envFile string) {
+	if !filepath.IsAbs(envFile) {
+		*errs = append(*errs, "advanced.dns01.env_file must be an absolute path when set")
+		return
+	}
+	if filepath.Clean(envFile) != envFile {
+		*errs = append(*errs, "advanced.dns01.env_file must be a clean absolute path without . or .. segments")
+	}
+	for _, r := range envFile {
+		if unicode.IsControl(r) || unicode.IsSpace(r) {
+			*errs = append(*errs, "advanced.dns01.env_file must not contain whitespace or control characters because it is rendered into systemd EnvironmentFile")
+			break
+		}
+	}
+	if strings.ContainsAny(envFile, "*?[]%\"'\\") {
+		*errs = append(*errs, "advanced.dns01.env_file must not contain systemd glob, specifier, quote, or escape characters")
 	}
 }
 
@@ -164,10 +218,28 @@ func validateProxyURL(errs *validationErrors, field string, raw string) {
 		return
 	}
 
-	parsedURL, err := url.Parse(raw)
-	if err != nil || parsedURL.Scheme == "" || parsedURL.Host == "" {
-		*errs = append(*errs, field+" must be an absolute URL")
+	if !validProxyEnvironmentValue(raw) {
+		*errs = append(*errs, field+" must be a proxy URL or host[:port]")
 	}
+}
+
+func validProxyEnvironmentValue(raw string) bool {
+	for _, r := range raw {
+		if unicode.IsSpace(r) {
+			return false
+		}
+	}
+	parsedURL, err := url.Parse(raw)
+	if err == nil && parsedURL.Scheme != "" && parsedURL.Host != "" {
+		return true
+	}
+
+	parsedURL, err = url.Parse("http://" + raw)
+	return err == nil &&
+		parsedURL.Host != "" &&
+		parsedURL.Path == "" &&
+		parsedURL.RawQuery == "" &&
+		parsedURL.Fragment == ""
 }
 
 func validateAbsoluteURL(errs *validationErrors, field string, raw string) {

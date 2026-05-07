@@ -10,6 +10,7 @@ import (
 	"meshify/internal/render"
 
 	tlscomponent "meshify/internal/components/tls"
+	"strings"
 )
 
 const MinimumTailscaleClientVersion = "1.74.0"
@@ -89,11 +90,25 @@ func StaticReport(cfg config.Config, staged []render.StagedFile) Report {
 		add("nginx-site", nginx.ValidateRenderedSite(site, nginxSite), "Nginx site preserves server_name isolation, fullchain TLS and DERP WebSocket proxy semantics.")
 	}
 
-	hook, ok := stagedContent(staged, "templates/etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh")
+	hook, ok := stagedContent(staged, "templates/usr/local/lib/meshify/hooks/install-lego-cert-and-reload-nginx.sh")
 	if !ok {
-		add("renewal-hook", fmt.Errorf("nginx reload deploy hook is missing"), "")
+		add("certificate-hook", fmt.Errorf("lego certificate install hook is missing"), "")
 	} else {
-		add("renewal-hook", tlscomponent.ValidateReloadHook(hook), "Certbot deploy hook validates and reloads Nginx.")
+		add("certificate-hook", tlscomponent.ValidateReloadHook(hook), "lego run hook installs the issued certificate and reloads Nginx.")
+	}
+
+	renewService, ok := stagedContent(staged, "templates/etc/systemd/system/meshify-lego-renew.service.tmpl")
+	if !ok {
+		add("renewal-service", fmt.Errorf("lego renewal service is missing"), "")
+	} else {
+		add("renewal-service", validateRenewalServiceForConfig(cfg, renewService), "lego renewal service uses renew --renew-hook against meshify-managed certificate paths.")
+	}
+
+	renewTimer, ok := stagedContent(staged, "templates/etc/systemd/system/meshify-lego-renew.timer")
+	if !ok {
+		add("renewal-timer", fmt.Errorf("lego renewal timer is missing"), "")
+	} else {
+		add("renewal-timer", tlscomponent.ValidateRenewalTimer(renewTimer), "lego renewal timer avoids synchronized midnight renewals and persists missed runs.")
 	}
 
 	_, certErr := tlscomponent.NewCertificatePlan(cfg)
@@ -106,6 +121,23 @@ func StaticReport(cfg config.Config, staged []render.StagedFile) Report {
 	})
 
 	return Report{Checks: checks}
+}
+
+func validateRenewalServiceForConfig(cfg config.Config, content []byte) error {
+	if err := tlscomponent.ValidateRenewalService(content); err != nil {
+		return err
+	}
+	if cfg.Default.ACMEChallenge != config.ACMEChallengeDNS01 {
+		return nil
+	}
+	envFile := strings.TrimSpace(cfg.Advanced.DNS01.EnvFile)
+	if envFile == "" {
+		return nil
+	}
+	if !strings.Contains(string(content), "EnvironmentFile="+envFile) {
+		return fmt.Errorf("lego DNS-01 renewal service must include EnvironmentFile=%s", envFile)
+	}
+	return nil
 }
 
 func stagedContent(staged []render.StagedFile, sourcePath string) ([]byte, bool) {
