@@ -282,7 +282,7 @@ func runDeploy(ctx context, args []string) error {
 				Step:         "plan host dependencies",
 				Operation:    "selecting Nginx and archive installation helper packages",
 				Impact:       "meshify cannot install HTTPS ingress and pinned release artifacts until host dependencies are known",
-				Remediation:  []string{"Use a supported platform architecture or switch package source settings, then rerun deploy."},
+				Remediation:  []string{"Use a supported platform architecture or switch Headscale source settings, then rerun deploy."},
 				RetryCommand: deployRetryCommand(options.configPath),
 				Cause:        err,
 			})
@@ -318,9 +318,9 @@ func runDeploy(ctx context, args []string) error {
 		if err != nil {
 			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 				Step:         "plan lego install",
-				Operation:    "selecting the pinned lego v4.35.2 Linux archive and SHA-256 digest",
+				Operation:    "selecting the pinned lego v4.35.2 Linux archive source and SHA-256 digest",
 				Impact:       "meshify cannot continue certificate automation until the lego release artifact is fully pinned",
-				Remediation:  []string{"Use advanced.platform.arch amd64 or arm64, then rerun deploy."},
+				Remediation:  []string{"Use advanced.platform.arch amd64 or arm64, fix advanced.lego_source settings, then rerun deploy."},
 				RetryCommand: deployRetryCommand(options.configPath),
 				Cause:        err,
 			})
@@ -328,9 +328,9 @@ func runDeploy(ctx context, args []string) error {
 		if _, err := newLegoInstallerFn(privilegedExecutor).Install(stdcontext.Background(), installPlan); err != nil {
 			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 				Step:         "install lego binary",
-				Operation:    "downloading, verifying, and installing the pinned lego v4.35.2 archive to /opt/meshify/bin/lego",
+				Operation:    "verifying and installing the pinned lego v4.35.2 archive to /opt/meshify/bin/lego",
 				Impact:       "meshify cannot continue ACME automation until the pinned lego binary is installed",
-				Remediation:  []string{"Fix GitHub release reachability, proxy settings, archive cache permissions, or digest mismatches, then rerun deploy."},
+				Remediation:  []string{"Fix GitHub release reachability, proxy settings, advanced.lego_source.file_path, archive permissions, or digest mismatches, then rerun deploy."},
 				RetryCommand: deployRetryCommand(options.configPath),
 				Cause:        err,
 			})
@@ -348,8 +348,8 @@ func runDeploy(ctx context, args []string) error {
 			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 				Step:         "plan Headscale package install",
 				Operation:    "building the verified Headscale v0.28.0 package install plan",
-				Impact:       "meshify cannot install Headscale until package source metadata is complete",
-				Remediation:  []string{"Fix advanced.package_source settings or rerun preflight with reachable package metadata."},
+				Impact:       "meshify cannot install Headscale until Headscale source metadata is complete",
+				Remediation:  []string{"Fix advanced.headscale_source settings or rerun preflight with reachable package metadata."},
 				RetryCommand: deployRetryCommand(options.configPath),
 				Cause:        err,
 			})
@@ -1091,17 +1091,34 @@ func detectPackageSourceState(cfg config.Config) preflight.PackageSourceState {
 	probeClient := newDeployHTTPClient(cfg.Advanced.Proxy, 5*time.Second)
 	artifactClient := newDeployHTTPClient(cfg.Advanced.Proxy, 20*time.Second)
 	state := preflight.PackageSourceState{
-		Mode:           strings.TrimSpace(cfg.Advanced.PackageSource.Mode),
-		Version:        strings.TrimSpace(cfg.Advanced.PackageSource.Version),
-		URL:            strings.TrimSpace(cfg.Advanced.PackageSource.URL),
-		FilePath:       strings.TrimSpace(cfg.Advanced.PackageSource.FilePath),
-		ExpectedSHA256: strings.TrimSpace(cfg.Advanced.PackageSource.SHA256),
+		Mode:           strings.TrimSpace(cfg.Advanced.HeadscaleSource.Mode),
+		Version:        strings.TrimSpace(cfg.Advanced.HeadscaleSource.Version),
+		URL:            strings.TrimSpace(cfg.Advanced.HeadscaleSource.URL),
+		FilePath:       strings.TrimSpace(cfg.Advanced.HeadscaleSource.FilePath),
+		ExpectedSHA256: strings.TrimSpace(cfg.Advanced.HeadscaleSource.SHA256),
 	}
 	if legoArchive, err := legocomponent.NewArchivePlan(cfg, legocomponent.InstallPlanOptions{}); err == nil {
+		state.LegoMode = legoArchive.Mode
 		state.LegoVersion = legoArchive.Version
 		state.LegoURL = legoArchive.SourceURL
+		state.LegoFilePath = legoArchive.SourcePath
 		state.LegoExpectedSHA256 = legoArchive.ExpectedSHA256
-		if state.LegoURL != "" {
+		switch legoArchive.Mode {
+		case config.PackageSourceModeOffline:
+			if state.LegoFilePath != "" {
+				info, err := os.Stat(state.LegoFilePath)
+				if err == nil && !info.IsDir() {
+					state.LegoFileExists = true
+					actualSHA256, err := hashLocalFile(state.LegoFilePath)
+					if err == nil {
+						state.LegoIntegrityChecked = true
+						state.LegoActualSHA256 = actualSHA256
+					} else {
+						state.LegoReachabilityDetail = fmt.Sprintf("SHA-256 probe failed: %s", err)
+					}
+				}
+			}
+		default:
 			state.LegoReachabilityChecked, state.LegoReachable, state.LegoReachabilityDetail = probePackageURLFn(probeClient, state.LegoURL)
 			if state.LegoReachable && state.LegoExpectedSHA256 != "" {
 				actualSHA256, err := hashRemoteArtifactFn(artifactClient, state.LegoURL)

@@ -42,6 +42,7 @@ var catalog = []Asset{
 	{SourcePath: "README.md", Role: RoleReference, ContentMode: ContentModeCopy},
 	{SourcePath: "config/meshify.yaml.example", Role: RoleConfigExample, ContentMode: ContentModeCopy},
 	{SourcePath: "docs/architecture.md", Role: RoleDocumentation, ContentMode: ContentModeCopy},
+	{SourcePath: "docs/getting-started.zh-CN.md", Role: RoleDocumentation, ContentMode: ContentModeCopy},
 	{SourcePath: "docs/onboarding.md", Role: RoleDocumentation, ContentMode: ContentModeCopy},
 	{SourcePath: "docs/quickstart.md", Role: RoleDocumentation, ContentMode: ContentModeCopy},
 	{SourcePath: "docs/troubleshooting.md", Role: RoleDocumentation, ContentMode: ContentModeCopy},

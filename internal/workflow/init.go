@@ -55,7 +55,7 @@ func RunInit(prompter output.Prompter, options InitOptions) (InitResult, error) 
 	} else {
 		advanced, err := prompter.Confirm("Use advanced mode now?", output.ConfirmPrompt{
 			Default: false,
-			Help:    "Choose advanced if you need DNS-01, mirror or offline packages, proxy, architecture, or public IP overrides.",
+			Help:    "Choose advanced if you need DNS-01, mirror or offline packages, offline lego archives, proxy, architecture, or public IP overrides.",
 		})
 		if err != nil {
 			return InitResult{}, err
@@ -143,10 +143,10 @@ func (result InitResult) nextSteps(configPath string) []string {
 		if result.Mode == InitModeDefault {
 			steps = append(steps,
 				"Review the generated default section and edit the advanced section only if your environment needs it.",
-				fmt.Sprintf("If you later need guided advanced answers for DNS-01, mirror or offline packages, proxy, architecture, or public IP overrides, generate a separate advanced config with 'meshify init --advanced --config %s' and copy the advanced values you need into %s.", advancedConfigPath, configPath),
+				fmt.Sprintf("If you later need guided advanced answers for DNS-01, mirror or offline packages, offline lego archives, proxy, architecture, or public IP overrides, generate a separate advanced config with 'meshify init --advanced --config %s' and copy the advanced values you need into %s.", advancedConfigPath, configPath),
 			)
 		} else {
-			steps = append(steps, "Review the generated advanced section before deploy, especially package source, proxy, DNS-01, architecture, and public IP overrides.")
+			steps = append(steps, "Review the generated advanced section before deploy, especially Headscale source, lego source, proxy, DNS-01, architecture, and public IP overrides.")
 			if result.Config.Default.ACMEChallenge == config.ACMEChallengeDNS01 {
 				if provider, err := tlscomponent.DNSProvider(result.Config.Advanced.DNS01.Provider); err == nil && provider.AmbientCredentialsSupported && strings.TrimSpace(result.Config.Advanced.DNS01.EnvFile) == "" {
 					steps = append(steps, "Confirm the selected lego DNS provider's ambient credentials are available to both deploy and systemd renewal.")
@@ -208,7 +208,7 @@ func collectAdvancedFields(prompter output.Prompter, cfg *config.Config) error {
 		}
 	}
 
-	if cfg.Advanced.PackageSource.Mode, err = prompter.Select("Package source mode", output.SelectPrompt{
+	if cfg.Advanced.HeadscaleSource.Mode, err = prompter.Select("Headscale source mode", output.SelectPrompt{
 		Default: config.PackageSourceModeDirect,
 		Help:    "Use mirror or offline only when direct package download is not suitable",
 		Options: []string{config.PackageSourceModeDirect, config.PackageSourceModeMirror, config.PackageSourceModeOffline},
@@ -216,12 +216,12 @@ func collectAdvancedFields(prompter output.Prompter, cfg *config.Config) error {
 		return err
 	}
 
-	if cfg.Advanced.PackageSource.Version, err = prompter.Text("Headscale package version", output.TextPrompt{
+	if cfg.Advanced.HeadscaleSource.Version, err = prompter.Text("Headscale package version", output.TextPrompt{
 		Default: config.DefaultHeadscaleVersion,
 		Help:    "Press Enter to keep the default tested version",
 		Validate: func(value string) error {
 			if strings.TrimSpace(value) == "" {
-				return fmt.Errorf("advanced.package_source.version is required")
+				return fmt.Errorf("advanced.headscale_source.version is required")
 			}
 			return nil
 		},
@@ -229,30 +229,46 @@ func collectAdvancedFields(prompter output.Prompter, cfg *config.Config) error {
 		return err
 	}
 
-	switch cfg.Advanced.PackageSource.Mode {
+	switch cfg.Advanced.HeadscaleSource.Mode {
 	case config.PackageSourceModeMirror:
-		if cfg.Advanced.PackageSource.URL, err = prompter.Text("Mirror package URL", output.TextPrompt{
+		if cfg.Advanced.HeadscaleSource.URL, err = prompter.Text("Headscale mirror package URL", output.TextPrompt{
 			Help:     "Use the full URL to the headscale .deb package",
 			Validate: validateMirrorURL,
 		}); err != nil {
 			return err
 		}
-		if cfg.Advanced.PackageSource.SHA256, err = prompter.Text("Mirror package SHA-256", output.TextPrompt{
+		if cfg.Advanced.HeadscaleSource.SHA256, err = prompter.Text("Headscale mirror package SHA-256", output.TextPrompt{
 			Help:     "Use the lowercase 64-character checksum for the package",
 			Validate: validateMirrorSHA256,
 		}); err != nil {
 			return err
 		}
 	case config.PackageSourceModeOffline:
-		if cfg.Advanced.PackageSource.FilePath, err = prompter.Text("Offline package path", output.TextPrompt{
+		if cfg.Advanced.HeadscaleSource.FilePath, err = prompter.Text("Offline Headscale package path", output.TextPrompt{
 			Help:     "Use the absolute or relative path to the local headscale .deb file",
 			Validate: validateOfflinePath,
 		}); err != nil {
 			return err
 		}
-		if cfg.Advanced.PackageSource.SHA256, err = prompter.Text("Offline package SHA-256", output.TextPrompt{
+		if cfg.Advanced.HeadscaleSource.SHA256, err = prompter.Text("Offline Headscale package SHA-256", output.TextPrompt{
 			Help:     "Use the lowercase 64-character checksum for the package",
 			Validate: validateOfflineSHA256,
+		}); err != nil {
+			return err
+		}
+	}
+
+	if cfg.Advanced.LegoSource.Mode, err = prompter.Select("lego archive source mode", output.SelectPrompt{
+		Default: config.PackageSourceModeDirect,
+		Help:    "Use offline only when this host cannot download the pinned lego GitHub release archive",
+		Options: []string{config.PackageSourceModeDirect, config.PackageSourceModeOffline},
+	}); err != nil {
+		return err
+	}
+	if cfg.Advanced.LegoSource.Mode == config.PackageSourceModeOffline {
+		if cfg.Advanced.LegoSource.FilePath, err = prompter.Text("Offline lego archive path", output.TextPrompt{
+			Help:     "Use the absolute or relative path to the local pinned lego .tar.gz archive",
+			Validate: validateLegoOfflinePath,
 		}); err != nil {
 			return err
 		}
@@ -382,33 +398,40 @@ func validateDNS01EnvFile(provider tlscomponent.DNSProviderInfo) func(string) er
 
 func validateMirrorURL(value string) error {
 	candidate := config.ExampleConfig()
-	candidate.Advanced.PackageSource.Mode = config.PackageSourceModeMirror
-	candidate.Advanced.PackageSource.URL = value
-	candidate.Advanced.PackageSource.SHA256 = strings.Repeat("a", 64)
+	candidate.Advanced.HeadscaleSource.Mode = config.PackageSourceModeMirror
+	candidate.Advanced.HeadscaleSource.URL = value
+	candidate.Advanced.HeadscaleSource.SHA256 = strings.Repeat("a", 64)
 	return candidate.Validate()
 }
 
 func validateMirrorSHA256(value string) error {
 	candidate := config.ExampleConfig()
-	candidate.Advanced.PackageSource.Mode = config.PackageSourceModeMirror
-	candidate.Advanced.PackageSource.URL = "https://mirror.example.com/headscale.deb"
-	candidate.Advanced.PackageSource.SHA256 = value
+	candidate.Advanced.HeadscaleSource.Mode = config.PackageSourceModeMirror
+	candidate.Advanced.HeadscaleSource.URL = "https://mirror.example.com/headscale.deb"
+	candidate.Advanced.HeadscaleSource.SHA256 = value
 	return candidate.Validate()
 }
 
 func validateOfflinePath(value string) error {
 	candidate := config.ExampleConfig()
-	candidate.Advanced.PackageSource.Mode = config.PackageSourceModeOffline
-	candidate.Advanced.PackageSource.FilePath = value
-	candidate.Advanced.PackageSource.SHA256 = strings.Repeat("b", 64)
+	candidate.Advanced.HeadscaleSource.Mode = config.PackageSourceModeOffline
+	candidate.Advanced.HeadscaleSource.FilePath = value
+	candidate.Advanced.HeadscaleSource.SHA256 = strings.Repeat("b", 64)
 	return candidate.Validate()
 }
 
 func validateOfflineSHA256(value string) error {
 	candidate := config.ExampleConfig()
-	candidate.Advanced.PackageSource.Mode = config.PackageSourceModeOffline
-	candidate.Advanced.PackageSource.FilePath = "/tmp/headscale.deb"
-	candidate.Advanced.PackageSource.SHA256 = value
+	candidate.Advanced.HeadscaleSource.Mode = config.PackageSourceModeOffline
+	candidate.Advanced.HeadscaleSource.FilePath = "/tmp/headscale.deb"
+	candidate.Advanced.HeadscaleSource.SHA256 = value
+	return candidate.Validate()
+}
+
+func validateLegoOfflinePath(value string) error {
+	candidate := config.ExampleConfig()
+	candidate.Advanced.LegoSource.Mode = config.PackageSourceModeOffline
+	candidate.Advanced.LegoSource.FilePath = value
 	return candidate.Validate()
 }
 

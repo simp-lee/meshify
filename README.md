@@ -76,10 +76,12 @@ Most first deployments only edit the `default` section:
 - `acme_challenge`
 
 Use `meshify init --advanced --config meshify.yaml` only for DNS-01, Headscale
-package mirrors or offline packages, proxies, architecture overrides, or public
-IP overrides. Headscale package mirror/offline settings do not replace the lego
-source: the server must still reach the pinned lego v4.35.2 GitHub release
-archive through normal egress or the configured proxy.
+package mirrors or offline packages, lego offline archives, proxies,
+architecture overrides, or public IP overrides. The server must either reach the
+pinned lego v4.35.2 GitHub release archive through normal egress or the
+configured proxy, or use `advanced.lego_source.mode: "offline"` with a local
+copy of the exact pinned archive for the configured architecture. Headscale
+package overrides live under `advanced.headscale_source`.
 
 DNS-01 uses lego provider codes `cloudflare`, `route53`, `digitalocean`, and
 `gcloud`; `google` is accepted as an alias for `gcloud`. Cloudflare and
@@ -94,6 +96,9 @@ API tokens, or other secrets in repository templates or public config examples.
 
 ## Documentation
 
+- [`deploy/docs/getting-started.zh-CN.md`](deploy/docs/getting-started.zh-CN.md):
+  Chinese beginner guide covering prerequisites, config concepts, deployment,
+  DNS, ACME, Nginx coexistence, and client onboarding.
 - [`deploy/docs/quickstart.md`](deploy/docs/quickstart.md): operator workflow,
   prerequisites, expected result, and scope boundaries.
 - [`deploy/docs/architecture.md`](deploy/docs/architecture.md): runtime

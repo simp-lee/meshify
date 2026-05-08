@@ -29,18 +29,24 @@ type DefaultConfig struct {
 }
 
 type AdvancedConfig struct {
-	PackageSource PackageSourceConfig `yaml:"package_source"`
-	Proxy         ProxyConfig         `yaml:"proxy"`
-	DNS01         DNS01Config         `yaml:"dns01"`
-	Network       NetworkConfig       `yaml:"network"`
-	Platform      PlatformConfig      `yaml:"platform"`
+	HeadscaleSource HeadscaleSourceConfig `yaml:"headscale_source"`
+	LegoSource      LegoSourceConfig      `yaml:"lego_source"`
+	Proxy           ProxyConfig           `yaml:"proxy"`
+	DNS01           DNS01Config           `yaml:"dns01"`
+	Network         NetworkConfig         `yaml:"network"`
+	Platform        PlatformConfig        `yaml:"platform"`
 }
 
-type PackageSourceConfig struct {
+type HeadscaleSourceConfig struct {
 	Mode     string `yaml:"mode"`
 	Version  string `yaml:"version"`
 	URL      string `yaml:"url"`
 	SHA256   string `yaml:"sha256"`
+	FilePath string `yaml:"file_path"`
+}
+
+type LegoSourceConfig struct {
+	Mode     string `yaml:"mode"`
 	FilePath string `yaml:"file_path"`
 }
 

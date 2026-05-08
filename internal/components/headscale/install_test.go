@@ -91,7 +91,7 @@ func TestNewPackagePlanRejectsUnsupportedHeadscaleVersion(t *testing.T) {
 	t.Parallel()
 
 	cfg := validConfig()
-	cfg.Advanced.PackageSource.Version = "0.29.0"
+	cfg.Advanced.HeadscaleSource.Version = "0.29.0"
 	_, err := NewPackagePlan(cfg, InstallPlanOptions{OfficialPackageSHA256: strings.Repeat("a", 64)})
 	if err == nil {
 		t.Fatal("NewPackagePlan() error = nil, want version failure")
@@ -105,9 +105,9 @@ func TestNewPackagePlanSupportsMirrorAndOfflineSources(t *testing.T) {
 	t.Parallel()
 
 	mirror := validConfig()
-	mirror.Advanced.PackageSource.Mode = config.PackageSourceModeMirror
-	mirror.Advanced.PackageSource.URL = "https://mirror.example.com/headscale.deb"
-	mirror.Advanced.PackageSource.SHA256 = strings.Repeat("c", 64)
+	mirror.Advanced.HeadscaleSource.Mode = config.PackageSourceModeMirror
+	mirror.Advanced.HeadscaleSource.URL = "https://mirror.example.com/headscale.deb"
+	mirror.Advanced.HeadscaleSource.SHA256 = strings.Repeat("c", 64)
 
 	mirrorPlan, err := NewPackagePlan(mirror, InstallPlanOptions{})
 	if err != nil {
@@ -118,9 +118,9 @@ func TestNewPackagePlanSupportsMirrorAndOfflineSources(t *testing.T) {
 	}
 
 	offline := validConfig()
-	offline.Advanced.PackageSource.Mode = config.PackageSourceModeOffline
-	offline.Advanced.PackageSource.FilePath = "/srv/packages/headscale.deb"
-	offline.Advanced.PackageSource.SHA256 = strings.Repeat("d", 64)
+	offline.Advanced.HeadscaleSource.Mode = config.PackageSourceModeOffline
+	offline.Advanced.HeadscaleSource.FilePath = "/srv/packages/headscale.deb"
+	offline.Advanced.HeadscaleSource.SHA256 = strings.Repeat("d", 64)
 
 	offlinePlan, err := NewPackagePlan(offline, InstallPlanOptions{})
 	if err != nil {
@@ -130,7 +130,7 @@ func TestNewPackagePlanSupportsMirrorAndOfflineSources(t *testing.T) {
 		t.Fatalf("offline InstallPath() = %q", offlinePlan.InstallPath())
 	}
 
-	offline.Advanced.PackageSource.FilePath = "headscale.deb"
+	offline.Advanced.HeadscaleSource.FilePath = "headscale.deb"
 	offlinePlan, err = NewPackagePlan(offline, InstallPlanOptions{})
 	if err != nil {
 		t.Fatalf("NewPackagePlan(relative offline) error = %v", err)

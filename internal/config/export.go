@@ -58,14 +58,21 @@ default:
   acme_challenge: "http-01"
 
 # The advanced section is opt-in. Leave values empty unless you have a real
-# need for Headscale package mirrors/offline packages, proxies, DNS-01,
-# architecture overrides, or public IP overrides.
+# need for Headscale package mirrors/offline packages, lego offline archives,
+# proxies, DNS-01, architecture overrides, or public IP overrides.
 advanced:
-  package_source:
+  headscale_source:
     mode: "direct" # direct | mirror | offline
     version: "%s"
     url: ""
     sha256: ""
+    file_path: ""
+
+  lego_source:
+    # Keep direct unless the host cannot download the pinned lego archive from
+    # GitHub. Offline mode must point at the exact pinned lego archive for the
+    # selected architecture; meshify verifies the built-in SHA-256 digest.
+    mode: "direct" # direct | offline
     file_path: ""
 
   proxy:

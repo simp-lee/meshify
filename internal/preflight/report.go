@@ -72,19 +72,19 @@ func BuildReport(cfg config.Config, inputs Inputs) Report {
 
 	packageSource := inputs.PackageSource
 	if strings.TrimSpace(packageSource.Mode) == "" {
-		packageSource.Mode = cfg.Advanced.PackageSource.Mode
+		packageSource.Mode = cfg.Advanced.HeadscaleSource.Mode
 	}
 	if strings.TrimSpace(packageSource.Version) == "" {
-		packageSource.Version = cfg.Advanced.PackageSource.Version
+		packageSource.Version = cfg.Advanced.HeadscaleSource.Version
 	}
 	if strings.TrimSpace(packageSource.URL) == "" {
-		packageSource.URL = cfg.Advanced.PackageSource.URL
+		packageSource.URL = cfg.Advanced.HeadscaleSource.URL
 	}
 	if strings.TrimSpace(packageSource.FilePath) == "" {
-		packageSource.FilePath = cfg.Advanced.PackageSource.FilePath
+		packageSource.FilePath = cfg.Advanced.HeadscaleSource.FilePath
 	}
 	if strings.TrimSpace(packageSource.ExpectedSHA256) == "" {
-		packageSource.ExpectedSHA256 = cfg.Advanced.PackageSource.SHA256
+		packageSource.ExpectedSHA256 = cfg.Advanced.HeadscaleSource.SHA256
 	}
 
 	acme := inputs.ACME

@@ -89,7 +89,8 @@ func (c Config) Validate() error {
 		errs = append(errs, "default.acme_challenge must be one of: http-01, dns-01")
 	}
 
-	validatePackageSource(&errs, c.Advanced.PackageSource)
+	validateHeadscaleSource(&errs, c.Advanced.HeadscaleSource)
+	validateLegoSource(&errs, c.Advanced.LegoSource)
 	validateProxyURL(&errs, "advanced.proxy.http_proxy", c.Advanced.Proxy.HTTPProxy)
 	validateProxyURL(&errs, "advanced.proxy.https_proxy", c.Advanced.Proxy.HTTPSProxy)
 	validateDNS01(&errs, acmeChallenge, c.Advanced.DNS01)
@@ -104,7 +105,7 @@ func (c Config) Validate() error {
 	return errs
 }
 
-func validatePackageSource(errs *validationErrors, source PackageSourceConfig) {
+func validateHeadscaleSource(errs *validationErrors, source HeadscaleSourceConfig) {
 	mode := strings.TrimSpace(source.Mode)
 	version := strings.TrimSpace(source.Version)
 	urlValue := strings.TrimSpace(source.URL)
@@ -112,51 +113,76 @@ func validatePackageSource(errs *validationErrors, source PackageSourceConfig) {
 	filePath := strings.TrimSpace(source.FilePath)
 
 	if mode == "" {
-		*errs = append(*errs, "advanced.package_source.mode is required")
+		*errs = append(*errs, "advanced.headscale_source.mode is required")
 		return
 	}
 	if version == "" {
-		*errs = append(*errs, "advanced.package_source.version is required")
+		*errs = append(*errs, "advanced.headscale_source.version is required")
 	}
 
 	switch mode {
 	case PackageSourceModeDirect:
 		if urlValue != "" {
-			*errs = append(*errs, "advanced.package_source.url is only allowed when advanced.package_source.mode is mirror")
+			*errs = append(*errs, "advanced.headscale_source.url is only allowed when advanced.headscale_source.mode is mirror")
 		}
 		if filePath != "" {
-			*errs = append(*errs, "advanced.package_source.file_path is only allowed when advanced.package_source.mode is offline")
+			*errs = append(*errs, "advanced.headscale_source.file_path is only allowed when advanced.headscale_source.mode is offline")
 		}
 	case PackageSourceModeMirror:
 		if urlValue == "" {
-			*errs = append(*errs, "advanced.package_source.url is required when advanced.package_source.mode is mirror")
+			*errs = append(*errs, "advanced.headscale_source.url is required when advanced.headscale_source.mode is mirror")
 		} else {
-			validateAbsoluteURL(errs, "advanced.package_source.url", urlValue)
+			validateAbsoluteURL(errs, "advanced.headscale_source.url", urlValue)
 		}
 		if filePath != "" {
-			*errs = append(*errs, "advanced.package_source.file_path is only allowed when advanced.package_source.mode is offline")
+			*errs = append(*errs, "advanced.headscale_source.file_path is only allowed when advanced.headscale_source.mode is offline")
 		}
 		if sha256 == "" {
-			*errs = append(*errs, "advanced.package_source.sha256 is required when advanced.package_source.mode is mirror")
+			*errs = append(*errs, "advanced.headscale_source.sha256 is required when advanced.headscale_source.mode is mirror")
 		}
 	case PackageSourceModeOffline:
 		if filePath == "" {
-			*errs = append(*errs, "advanced.package_source.file_path is required when advanced.package_source.mode is offline")
+			*errs = append(*errs, "advanced.headscale_source.file_path is required when advanced.headscale_source.mode is offline")
 		} else if filepath.Clean(filePath) == "." {
-			*errs = append(*errs, "advanced.package_source.file_path must be a valid file path")
+			*errs = append(*errs, "advanced.headscale_source.file_path must be a valid file path")
 		}
 		if urlValue != "" {
-			*errs = append(*errs, "advanced.package_source.url is only allowed when advanced.package_source.mode is mirror")
+			*errs = append(*errs, "advanced.headscale_source.url is only allowed when advanced.headscale_source.mode is mirror")
 		}
 		if sha256 == "" {
-			*errs = append(*errs, "advanced.package_source.sha256 is required when advanced.package_source.mode is offline")
+			*errs = append(*errs, "advanced.headscale_source.sha256 is required when advanced.headscale_source.mode is offline")
 		}
 	default:
-		*errs = append(*errs, "advanced.package_source.mode must be one of: direct, mirror, offline")
+		*errs = append(*errs, "advanced.headscale_source.mode must be one of: direct, mirror, offline")
 	}
 
 	if sha256 != "" && !isHexSHA256(sha256) {
-		*errs = append(*errs, "advanced.package_source.sha256 must be a 64-character lowercase hexadecimal SHA-256 digest")
+		*errs = append(*errs, "advanced.headscale_source.sha256 must be a 64-character lowercase hexadecimal SHA-256 digest")
+	}
+}
+
+func validateLegoSource(errs *validationErrors, source LegoSourceConfig) {
+	mode := strings.TrimSpace(source.Mode)
+	filePath := strings.TrimSpace(source.FilePath)
+
+	if mode == "" {
+		*errs = append(*errs, "advanced.lego_source.mode is required")
+		return
+	}
+
+	switch mode {
+	case PackageSourceModeDirect:
+		if filePath != "" {
+			*errs = append(*errs, "advanced.lego_source.file_path is only allowed when advanced.lego_source.mode is offline")
+		}
+	case PackageSourceModeOffline:
+		if filePath == "" {
+			*errs = append(*errs, "advanced.lego_source.file_path is required when advanced.lego_source.mode is offline")
+		} else if filepath.Clean(filePath) == "." {
+			*errs = append(*errs, "advanced.lego_source.file_path must be a valid file path")
+		}
+	default:
+		*errs = append(*errs, "advanced.lego_source.mode must be one of: direct, offline")
 	}
 }
 

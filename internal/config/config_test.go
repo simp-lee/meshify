@@ -27,11 +27,14 @@ func TestNewAppliesDefaultsAndRequiresUserInputs(t *testing.T) {
 	if cfg.Default.ACMEChallenge != ACMEChallengeHTTP01 {
 		t.Fatalf("ACMEChallenge = %q, want %q", cfg.Default.ACMEChallenge, ACMEChallengeHTTP01)
 	}
-	if cfg.Advanced.PackageSource.Mode != PackageSourceModeDirect {
-		t.Fatalf("PackageSource.Mode = %q, want %q", cfg.Advanced.PackageSource.Mode, PackageSourceModeDirect)
+	if cfg.Advanced.HeadscaleSource.Mode != PackageSourceModeDirect {
+		t.Fatalf("HeadscaleSource.Mode = %q, want %q", cfg.Advanced.HeadscaleSource.Mode, PackageSourceModeDirect)
 	}
-	if cfg.Advanced.PackageSource.Version != DefaultHeadscaleVersion {
-		t.Fatalf("PackageSource.Version = %q, want %q", cfg.Advanced.PackageSource.Version, DefaultHeadscaleVersion)
+	if cfg.Advanced.HeadscaleSource.Version != DefaultHeadscaleVersion {
+		t.Fatalf("HeadscaleSource.Version = %q, want %q", cfg.Advanced.HeadscaleSource.Version, DefaultHeadscaleVersion)
+	}
+	if cfg.Advanced.LegoSource.Mode != PackageSourceModeDirect {
+		t.Fatalf("LegoSource.Mode = %q, want %q", cfg.Advanced.LegoSource.Mode, PackageSourceModeDirect)
 	}
 	if cfg.Advanced.Platform.Arch != ArchAMD64 {
 		t.Fatalf("Platform.Arch = %q, want %q", cfg.Advanced.Platform.Arch, ArchAMD64)
@@ -72,11 +75,14 @@ default:
 	if cfg.Default.ACMEChallenge != ACMEChallengeHTTP01 {
 		t.Fatalf("ACMEChallenge = %q, want %q", cfg.Default.ACMEChallenge, ACMEChallengeHTTP01)
 	}
-	if cfg.Advanced.PackageSource.Mode != PackageSourceModeDirect {
-		t.Fatalf("PackageSource.Mode = %q, want %q", cfg.Advanced.PackageSource.Mode, PackageSourceModeDirect)
+	if cfg.Advanced.HeadscaleSource.Mode != PackageSourceModeDirect {
+		t.Fatalf("HeadscaleSource.Mode = %q, want %q", cfg.Advanced.HeadscaleSource.Mode, PackageSourceModeDirect)
 	}
-	if cfg.Advanced.PackageSource.Version != DefaultHeadscaleVersion {
-		t.Fatalf("PackageSource.Version = %q, want %q", cfg.Advanced.PackageSource.Version, DefaultHeadscaleVersion)
+	if cfg.Advanced.HeadscaleSource.Version != DefaultHeadscaleVersion {
+		t.Fatalf("HeadscaleSource.Version = %q, want %q", cfg.Advanced.HeadscaleSource.Version, DefaultHeadscaleVersion)
+	}
+	if cfg.Advanced.LegoSource.Mode != PackageSourceModeDirect {
+		t.Fatalf("LegoSource.Mode = %q, want %q", cfg.Advanced.LegoSource.Mode, PackageSourceModeDirect)
 	}
 	if cfg.Advanced.Network.PublicIPv6 != "" {
 		t.Fatalf("PublicIPv6 = %q, want empty", cfg.Advanced.Network.PublicIPv6)
@@ -225,7 +231,7 @@ func TestValidateProxyRejectsMalformedProxyEnvironmentValues(t *testing.T) {
 	}
 }
 
-func TestValidatePackageSourceModes(t *testing.T) {
+func TestValidateHeadscaleSourceModes(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -236,42 +242,42 @@ func TestValidatePackageSourceModes(t *testing.T) {
 		{
 			name: "mirror requires url",
 			mutate: func(cfg *Config) {
-				cfg.Advanced.PackageSource.Mode = PackageSourceModeMirror
-				cfg.Advanced.PackageSource.SHA256 = strings.Repeat("a", 64)
+				cfg.Advanced.HeadscaleSource.Mode = PackageSourceModeMirror
+				cfg.Advanced.HeadscaleSource.SHA256 = strings.Repeat("a", 64)
 			},
-			wantErr: "advanced.package_source.url is required when advanced.package_source.mode is mirror",
+			wantErr: "advanced.headscale_source.url is required when advanced.headscale_source.mode is mirror",
 		},
 		{
 			name: "mirror requires sha256",
 			mutate: func(cfg *Config) {
-				cfg.Advanced.PackageSource.Mode = PackageSourceModeMirror
-				cfg.Advanced.PackageSource.URL = "https://mirror.example.com/headscale.deb"
+				cfg.Advanced.HeadscaleSource.Mode = PackageSourceModeMirror
+				cfg.Advanced.HeadscaleSource.URL = "https://mirror.example.com/headscale.deb"
 			},
-			wantErr: "advanced.package_source.sha256 is required when advanced.package_source.mode is mirror",
+			wantErr: "advanced.headscale_source.sha256 is required when advanced.headscale_source.mode is mirror",
 		},
 		{
 			name: "offline requires file path",
 			mutate: func(cfg *Config) {
-				cfg.Advanced.PackageSource.Mode = PackageSourceModeOffline
-				cfg.Advanced.PackageSource.SHA256 = strings.Repeat("b", 64)
+				cfg.Advanced.HeadscaleSource.Mode = PackageSourceModeOffline
+				cfg.Advanced.HeadscaleSource.SHA256 = strings.Repeat("b", 64)
 			},
-			wantErr: "advanced.package_source.file_path is required when advanced.package_source.mode is offline",
+			wantErr: "advanced.headscale_source.file_path is required when advanced.headscale_source.mode is offline",
 		},
 		{
 			name: "offline requires sha256",
 			mutate: func(cfg *Config) {
-				cfg.Advanced.PackageSource.Mode = PackageSourceModeOffline
-				cfg.Advanced.PackageSource.FilePath = "/tmp/headscale.deb"
+				cfg.Advanced.HeadscaleSource.Mode = PackageSourceModeOffline
+				cfg.Advanced.HeadscaleSource.FilePath = "/tmp/headscale.deb"
 			},
-			wantErr: "advanced.package_source.sha256 is required when advanced.package_source.mode is offline",
+			wantErr: "advanced.headscale_source.sha256 is required when advanced.headscale_source.mode is offline",
 		},
 		{
 			name: "direct rejects custom source fields",
 			mutate: func(cfg *Config) {
-				cfg.Advanced.PackageSource.Mode = PackageSourceModeDirect
-				cfg.Advanced.PackageSource.URL = "https://mirror.example.com/headscale.deb"
+				cfg.Advanced.HeadscaleSource.Mode = PackageSourceModeDirect
+				cfg.Advanced.HeadscaleSource.URL = "https://mirror.example.com/headscale.deb"
 			},
-			wantErr: "advanced.package_source.url is only allowed when advanced.package_source.mode is mirror",
+			wantErr: "advanced.headscale_source.url is only allowed when advanced.headscale_source.mode is mirror",
 		},
 	}
 
@@ -290,6 +296,63 @@ func TestValidatePackageSourceModes(t *testing.T) {
 				t.Fatalf("Validate() error = %q, want substring %q", err.Error(), tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestValidateLegoSourceModes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr string
+	}{
+		{
+			name: "offline requires file path",
+			mutate: func(cfg *Config) {
+				cfg.Advanced.LegoSource.Mode = PackageSourceModeOffline
+			},
+			wantErr: "advanced.lego_source.file_path is required when advanced.lego_source.mode is offline",
+		},
+		{
+			name: "direct rejects file path",
+			mutate: func(cfg *Config) {
+				cfg.Advanced.LegoSource.Mode = PackageSourceModeDirect
+				cfg.Advanced.LegoSource.FilePath = "/tmp/lego.tar.gz"
+			},
+			wantErr: "advanced.lego_source.file_path is only allowed when advanced.lego_source.mode is offline",
+		},
+		{
+			name: "unsupported mode",
+			mutate: func(cfg *Config) {
+				cfg.Advanced.LegoSource.Mode = "mirror"
+			},
+			wantErr: "advanced.lego_source.mode must be one of: direct, offline",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := validConfig()
+			tt.mutate(&cfg)
+
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatal("Validate() error = nil, want non-nil")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Validate() error = %q, want substring %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+
+	cfg := validConfig()
+	cfg.Advanced.LegoSource.Mode = PackageSourceModeOffline
+	cfg.Advanced.LegoSource.FilePath = "/srv/packages/lego_v4.35.2_linux_amd64.tar.gz"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v, want nil for offline lego archive", err)
 	}
 }
 
@@ -403,7 +466,7 @@ func TestValidateDNS01RequiresProviderWhenEnabled(t *testing.T) {
 	}
 }
 
-func TestLoadBytesRejectsUnsupportedDNS01Fields(t *testing.T) {
+func TestLoadBytesRejectsUnsupportedAdvancedFields(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -436,6 +499,20 @@ advanced:
     credentials_file: /etc/meshify/dns01/cloudflare.env
 `,
 			want: "field credentials_file not found",
+		},
+		{
+			name: "old package_source",
+			yaml: `
+default:
+  server_url: https://hs.example.com
+  base_domain: tailnet.example.com
+  certificate_email: ops@example.com
+advanced:
+  package_source:
+    mode: direct
+    version: 0.28.0
+`,
+			want: "field package_source not found",
 		},
 	}
 

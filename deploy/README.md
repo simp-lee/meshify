@@ -16,6 +16,7 @@ deploy/
   config/
     meshify.yaml.example
   docs/
+    getting-started.zh-CN.md
     quickstart.md
     architecture.md
     onboarding.md
@@ -49,6 +50,7 @@ deploy/
 | Path | Role |
 | --- | --- |
 | `config/meshify.yaml.example` | Minimal config example plus opt-in advanced settings. |
+| `docs/getting-started.zh-CN.md` | Chinese beginner guide for concepts, prerequisites, deployment, DNS, ACME, Nginx coexistence, and client onboarding. |
 | `docs/quickstart.md` | Default operator workflow and first-release support matrix. |
 | `docs/architecture.md` | Single-host topology, security boundary, and network behavior. |
 | `docs/onboarding.md` | Shared client handoff and fresh preauth-key flow. |
@@ -78,8 +80,9 @@ the host.
 
 ## Maintenance Rules
 
-- Keep first-use config inputs small. Mirror, offline package, proxy, DNS-01
-  provider, architecture, and public IP overrides belong in `advanced`.
+- Keep first-use config inputs small. Headscale mirror/offline package settings,
+  offline lego archive settings, proxy, DNS-01 provider, architecture, and
+  public IP overrides belong in `advanced`.
 - Never commit DNS-01 credentials, API tokens, private keys, or provider secrets
   to templates or public examples.
 - Keep docs aligned with `meshify init`, `meshify deploy`, `meshify verify`, and

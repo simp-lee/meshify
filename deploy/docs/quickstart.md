@@ -36,14 +36,14 @@ support matrix.
 - Confirm the server can obtain the Headscale v0.28.0 `.deb` directly, from a
   mirror, or from an offline file with a SHA-256 digest.
 - Confirm the server can reach the pinned lego v4.35.2 GitHub release archive
-  through normal egress or the configured proxy. Headscale mirror/offline package
-  settings do not replace the lego archive source.
+  through normal egress or the configured proxy, or prepare the exact pinned
+  lego archive locally and set `advanced.lego_source.mode: "offline"`.
 - Prepare at least two clients in different network environments for final
   validation.
 - For China mainland public deployments, confirm ICP/hosting access
   requirements, cloud ingress rules, package reachability, and whether HTTP-01
-  is practical. Use DNS-01, a mirror, an offline package, or proxy settings when
-  needed.
+  is practical. Use DNS-01, a mirror, offline Headscale or lego artifacts, or
+  proxy settings when needed.
 
 ## Minimal Inputs
 
@@ -55,8 +55,8 @@ Default guided mode asks for:
 
 Default guided mode writes `acme_challenge: "http-01"`. Use
 `meshify init --advanced --config meshify.yaml` when public port 80 is not
-usable, DNS-01 is required by policy, or you need package, proxy, architecture,
-or public IP overrides.
+usable, DNS-01 is required by policy, or you need Headscale package, lego
+archive, proxy, architecture, or public IP overrides.
 
 Advanced DNS-01 uses the meshify-managed lego binary:
 

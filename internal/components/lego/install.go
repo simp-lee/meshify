@@ -120,7 +120,7 @@ func NewArchivePlan(cfg config.Config, options InstallPlanOptions) (ArchivePlan,
 		CachedPath:     filepath.Join(cacheDir, assetName),
 		BinaryPath:     BinaryPath,
 	}
-	if sourcePath := strings.TrimSpace(options.OfflineSourcePath); sourcePath != "" {
+	if sourcePath := firstNonEmpty(options.OfflineSourcePath, cfg.Advanced.LegoSource.FilePath); sourcePath != "" {
 		plan.Mode = config.PackageSourceModeOffline
 		plan.SourceURL = ""
 		plan.SourcePath = sourcePath

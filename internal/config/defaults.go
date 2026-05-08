@@ -7,9 +7,12 @@ func New() Config {
 			ACMEChallenge: ACMEChallengeHTTP01,
 		},
 		Advanced: AdvancedConfig{
-			PackageSource: PackageSourceConfig{
+			HeadscaleSource: HeadscaleSourceConfig{
 				Mode:    PackageSourceModeDirect,
 				Version: DefaultHeadscaleVersion,
+			},
+			LegoSource: LegoSourceConfig{
+				Mode: PackageSourceModeDirect,
 			},
 			Platform: PlatformConfig{
 				Arch: ArchAMD64,

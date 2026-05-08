@@ -1657,6 +1657,55 @@ func TestDetectPackageSourceStateUsesHeadscaleComponentOfficialPackageURLs(t *te
 	}
 }
 
+func TestDetectPackageSourceStateUsesOfflineLegoArchiveWithoutRemoteProbe(t *testing.T) {
+	cfg := config.ExampleConfig()
+	archivePath := filepath.Join(t.TempDir(), "lego_v4.35.2_linux_amd64.tar.gz")
+	if err := os.WriteFile(archivePath, []byte("not the real archive"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	cfg.Advanced.LegoSource.Mode = config.PackageSourceModeOffline
+	cfg.Advanced.LegoSource.FilePath = archivePath
+
+	previousProbePackageURL := probePackageURLFn
+	previousHashRemoteArtifact := hashRemoteArtifactFn
+	previousLookupOfficialPackageDigest := lookupOfficialPackageDigestFn
+	t.Cleanup(func() {
+		probePackageURLFn = previousProbePackageURL
+		hashRemoteArtifactFn = previousHashRemoteArtifact
+		lookupOfficialPackageDigestFn = previousLookupOfficialPackageDigest
+	})
+
+	var probedURLs []string
+	var hashedURLs []string
+	probePackageURLFn = func(_ *http.Client, rawURL string) (bool, bool, string) {
+		probedURLs = append(probedURLs, rawURL)
+		return true, true, rawURL + " returned 200."
+	}
+	hashRemoteArtifactFn = func(_ *http.Client, rawURL string) (string, error) {
+		hashedURLs = append(hashedURLs, rawURL)
+		return strings.Repeat("a", 64), nil
+	}
+	lookupOfficialPackageDigestFn = func(_ *http.Client, version string, arch string) (string, error) {
+		return strings.Repeat("a", 64), nil
+	}
+
+	state := detectPackageSourceState(cfg)
+	if state.LegoMode != config.PackageSourceModeOffline {
+		t.Fatalf("LegoMode = %q, want offline", state.LegoMode)
+	}
+	if state.LegoURL != "" {
+		t.Fatalf("LegoURL = %q, want empty for offline", state.LegoURL)
+	}
+	if state.LegoFilePath != archivePath || !state.LegoFileExists || !state.LegoIntegrityChecked || state.LegoActualSHA256 == "" {
+		t.Fatalf("offline lego state = %#v, want local archive inspected", state)
+	}
+	for _, rawURL := range append(probedURLs, hashedURLs...) {
+		if strings.Contains(rawURL, "go-acme/lego") {
+			t.Fatalf("remote lego URL %q was probed/hashed for offline archive", rawURL)
+		}
+	}
+}
+
 func TestExecute_DeployChecksArchitectureBeforePackageMutations(t *testing.T) {
 	baseDir := t.TempDir()
 	configPath := filepath.Join(baseDir, "meshify.yaml")
@@ -2858,9 +2907,9 @@ func TestExecute_DeployUsesConfiguredProxyForGoPreflightProbes(t *testing.T) {
 
 	cfg := config.ExampleConfig()
 	cfg.Default.ServerURL = "https://hs-proxy.invalid"
-	cfg.Advanced.PackageSource.Mode = config.PackageSourceModeMirror
-	cfg.Advanced.PackageSource.URL = "http://packages.invalid/headscale.deb"
-	cfg.Advanced.PackageSource.SHA256 = hex.EncodeToString(packageDigest[:])
+	cfg.Advanced.HeadscaleSource.Mode = config.PackageSourceModeMirror
+	cfg.Advanced.HeadscaleSource.URL = "http://packages.invalid/headscale.deb"
+	cfg.Advanced.HeadscaleSource.SHA256 = hex.EncodeToString(packageDigest[:])
 	cfg.Advanced.Proxy.HTTPProxy = proxyServer.URL
 	if err := cfg.WriteFile(configPath); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)

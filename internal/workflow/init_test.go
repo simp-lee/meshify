@@ -89,8 +89,8 @@ func TestRunInitCollectsDefaultGuidedConfig(t *testing.T) {
 	if result.Config.Default.ACMEChallenge != config.ACMEChallengeHTTP01 {
 		t.Fatalf("ACMEChallenge = %q, want %q", result.Config.Default.ACMEChallenge, config.ACMEChallengeHTTP01)
 	}
-	if result.Config.Advanced.PackageSource.Mode != config.PackageSourceModeDirect {
-		t.Fatalf("PackageSource.Mode = %q, want %q", result.Config.Advanced.PackageSource.Mode, config.PackageSourceModeDirect)
+	if result.Config.Advanced.HeadscaleSource.Mode != config.PackageSourceModeDirect {
+		t.Fatalf("HeadscaleSource.Mode = %q, want %q", result.Config.Advanced.HeadscaleSource.Mode, config.PackageSourceModeDirect)
 	}
 
 	response := result.Response("meshify.yaml")
@@ -169,6 +169,7 @@ func TestRunInitCollectsAdvancedGuidedConfig(t *testing.T) {
 		selects: []string{
 			config.ACMEChallengeDNS01,
 			config.PackageSourceModeMirror,
+			config.PackageSourceModeDirect,
 			config.ArchARM64,
 		},
 	}
@@ -190,8 +191,11 @@ func TestRunInitCollectsAdvancedGuidedConfig(t *testing.T) {
 	if result.Config.Advanced.DNS01.EnvFile != "/etc/meshify/dns01/cloudflare.env" {
 		t.Fatalf("DNS01.EnvFile = %q, want env path", result.Config.Advanced.DNS01.EnvFile)
 	}
-	if result.Config.Advanced.PackageSource.Mode != config.PackageSourceModeMirror {
-		t.Fatalf("PackageSource.Mode = %q, want %q", result.Config.Advanced.PackageSource.Mode, config.PackageSourceModeMirror)
+	if result.Config.Advanced.HeadscaleSource.Mode != config.PackageSourceModeMirror {
+		t.Fatalf("HeadscaleSource.Mode = %q, want %q", result.Config.Advanced.HeadscaleSource.Mode, config.PackageSourceModeMirror)
+	}
+	if result.Config.Advanced.LegoSource.Mode != config.PackageSourceModeDirect {
+		t.Fatalf("LegoSource.Mode = %q, want %q", result.Config.Advanced.LegoSource.Mode, config.PackageSourceModeDirect)
 	}
 	if result.Config.Advanced.Proxy.HTTPProxy != "http://proxy.internal:8080" {
 		t.Fatalf("HTTPProxy = %q, want %q", result.Config.Advanced.Proxy.HTTPProxy, "http://proxy.internal:8080")

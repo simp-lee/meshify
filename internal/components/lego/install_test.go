@@ -113,7 +113,11 @@ func TestNewInstallPlanBuildsVerifiedInstallCommands(t *testing.T) {
 func TestNewInstallPlanSupportsOfflineArchiveWithPinnedDigest(t *testing.T) {
 	t.Parallel()
 
-	plan, err := NewInstallPlan(validConfig(), InstallPlanOptions{OfflineSourcePath: "/srv/packages/lego_v4.35.2_linux_amd64.tar.gz"})
+	cfg := validConfig()
+	cfg.Advanced.LegoSource.Mode = config.PackageSourceModeOffline
+	cfg.Advanced.LegoSource.FilePath = "/srv/packages/lego_v4.35.2_linux_amd64.tar.gz"
+
+	plan, err := NewInstallPlan(cfg, InstallPlanOptions{})
 	if err != nil {
 		t.Fatalf("NewInstallPlan() error = %v", err)
 	}
@@ -128,6 +132,21 @@ func TestNewInstallPlanSupportsOfflineArchiveWithPinnedDigest(t *testing.T) {
 	}
 	if plan.Commands[0].Name != "sha256sum" || !strings.Contains(string(plan.Commands[0].Stdin), plan.Archive.InstallPath()) {
 		t.Fatalf("Commands[0] = %#v, want offline sha256 check first", plan.Commands[0])
+	}
+}
+
+func TestNewInstallPlanOptionsOfflineSourceOverridesConfig(t *testing.T) {
+	t.Parallel()
+
+	plan, err := NewInstallPlan(validConfig(), InstallPlanOptions{OfflineSourcePath: "/srv/packages/lego_v4.35.2_linux_amd64.tar.gz"})
+	if err != nil {
+		t.Fatalf("NewInstallPlan() error = %v", err)
+	}
+	if plan.Archive.Mode != config.PackageSourceModeOffline {
+		t.Fatalf("Mode = %q, want offline", plan.Archive.Mode)
+	}
+	if plan.Archive.InstallPath() != "/srv/packages/lego_v4.35.2_linux_amd64.tar.gz" {
+		t.Fatalf("InstallPath() = %q", plan.Archive.InstallPath())
 	}
 }
 

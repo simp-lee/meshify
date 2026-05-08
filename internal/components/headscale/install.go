@@ -86,7 +86,7 @@ func NewPackagePlan(cfg config.Config, options InstallPlanOptions) (PackagePlan,
 		return PackagePlan{}, err
 	}
 
-	source := cfg.Advanced.PackageSource
+	source := cfg.Advanced.HeadscaleSource
 	mode := strings.TrimSpace(source.Mode)
 	version := strings.TrimSpace(source.Version)
 	if version != Version {

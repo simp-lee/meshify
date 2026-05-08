@@ -42,14 +42,19 @@ when recovery is possible.
 
 ## Package Delivery Problems
 
-- Direct mode downloads the pinned official Headscale v0.28.0 `.deb` and
-  verifies SHA-256 evidence before install.
-- Mirror mode requires a reachable URL and explicit SHA-256 digest.
-- Offline mode requires a local file path and explicit SHA-256 digest.
+- `advanced.headscale_source.mode: "direct"` downloads the pinned official
+  Headscale v0.28.0 `.deb` and verifies SHA-256 evidence before install.
+- `advanced.headscale_source.mode: "mirror"` requires a reachable URL and
+  explicit SHA-256 digest.
+- `advanced.headscale_source.mode: "offline"` requires a local `.deb` file path
+  and explicit SHA-256 digest.
 - If the host needs a proxy, set standard `http_proxy`, `https_proxy`, and
   `no_proxy` values in the advanced config. The same proxy path must also allow
   the pinned lego v4.35.2 GitHub release archive unless the host reaches it
-  directly.
+  directly or `advanced.lego_source.mode` is `offline`.
+- Offline lego mode requires `advanced.lego_source.file_path` to point at the
+  exact pinned lego archive for `advanced.platform.arch`. Meshify verifies the
+  built-in archive SHA-256 before installing `/opt/meshify/bin/lego`.
 
 ## DNS, Ingress, And TLS Problems
 
@@ -106,7 +111,7 @@ when recovery is possible.
 
 - The full `meshify deploy`, `meshify verify`, or `meshify status` output.
 - The edited values from the `default` section of `meshify.yaml`.
-- Whether the package source mode is direct, mirror, or offline.
+- Whether the Headscale source mode is direct, mirror, or offline.
 - Which client guide you followed: [Windows](clients/windows.md),
   [macOS](clients/macos.md), or
   [Debian/Ubuntu Linux](clients/debian-ubuntu-linux.md).
