@@ -2,11 +2,11 @@ package tls
 
 import (
 	"fmt"
+	"meshify/internal/acme"
+	"meshify/internal/config"
 	"strings"
 
-	"meshify/internal/acme"
 	legocomponent "meshify/internal/components/lego"
-	"meshify/internal/config"
 )
 
 const (

@@ -3,6 +3,7 @@ package headscale
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"meshify/internal/host"
 	"regexp"
@@ -35,17 +36,31 @@ type User struct {
 	Name string
 }
 
+type UserNotFoundError struct {
+	UserName string
+}
+
+func (err UserNotFoundError) Error() string {
+	return fmt.Sprintf("headscale user %q was not found in users list output", err.UserName)
+}
+
 type cliUser struct {
 	ID   uint64 `json:"id"`
 	Name string `json:"name"`
 }
 
 type Onboarding struct {
-	executor host.Executor
+	executor              host.Executor
+	readinessTimeout      time.Duration
+	readinessPollInterval time.Duration
 }
 
 func NewOnboarding(executor host.Executor) Onboarding {
-	return Onboarding{executor: executor}
+	return Onboarding{
+		executor:              executor,
+		readinessTimeout:      30 * time.Second,
+		readinessPollInterval: time.Second,
+	}
 }
 
 func NewOnboardingPlan(options OnboardingOptions) (OnboardingPlan, error) {
@@ -97,32 +112,78 @@ func CreatePreAuthKeyCommand(userID string, plan OnboardingPlan) host.Command {
 
 func (onboarding Onboarding) CreatePreAuthKey(ctx context.Context, plan OnboardingPlan) (string, []host.Result, error) {
 	results := []host.Result{}
-	createUserResult, err := onboarding.executor.Run(ctx, CreateUserCommand(plan.UserName))
-	results = append(results, createUserResult)
-	if err != nil && !commandLooksLikeExistingUser(createUserResult, err) {
-		return "", results, err
-	}
-
-	listResult, err := onboarding.executor.Run(ctx, ListUsersCommand())
+	listResult, err := onboarding.listUsersWhenReady(ctx)
 	results = append(results, listResult)
 	if err != nil {
-		return "", results, err
+		return "", results, commandErrorWithOutput(listResult, err)
 	}
 	userID, err := FindUserID(listResult.Stdout, plan.UserName)
 	if err != nil {
-		return "", results, err
+		if !userWasNotFound(err) {
+			return "", results, err
+		}
+
+		createUserResult, createErr := onboarding.executor.Run(ctx, CreateUserCommand(plan.UserName))
+		results = append(results, createUserResult)
+		if createErr != nil && !commandLooksLikeExistingUser(createUserResult, createErr) {
+			return "", results, commandErrorWithOutput(createUserResult, createErr)
+		}
+
+		listResult, err = onboarding.listUsersWhenReady(ctx)
+		results = append(results, listResult)
+		if err != nil {
+			return "", results, commandErrorWithOutput(listResult, err)
+		}
+		userID, err = FindUserID(listResult.Stdout, plan.UserName)
+		if err != nil {
+			return "", results, err
+		}
 	}
 
 	keyResult, err := onboarding.executor.Run(ctx, CreatePreAuthKeyCommand(userID, plan))
 	results = append(results, keyResult)
 	if err != nil {
-		return "", results, err
+		return "", results, commandErrorWithOutput(keyResult, err)
 	}
 	key := strings.TrimSpace(keyResult.Stdout)
 	if key == "" {
 		return "", results, fmt.Errorf("headscale preauthkeys create returned an empty key")
 	}
 	return key, results, nil
+}
+
+func (onboarding Onboarding) listUsersWhenReady(ctx context.Context) (host.Result, error) {
+	timeout := onboarding.readinessTimeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	interval := onboarding.readinessPollInterval
+	if interval <= 0 {
+		interval = time.Second
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	var lastResult host.Result
+	for {
+		result, err := onboarding.executor.Run(ctx, ListUsersCommand())
+		if err == nil {
+			return result, nil
+		}
+		lastResult = result
+		if !commandLooksLikeTransientHeadscaleCLIReadiness(result, err) {
+			return result, err
+		}
+
+		timer := time.NewTimer(interval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return lastResult, err
+		case <-timer.C:
+		}
+	}
 }
 
 func FindUserID(output string, userName string) (string, error) {
@@ -143,7 +204,7 @@ func FindUserID(output string, userName string) (string, error) {
 	if len(matches) == 1 {
 		return matches[0].ID, nil
 	}
-	return "", fmt.Errorf("headscale user %q was not found in users list output", userName)
+	return "", UserNotFoundError{UserName: userName}
 }
 
 func ParseUsers(output string) []User {
@@ -265,7 +326,63 @@ func userNameColumn(fields []string) (int, bool) {
 
 func commandLooksLikeExistingUser(result host.Result, err error) bool {
 	text := strings.ToLower(strings.TrimSpace(result.Stdout + "\n" + result.Stderr + "\n" + err.Error()))
-	return strings.Contains(text, "already") && strings.Contains(text, "exist")
+	if strings.Contains(text, "already") && strings.Contains(text, "exist") {
+		return true
+	}
+	return strings.Contains(text, "unique constraint") && strings.Contains(text, "users") && strings.Contains(text, "name")
+}
+
+func commandLooksLikeTransientHeadscaleCLIReadiness(result host.Result, err error) bool {
+	text := strings.ToLower(strings.TrimSpace(result.Stdout + "\n" + result.Stderr + "\n" + err.Error()))
+	if text == "" {
+		return false
+	}
+	switch {
+	case strings.Contains(text, "could not connect"):
+		return true
+	case strings.Contains(text, "context deadline exceeded"):
+		return true
+	case strings.Contains(text, "connection refused"):
+		return true
+	case strings.Contains(text, "transport: error while dialing"):
+		return true
+	case strings.Contains(text, "connect: no such file or directory"):
+		return true
+	case strings.Contains(text, "no such file or directory") && strings.Contains(text, "headscale.sock"):
+		return true
+	case strings.Contains(text, "nil pointer") && strings.Contains(text, "newheadscalecliwithconfig"):
+		return true
+	default:
+		return false
+	}
+}
+
+func commandErrorWithOutput(result host.Result, err error) error {
+	if err == nil {
+		return nil
+	}
+	detail := firstNonEmptyLine(result.Stderr, result.Stdout)
+	if detail == "" {
+		return err
+	}
+	return fmt.Errorf("%w: %s", err, detail)
+}
+
+func firstNonEmptyLine(values ...string) string {
+	for _, value := range values {
+		for _, line := range strings.Split(value, "\n") {
+			line = strings.TrimSpace(line)
+			if line != "" {
+				return line
+			}
+		}
+	}
+	return ""
+}
+
+func userWasNotFound(err error) bool {
+	var notFound UserNotFoundError
+	return err != nil && errors.As(err, &notFound)
 }
 
 func durationForCLI(duration time.Duration) string {

@@ -19,9 +19,9 @@ func TestDiagnosticsFormatterWritesHumanSummary(t *testing.T) {
 				Title:    "Supported platform",
 				Status:   preflight.StatusFail,
 				Severity: preflight.SeverityError,
-				Summary:  "Ubuntu 22.04 is outside the first-release support matrix.",
+				Summary:  "Fedora Linux 41 is outside the server support matrix.",
 				Remediations: []string{
-					"Use Debian 13 or Ubuntu 24.04 LTS for first-release server deployments.",
+					"Use Debian, Ubuntu, or a Debian-family distribution that reports debian or ubuntu in ID_LIKE.",
 				},
 			},
 			{

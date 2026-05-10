@@ -6,10 +6,11 @@ import (
 	"strings"
 )
 
-const supportedServerMatrix = "Debian 13 and Ubuntu 24.04 LTS"
+const supportedServerMatrix = "Debian, Ubuntu, and Debian-family systems with apt/dpkg/systemd"
 
 type PlatformInfo struct {
 	ID         string `json:"id,omitempty"`
+	IDLike     string `json:"id_like,omitempty"`
 	VersionID  string `json:"version_id,omitempty"`
 	PrettyName string `json:"pretty_name,omitempty"`
 }
@@ -31,6 +32,8 @@ func ParseOSRelease(content string) PlatformInfo {
 		switch key {
 		case "ID":
 			info.ID = value
+		case "ID_LIKE":
+			info.IDLike = value
 		case "VERSION_ID":
 			info.VersionID = value
 		case "PRETTY_NAME":
@@ -86,29 +89,38 @@ func unescapeOSReleaseValue(value string, start int) string {
 
 func CheckPlatform(info PlatformInfo) CheckResult {
 	id := strings.ToLower(strings.TrimSpace(info.ID))
+	idLike := strings.ToLower(strings.TrimSpace(info.IDLike))
 	version := strings.TrimSpace(info.VersionID)
 	label := platformLabel(info)
 
-	if id == "" || version == "" {
+	if id == "" {
 		return newCheckResult(
 			"platform",
 			"Supported platform",
 			StatusFail,
 			SeverityError,
 			"Unable to determine the server distribution from os-release data.",
-			[]string{"The first-release support matrix is limited to Debian 13 and Ubuntu 24.04 LTS."},
-			[]string{"Confirm /etc/os-release is readable and reports a Debian 13 or Ubuntu 24.04 LTS host."},
+			[]string{"The server support matrix is limited to Debian, Ubuntu, and Debian-family systems."},
+			[]string{"Confirm /etc/os-release is readable and reports ID=debian, ID=ubuntu, or ID_LIKE containing debian or ubuntu."},
 		)
 	}
 
-	if isSupportedPlatform(id, version) {
+	findings := []string{fmt.Sprintf("Supported server matrix: %s.", supportedServerMatrix)}
+	if version != "" {
+		findings = append(findings, fmt.Sprintf("Detected VERSION_ID: %s.", version))
+	}
+	if idLike != "" {
+		findings = append(findings, fmt.Sprintf("Detected ID_LIKE: %s.", idLike))
+	}
+
+	if isSupportedPlatform(id, idLike) {
 		return newCheckResult(
 			"platform",
 			"Supported platform",
 			StatusPass,
 			SeverityInfo,
-			fmt.Sprintf("%s is inside the first-release support matrix.", label),
-			[]string{fmt.Sprintf("Supported server matrix: %s.", supportedServerMatrix)},
+			fmt.Sprintf("%s is inside the server support matrix.", label),
+			findings,
 			nil,
 		)
 	}
@@ -118,24 +130,31 @@ func CheckPlatform(info PlatformInfo) CheckResult {
 		"Supported platform",
 		StatusFail,
 		SeverityError,
-		fmt.Sprintf("%s is outside the first-release support matrix.", label),
-		[]string{fmt.Sprintf("Supported server matrix: %s.", supportedServerMatrix)},
+		fmt.Sprintf("%s is outside the server support matrix.", label),
+		findings,
 		[]string{
-			"Use Debian 13 or Ubuntu 24.04 LTS for first-release server deployments.",
-			"Treat other distributions as out of scope until a later support-matrix change lands.",
+			"Use Debian, Ubuntu, or a Debian-family distribution that reports debian or ubuntu in ID_LIKE.",
+			"Treat non-Debian-family distributions as out of scope until a support-matrix change lands.",
 		},
 	)
 }
 
-func isSupportedPlatform(id string, version string) bool {
-	switch id {
-	case "debian":
-		return version == "13" || strings.HasPrefix(version, "13.")
-	case "ubuntu":
-		return version == "24.04" || strings.HasPrefix(version, "24.04.")
-	default:
-		return false
+func isSupportedPlatform(id string, idLike string) bool {
+	for _, token := range platformFamilyTokens(id, idLike) {
+		switch token {
+		case "debian", "ubuntu":
+			return true
+		}
 	}
+	return false
+}
+
+func platformFamilyTokens(values ...string) []string {
+	tokens := []string{}
+	for _, value := range values {
+		tokens = append(tokens, strings.Fields(strings.ToLower(strings.TrimSpace(value)))...)
+	}
+	return tokens
 }
 
 func platformLabel(info PlatformInfo) string {

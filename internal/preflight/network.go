@@ -23,6 +23,13 @@ type PortBinding struct {
 	Process  string `json:"process,omitempty"`
 }
 
+type PortRequirement struct {
+	Port       int
+	Protocol   string
+	Purpose    string
+	Reviewable bool
+}
+
 type FirewallState struct {
 	Backend        string   `json:"backend,omitempty"`
 	Inspected      bool     `json:"inspected"`
@@ -38,10 +45,10 @@ type ServiceState struct {
 	Detail string `json:"detail,omitempty"`
 }
 
-var requiredServicePorts = []PortBinding{
-	{Port: 80, Protocol: "tcp"},
-	{Port: 443, Protocol: "tcp"},
-	{Port: 3478, Protocol: "udp"},
+var requiredPublicServicePorts = []PortRequirement{
+	{Port: 80, Protocol: "tcp", Purpose: "Nginx HTTP and ACME HTTP-01", Reviewable: true},
+	{Port: 443, Protocol: "tcp", Purpose: "Nginx HTTPS and DERP", Reviewable: true},
+	{Port: 3478, Protocol: "udp", Purpose: "Headscale embedded STUN"},
 }
 
 var nonPublicRoutableIPPrefixes = []netip.Prefix{
@@ -160,6 +167,15 @@ func CheckServerDNS(probe DNSProbe) CheckResult {
 }
 
 func CheckPortAvailability(bindings []PortBinding) CheckResult {
+	return checkPortAvailability(bindings, requiredPublicServicePorts)
+}
+
+func CheckPortAvailabilityForConfig(cfg config.Config, bindings []PortBinding) CheckResult {
+	return checkPortAvailability(bindings, requiredPortRequirements(cfg))
+}
+
+func checkPortAvailability(bindings []PortBinding, requirements []PortRequirement) CheckResult {
+	requiredList := formatRequiredPortList(requirements)
 	if len(bindings) == 0 {
 		return newCheckResult(
 			"ports",
@@ -167,8 +183,8 @@ func CheckPortAvailability(bindings []PortBinding) CheckResult {
 			StatusManual,
 			SeverityManual,
 			"Port occupancy still needs host-side confirmation.",
-			[]string{"Required ports: 80/tcp, 443/tcp, and 3478/udp."},
-			[]string{"Confirm that 80/tcp, 443/tcp, and 3478/udp are free before running deploy."},
+			[]string{fmt.Sprintf("Required ports: %s.", requiredList)},
+			[]string{fmt.Sprintf("Confirm that %s are free before running deploy.", requiredList)},
 		)
 	}
 
@@ -189,20 +205,20 @@ func CheckPortAvailability(bindings []PortBinding) CheckResult {
 	blocking := []string{}
 	review := []string{}
 	available := []string{}
-	for _, required := range requiredServicePorts {
-		binding, ok := provided[portLabel(required)]
+	for _, required := range requirements {
+		binding, ok := provided[portRequirementKey(required)]
+		label := portRequirementLabel(required)
 		if !ok {
-			missing = append(missing, fmt.Sprintf("Missing occupancy probe for %s.", portLabel(required)))
+			missing = append(missing, fmt.Sprintf("Missing occupancy probe for %s.", label))
 			continue
 		}
 
-		label := portLabel(binding)
 		if binding.InUse {
 			process := strings.TrimSpace(binding.Process)
 			if process == "" {
 				process = "another process"
 			}
-			if isReviewableHTTPPortBinding(binding, process) {
+			if required.Reviewable && isReviewableHTTPPortBinding(binding, process) {
 				review = append(review, fmt.Sprintf("%s is already in use by %s and needs a coexistence review.", label, process))
 				continue
 			}
@@ -223,7 +239,7 @@ func CheckPortAvailability(bindings []PortBinding) CheckResult {
 			SeverityError,
 			"Required service ports have incompatible listeners.",
 			findings,
-			[]string{"Stop or move the incompatible listeners before deploy, and only keep 80/tcp or 443/tcp occupied when an explicit web-service coexistence review is complete."},
+			[]string{"Stop or move incompatible listeners before deploy. If only the Headscale metrics port conflicts, set advanced.headscale.metrics_port to an available loopback TCP port."},
 		)
 	}
 
@@ -238,7 +254,7 @@ func CheckPortAvailability(bindings []PortBinding) CheckResult {
 			SeverityManual,
 			"Port occupancy still needs complete host-side confirmation.",
 			findings,
-			[]string{"Collect occupancy results for 80/tcp, 443/tcp, and 3478/udp before deploy."},
+			[]string{fmt.Sprintf("Collect occupancy results for %s before deploy.", requiredList)},
 		)
 	}
 
@@ -265,6 +281,21 @@ func CheckPortAvailability(bindings []PortBinding) CheckResult {
 		available,
 		nil,
 	)
+}
+
+func requiredPortRequirements(cfg config.Config) []PortRequirement {
+	metricsPort := cfg.Advanced.Headscale.MetricsPort
+	if metricsPort == 0 {
+		metricsPort = config.DefaultHeadscaleMetricsPort
+	}
+
+	requirements := append([]PortRequirement(nil), requiredPublicServicePorts...)
+	requirements = append(requirements,
+		PortRequirement{Port: 8080, Protocol: "tcp", Purpose: "Headscale control-plane loopback listener"},
+		PortRequirement{Port: metricsPort, Protocol: "tcp", Purpose: "Headscale metrics loopback listener"},
+		PortRequirement{Port: 50443, Protocol: "tcp", Purpose: "Headscale gRPC loopback listener"},
+	)
+	return uniquePortRequirements(requirements)
 }
 
 func CheckFirewall(state FirewallState) CheckResult {
@@ -440,6 +471,58 @@ func BuildManualChecklists(cfg config.Config) []ManualChecklist {
 		Title: "Cloud and compliance review",
 		Items: items,
 	}}
+}
+
+func uniquePortRequirements(requirements []PortRequirement) []PortRequirement {
+	unique := make([]PortRequirement, 0, len(requirements))
+	seen := map[string]struct{}{}
+	for _, requirement := range requirements {
+		key := portRequirementKey(requirement)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		unique = append(unique, requirement)
+	}
+	return unique
+}
+
+func formatRequiredPortList(requirements []PortRequirement) string {
+	labels := make([]string, 0, len(requirements))
+	for _, requirement := range requirements {
+		labels = append(labels, portRequirementKey(requirement))
+	}
+	return humanJoin(labels)
+}
+
+func portRequirementKey(requirement PortRequirement) string {
+	protocol := strings.ToLower(strings.TrimSpace(requirement.Protocol))
+	if protocol == "" {
+		protocol = "tcp"
+	}
+	return fmt.Sprintf("%d/%s", requirement.Port, protocol)
+}
+
+func portRequirementLabel(requirement PortRequirement) string {
+	label := portRequirementKey(requirement)
+	if purpose := strings.TrimSpace(requirement.Purpose); purpose != "" {
+		return fmt.Sprintf("%s (%s)", label, purpose)
+	}
+	return label
+}
+
+func humanJoin(values []string) string {
+	values = compactStrings(values)
+	switch len(values) {
+	case 0:
+		return ""
+	case 1:
+		return values[0]
+	case 2:
+		return values[0] + " and " + values[1]
+	default:
+		return strings.Join(values[:len(values)-1], ", ") + ", and " + values[len(values)-1]
+	}
 }
 
 func containsString(values []string, want string) bool {

@@ -11,6 +11,9 @@ func New() Config {
 				Mode:    PackageSourceModeDirect,
 				Version: DefaultHeadscaleVersion,
 			},
+			Headscale: HeadscaleConfig{
+				MetricsPort: DefaultHeadscaleMetricsPort,
+			},
 			LegoSource: LegoSourceConfig{
 				Mode: PackageSourceModeDirect,
 			},

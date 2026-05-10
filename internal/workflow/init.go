@@ -3,13 +3,13 @@ package workflow
 
 import (
 	"fmt"
+	"meshify/internal/config"
+	"meshify/internal/output"
 	"net/url"
 	"path/filepath"
 	"strings"
 
 	tlscomponent "meshify/internal/components/tls"
-	"meshify/internal/config"
-	"meshify/internal/output"
 )
 
 type InitMode string

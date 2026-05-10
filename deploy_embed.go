@@ -1,3 +1,4 @@
+// Package deployembed exposes deploy source files for build-time embedding.
 package deployembed
 
 import "embed"

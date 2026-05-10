@@ -57,9 +57,10 @@ default:
   # mode for DNS-01.
   acme_challenge: "http-01"
 
-# The advanced section is opt-in. Leave values empty unless you have a real
-# need for Headscale package mirrors/offline packages, lego offline archives,
-# proxies, DNS-01, architecture overrides, or public IP overrides.
+# The advanced section is opt-in. Leave defaults and empty values unless you
+# have a real need for Headscale package mirrors/offline packages, metrics port
+# changes, lego offline archives, proxies, DNS-01, architecture overrides, or
+# public IP overrides.
 advanced:
   headscale_source:
     mode: "direct" # direct | mirror | offline
@@ -67,6 +68,11 @@ advanced:
     url: ""
     sha256: ""
     file_path: ""
+
+  headscale:
+    # Metrics stay on loopback. Change this when another local service, such as
+    # Cockpit, already owns the default metrics port.
+    metrics_port: %d
 
   lego_source:
     # Keep direct unless the host cannot download the pinned lego archive from
@@ -99,7 +105,7 @@ advanced:
 
   platform:
     arch: "%s"
-`, APIVersion, DefaultHeadscaleVersion, ArchAMD64)
+`, APIVersion, DefaultHeadscaleVersion, DefaultHeadscaleMetricsPort, ArchAMD64)
 
 	return []byte(data), nil
 }

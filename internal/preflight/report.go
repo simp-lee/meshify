@@ -3,10 +3,9 @@ package preflight
 
 import (
 	"fmt"
+	"meshify/internal/config"
 	"net/url"
 	"strings"
-
-	"meshify/internal/config"
 )
 
 type Status string
@@ -50,6 +49,7 @@ type Report struct {
 type Inputs struct {
 	Permissions   PermissionState
 	Platform      PlatformInfo
+	Capabilities  HostCapabilityState
 	DNS           DNSProbe
 	Ports         []PortBinding
 	Firewall      FirewallState
@@ -117,8 +117,9 @@ func BuildReport(cfg config.Config, inputs Inputs) Report {
 		Checks: []CheckResult{
 			CheckPermissions(inputs.Permissions),
 			CheckPlatform(inputs.Platform),
+			CheckHostCapabilities(inputs.Capabilities),
 			CheckServerDNS(dns),
-			CheckPortAvailability(inputs.Ports),
+			CheckPortAvailabilityForConfig(cfg, inputs.Ports),
 			CheckFirewall(inputs.Firewall),
 			CheckServiceConflicts(inputs.Services),
 			CheckPackageSource(packageSource),

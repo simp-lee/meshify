@@ -2,11 +2,10 @@ package tls
 
 import (
 	"fmt"
-	"net/url"
-	"strings"
-
 	"meshify/internal/config"
 	"meshify/internal/host"
+	"net/url"
+	"strings"
 )
 
 type CertificatePlan struct {

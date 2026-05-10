@@ -8,9 +8,9 @@ import (
 	"meshify/internal/components/nginx"
 	"meshify/internal/config"
 	"meshify/internal/render"
+	"strings"
 
 	tlscomponent "meshify/internal/components/tls"
-	"strings"
 )
 
 const MinimumTailscaleClientVersion = "1.74.0"

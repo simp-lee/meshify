@@ -3,11 +3,10 @@ package lego
 import (
 	"context"
 	"fmt"
-	"path/filepath"
-	"strings"
-
 	"meshify/internal/config"
 	"meshify/internal/host"
+	"path/filepath"
+	"strings"
 )
 
 const (

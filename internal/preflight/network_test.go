@@ -1,6 +1,7 @@
 package preflight
 
 import (
+	"meshify/internal/config"
 	"strings"
 	"testing"
 )
@@ -163,6 +164,55 @@ func TestCheckPortAvailabilityBlocksNonNginxWebListeners(t *testing.T) {
 				t.Fatalf("CheckPortAvailability() findings = %q, want process detail", strings.Join(result.Findings, " | "))
 			}
 		})
+	}
+}
+
+func TestCheckPortAvailabilityForConfigChecksHeadscaleLocalPorts(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.ExampleConfig()
+	cfg.Advanced.Headscale.MetricsPort = 19091
+
+	result := CheckPortAvailabilityForConfig(cfg, []PortBinding{
+		{Port: 80, Protocol: "tcp", InUse: false},
+		{Port: 443, Protocol: "tcp", InUse: false},
+		{Port: 3478, Protocol: "udp", InUse: false},
+		{Port: 8080, Protocol: "tcp", InUse: false},
+		{Port: 19091, Protocol: "tcp", InUse: true, Process: "cockpit-tls"},
+		{Port: 50443, Protocol: "tcp", InUse: false},
+	})
+
+	if result.Status != StatusFail {
+		t.Fatalf("CheckPortAvailabilityForConfig() status = %q, want %q", result.Status, StatusFail)
+	}
+	joined := strings.Join(result.Findings, "\n")
+	for _, want := range []string{"19091/tcp", "Headscale metrics", "cockpit-tls"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("CheckPortAvailabilityForConfig() findings = %q, want substring %q", joined, want)
+		}
+	}
+	if !strings.Contains(strings.Join(result.Remediations, "\n"), "advanced.headscale.metrics_port") {
+		t.Fatalf("CheckPortAvailabilityForConfig() remediations = %q, want metrics config guidance", strings.Join(result.Remediations, " | "))
+	}
+}
+
+func TestCheckPortAvailabilityForConfigRequiresLocalProbeSet(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.ExampleConfig()
+	result := CheckPortAvailabilityForConfig(cfg, []PortBinding{
+		{Port: 80, Protocol: "tcp", InUse: false},
+		{Port: 443, Protocol: "tcp", InUse: false},
+		{Port: 3478, Protocol: "udp", InUse: false},
+	})
+
+	if result.Status != StatusManual {
+		t.Fatalf("CheckPortAvailabilityForConfig() status = %q, want %q", result.Status, StatusManual)
+	}
+	for _, want := range []string{"8080/tcp", "19090/tcp", "50443/tcp"} {
+		if !strings.Contains(strings.Join(result.Findings, "\n"), want) {
+			t.Fatalf("CheckPortAvailabilityForConfig() findings = %q, want missing probe %q", strings.Join(result.Findings, " | "), want)
+		}
 	}
 }
 

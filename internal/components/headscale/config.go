@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"meshify/internal/config"
-	"net"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -14,7 +13,6 @@ import (
 
 const (
 	ListenAddress        = "127.0.0.1:8080"
-	MetricsListenAddress = "127.0.0.1:9090"
 	GRPCListenAddress    = "127.0.0.1:50443"
 	STUNListenAddress    = "0.0.0.0:3478"
 	UnixSocketPath       = "/var/run/headscale/headscale.sock"
@@ -99,7 +97,7 @@ func ValidateRuntimeConfig(cfg config.Config, data []byte) error {
 	var errs []string
 	expectEqual(&errs, "server_url", runtimeConfig.ServerURL, strings.TrimSpace(cfg.Default.ServerURL))
 	expectEqual(&errs, "listen_addr", runtimeConfig.ListenAddr, ListenAddress)
-	expectLoopback(&errs, "metrics_listen_addr", runtimeConfig.MetricsListenAddr)
+	expectEqual(&errs, "metrics_listen_addr", runtimeConfig.MetricsListenAddr, metricsListenAddress(cfg))
 	expectEqual(&errs, "grpc_listen_addr", runtimeConfig.GRPCListenAddr, GRPCListenAddress)
 	if runtimeConfig.GRPCAllowInsecure {
 		errs = append(errs, "grpc_allow_insecure must be false")
@@ -149,21 +147,12 @@ func ValidateRuntimeConfig(cfg config.Config, data []byte) error {
 	return nil
 }
 
+func metricsListenAddress(cfg config.Config) string {
+	return fmt.Sprintf("127.0.0.1:%d", cfg.Advanced.Headscale.MetricsPort)
+}
+
 func expectEqual(errs *[]string, field string, got string, want string) {
 	if strings.TrimSpace(got) != strings.TrimSpace(want) {
 		*errs = append(*errs, fmt.Sprintf("%s must be %q", field, want))
 	}
-}
-
-func expectLoopback(errs *[]string, field string, value string) {
-	host, _, err := net.SplitHostPort(strings.TrimSpace(value))
-	if err != nil {
-		*errs = append(*errs, fmt.Sprintf("%s must be a host:port loopback listener", field))
-		return
-	}
-	parsedIP := net.ParseIP(host)
-	if host == "localhost" || parsedIP != nil && parsedIP.IsLoopback() {
-		return
-	}
-	*errs = append(*errs, fmt.Sprintf("%s must listen on loopback", field))
 }

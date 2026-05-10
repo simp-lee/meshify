@@ -9,6 +9,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"meshify/internal/assets"
+	"meshify/internal/components/headscale"
+	"meshify/internal/components/nginx"
+	"meshify/internal/config"
+	"meshify/internal/host"
+	"meshify/internal/output"
+	"meshify/internal/preflight"
+	"meshify/internal/render"
+	"meshify/internal/state"
+	"meshify/internal/verify"
+	"meshify/internal/workflow"
 	"net"
 	"net/http"
 	"net/url"
@@ -24,19 +35,10 @@ import (
 	"time"
 
 	acmecatalog "meshify/internal/acme"
-	"meshify/internal/assets"
-	"meshify/internal/components/headscale"
+
 	legocomponent "meshify/internal/components/lego"
-	"meshify/internal/components/nginx"
+
 	tlscomponent "meshify/internal/components/tls"
-	"meshify/internal/config"
-	"meshify/internal/host"
-	"meshify/internal/output"
-	"meshify/internal/preflight"
-	"meshify/internal/render"
-	"meshify/internal/state"
-	"meshify/internal/verify"
-	"meshify/internal/workflow"
 
 	"golang.org/x/net/http/httpproxy"
 )
@@ -84,6 +86,7 @@ var (
 	collectDeployPreflightInputs  = defaultDeployPreflightInputs
 	detectPermissionStateFn       = detectPermissionState
 	detectPlatformInfoFn          = detectPlatformInfo
+	detectHostCapabilityStateFn   = detectHostCapabilityState
 	detectDNSProbeFn              = detectDNSProbe
 	detectPortBindingsFn          = detectPortBindings
 	detectFirewallStateFn         = detectFirewallState
@@ -116,8 +119,10 @@ var requiredFirewallPorts = []string{"80/tcp", "443/tcp", "3478/udp"}
 
 var knownConflictServices = []string{"headscale", "nginx", "apache2", "caddy", "traefik"}
 
-var ufwStatusColumnSeparator = regexp.MustCompile(`[[:space:]]{2,}`)
-var dnsEnvFileKeyPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+var (
+	ufwStatusColumnSeparator = regexp.MustCompile(`[[:space:]]{2,}`)
+	dnsEnvFileKeyPattern     = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+)
 
 var ufwApplicationProfilePorts = map[string][]string{
 	"nginx full":  {"80/tcp", "443/tcp"},
@@ -229,6 +234,7 @@ func runDeploy(ctx context, args []string) error {
 	var results []host.FileInstallResult
 	var stagedFiles []render.StagedFile
 	var onboardingKey string
+	headscaleRestarted := false
 	if !deployPhaseCompleted(checkpoint, deployCheckpointPackageManagerReady) {
 		if _, err := executor.AptGet(stdcontext.Background(), "--version"); err != nil {
 			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
@@ -590,12 +596,26 @@ func runDeploy(ctx context, args []string) error {
 				Cause:        err,
 			})
 		}
+		headscaleRestarted = true
 		if err := recordDeployCheckpoint(formatter, checkpointStore, &checkpoint, deployCheckpointServicesEnabled, options.configPath); err != nil {
 			return err
 		}
 	}
 
 	if deployPhaseCompleted(checkpoint, deployCheckpointServicesEnabled) && !deployPhaseCompleted(checkpoint, deployCheckpointOnboardingReady) {
+		if !headscaleRestarted {
+			if _, err := systemd.Restart(stdcontext.Background(), headscale.ServiceName); err != nil {
+				removeDeployCheckpoint(&checkpoint, deployCheckpointServicesEnabled)
+				return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
+					Step:         "restart Headscale",
+					Operation:    "restarting the Headscale systemd unit before resumed onboarding",
+					Impact:       "clients cannot register or reconnect until Headscale starts with the rendered config",
+					Remediation:  []string{"Inspect 'systemctl status headscale.service --no-pager --full' and 'journalctl -u headscale.service -n 100 --no-pager', fix the reported config or runtime error, and rerun deploy."},
+					RetryCommand: deployRetryCommand(options.configPath),
+					Cause:        err,
+				})
+			}
+		}
 		onboardingPlan, err := headscale.NewOnboardingPlan(headscale.OnboardingOptions{})
 		if err != nil {
 			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
@@ -609,11 +629,12 @@ func runDeploy(ctx context, args []string) error {
 		}
 		key, _, err := newHeadscaleOnboarderFn(privilegedExecutor).CreatePreAuthKey(stdcontext.Background(), onboardingPlan)
 		if err != nil {
+			removeDeployCheckpoint(&checkpoint, deployCheckpointServicesEnabled)
 			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 				Step:         "create onboarding preauthkey",
 				Operation:    "creating the first Headscale user and preauthkey through local CLI management",
 				Impact:       "server deployment may be complete, but clients cannot join non-interactively until a preauthkey exists",
-				Remediation:  []string{"Inspect 'headscale users list' locally, fix Headscale service health, and rerun deploy."},
+				Remediation:  []string{"Inspect 'systemctl status headscale.service --no-pager --full' and 'journalctl -u headscale.service -n 100 --no-pager', fix Headscale service health, and rerun deploy."},
 				RetryCommand: deployRetryCommand(options.configPath),
 				Cause:        err,
 			})
@@ -737,8 +758,9 @@ func defaultDeployPreflightInputs(cfg config.Config) preflight.Inputs {
 	return preflight.Inputs{
 		Permissions:   detectPermissionStateFn(),
 		Platform:      detectPlatformInfoFn(),
+		Capabilities:  detectHostCapabilityStateFn(),
 		DNS:           detectDNSProbeFn(cfg.Default.ServerURL),
-		Ports:         detectPortBindingsFn(),
+		Ports:         detectPortBindingsFn(cfg),
 		Firewall:      detectFirewallStateFn(),
 		Services:      detectServiceStatesFn(),
 		PackageSource: detectPackageSourceStateFn(cfg),
@@ -774,11 +796,56 @@ func deployPrivilegeStrategy(state preflight.PermissionState) host.PrivilegeStra
 }
 
 func detectPlatformInfo() preflight.PlatformInfo {
-	content, err := os.ReadFile("/etc/os-release")
-	if err != nil {
-		return preflight.PlatformInfo{}
+	return parsePlatformInfoFromOSRelease(os.ReadFile, "/etc/os-release", "/usr/lib/os-release")
+}
+
+func parsePlatformInfoFromOSRelease(readFile func(string) ([]byte, error), paths ...string) preflight.PlatformInfo {
+	for _, path := range paths {
+		content, err := readFile(path)
+		if err == nil {
+			return preflight.ParseOSRelease(string(content))
+		}
 	}
-	return preflight.ParseOSRelease(string(content))
+	return preflight.PlatformInfo{}
+}
+
+func detectHostCapabilityState() preflight.HostCapabilityState {
+	state := preflight.HostCapabilityState{}
+	if path, ok := commandAvailable("apt-get"); ok {
+		state.AptGetAvailable = true
+		state.AptGetDetail = path
+	} else {
+		state.AptGetDetail = "not found in PATH"
+	}
+	if path, ok := commandAvailable("dpkg"); ok {
+		state.DpkgAvailable = true
+		state.DpkgDetail = path
+	} else {
+		state.DpkgDetail = "not found in PATH"
+	}
+	if path, ok := commandAvailable("systemctl"); ok {
+		state.SystemctlAvailable = true
+		state.SystemctlDetail = path
+	} else {
+		state.SystemctlDetail = "not found in PATH"
+	}
+	if info, err := os.Stat("/run/systemd/system"); err == nil && info.IsDir() {
+		state.SystemdRuntimeAvailable = true
+		state.SystemdRuntimeDetail = "/run/systemd/system exists"
+	} else if err != nil {
+		state.SystemdRuntimeDetail = err.Error()
+	} else {
+		state.SystemdRuntimeDetail = "/run/systemd/system is not a directory"
+	}
+	return state
+}
+
+func commandAvailable(name string) (string, bool) {
+	path, err := exec.LookPath(name)
+	if err != nil {
+		return "", false
+	}
+	return path, true
 }
 
 func detectDNSProbe(serverURL string) preflight.DNSProbe {
@@ -800,14 +867,26 @@ func detectDNSProbe(serverURL string) preflight.DNSProbe {
 	return probe
 }
 
-func detectPortBindings() []preflight.PortBinding {
-	tcpBindings, tcpDetected := detectSSBindings("tcp", []int{80, 443})
+func detectPortBindings(cfg config.Config) []preflight.PortBinding {
+	metricsPort := cfg.Advanced.Headscale.MetricsPort
+	if metricsPort == 0 {
+		metricsPort = config.DefaultHeadscaleMetricsPort
+	}
+	tcpPorts := []int{80, 443, 8080, metricsPort, 50443}
+	tcpBindings, tcpDetected := detectSSBindings("tcp", uniqueInts(tcpPorts))
 	udpBindings, udpDetected := detectSSBindings("udp", []int{3478})
 	if !tcpDetected && !udpDetected {
 		return nil
 	}
 
-	required := []preflight.PortBinding{{Port: 80, Protocol: "tcp"}, {Port: 443, Protocol: "tcp"}, {Port: 3478, Protocol: "udp"}}
+	required := []preflight.PortBinding{
+		{Port: 80, Protocol: "tcp"},
+		{Port: 443, Protocol: "tcp"},
+		{Port: 8080, Protocol: "tcp"},
+		{Port: metricsPort, Protocol: "tcp"},
+		{Port: 50443, Protocol: "tcp"},
+		{Port: 3478, Protocol: "udp"},
+	}
 	bindings := make([]preflight.PortBinding, 0, len(required))
 	for _, requiredBinding := range required {
 		switch requiredBinding.Protocol {
@@ -832,6 +911,22 @@ func detectPortBindings() []preflight.PortBinding {
 	}
 
 	return bindings
+}
+
+func uniqueInts(values []int) []int {
+	unique := make([]int, 0, len(values))
+	seen := map[int]struct{}{}
+	for _, value := range values {
+		if value == 0 {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		unique = append(unique, value)
+	}
+	return unique
 }
 
 func detectSSBindings(protocol string, ports []int) (map[int]preflight.PortBinding, bool) {
@@ -1832,6 +1927,9 @@ func fileOwnerUID(info os.FileInfo) (uint64, bool) {
 	}
 	uid := sys.FieldByName("Uid")
 	if !uid.IsValid() {
+		uid = sys.FieldByName("UID")
+	}
+	if !uid.IsValid() {
 		return 0, false
 	}
 	switch uid.Kind() {
@@ -2207,18 +2305,6 @@ func systemdUnavailableMessage(message string) bool {
 	}
 	return strings.Contains(text, "system has not been booted with systemd") ||
 		strings.Contains(text, "failed to connect to bus: no such file or directory")
-}
-
-func describeDNSCredentialCombos(combos [][][]string) []string {
-	descriptions := make([]string, 0, len(combos))
-	for _, combo := range combos {
-		parts := make([]string, 0, len(combo))
-		for _, group := range combo {
-			parts = append(parts, strings.Join(group, " or "))
-		}
-		descriptions = append(descriptions, strings.Join(parts, " + "))
-	}
-	return descriptions
 }
 
 func probeURL(client *http.Client, rawURL string, method string) (int, string, error) {

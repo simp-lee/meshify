@@ -33,6 +33,9 @@ func TestNewTemplateDataDerivesTemplateFields(t *testing.T) {
 	if data.ACMEChallenge != config.ACMEChallengeHTTP01 {
 		t.Fatalf("ACMEChallenge = %q, want %q", data.ACMEChallenge, config.ACMEChallengeHTTP01)
 	}
+	if data.HeadscaleMetricsPort != config.DefaultHeadscaleMetricsPort {
+		t.Fatalf("HeadscaleMetricsPort = %d, want %d", data.HeadscaleMetricsPort, config.DefaultHeadscaleMetricsPort)
+	}
 	if data.PublicIPv4 != "203.0.113.10" {
 		t.Fatalf("PublicIPv4 = %q, want %q", data.PublicIPv4, "203.0.113.10")
 	}
@@ -79,6 +82,7 @@ func TestRendererRenderUsesTemplateData(t *testing.T) {
 	text := string(got)
 	for _, want := range []string{
 		`server_url: "https://hs.example.com"`,
+		`metrics_listen_addr: "127.0.0.1:19090"`,
 		`base_domain: "tailnet.example.com"`,
 		`ipv4: "203.0.113.10"`,
 	} {

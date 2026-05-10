@@ -1,6 +1,6 @@
 server_url: "{{ .ServerURL }}"
 listen_addr: "127.0.0.1:8080"
-metrics_listen_addr: "127.0.0.1:9090"
+metrics_listen_addr: "127.0.0.1:{{ .HeadscaleMetricsPort }}"
 grpc_listen_addr: "127.0.0.1:50443"
 grpc_allow_insecure: false
 

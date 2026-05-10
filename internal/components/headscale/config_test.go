@@ -12,6 +12,7 @@ func TestValidateRuntimeConfigAcceptsRenderedTemplateGuardrails(t *testing.T) {
 	t.Parallel()
 
 	cfg := validConfig()
+	cfg.Advanced.Headscale.MetricsPort = 19091
 	cfg.Advanced.Network.PublicIPv4 = "203.0.113.10"
 	cfg.Advanced.Network.PublicIPv6 = "2001:db8::10"
 	content := renderHeadscaleConfig(t, cfg)
@@ -29,6 +30,9 @@ func TestValidateRuntimeConfigAcceptsRenderedTemplateGuardrails(t *testing.T) {
 	}
 	if parsed.DERP.Server.IPv6 != "2001:db8::10" {
 		t.Fatalf("DERP IPv6 = %q, want configured override", parsed.DERP.Server.IPv6)
+	}
+	if parsed.MetricsListenAddr != "127.0.0.1:19091" {
+		t.Fatalf("MetricsListenAddr = %q, want configured loopback metrics port", parsed.MetricsListenAddr)
 	}
 }
 

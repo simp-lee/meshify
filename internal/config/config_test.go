@@ -33,6 +33,9 @@ func TestNewAppliesDefaultsAndRequiresUserInputs(t *testing.T) {
 	if cfg.Advanced.HeadscaleSource.Version != DefaultHeadscaleVersion {
 		t.Fatalf("HeadscaleSource.Version = %q, want %q", cfg.Advanced.HeadscaleSource.Version, DefaultHeadscaleVersion)
 	}
+	if cfg.Advanced.Headscale.MetricsPort != DefaultHeadscaleMetricsPort {
+		t.Fatalf("Headscale.MetricsPort = %d, want %d", cfg.Advanced.Headscale.MetricsPort, DefaultHeadscaleMetricsPort)
+	}
 	if cfg.Advanced.LegoSource.Mode != PackageSourceModeDirect {
 		t.Fatalf("LegoSource.Mode = %q, want %q", cfg.Advanced.LegoSource.Mode, PackageSourceModeDirect)
 	}
@@ -80,6 +83,9 @@ default:
 	}
 	if cfg.Advanced.HeadscaleSource.Version != DefaultHeadscaleVersion {
 		t.Fatalf("HeadscaleSource.Version = %q, want %q", cfg.Advanced.HeadscaleSource.Version, DefaultHeadscaleVersion)
+	}
+	if cfg.Advanced.Headscale.MetricsPort != DefaultHeadscaleMetricsPort {
+		t.Fatalf("Headscale.MetricsPort = %d, want %d", cfg.Advanced.Headscale.MetricsPort, DefaultHeadscaleMetricsPort)
 	}
 	if cfg.Advanced.LegoSource.Mode != PackageSourceModeDirect {
 		t.Fatalf("LegoSource.Mode = %q, want %q", cfg.Advanced.LegoSource.Mode, PackageSourceModeDirect)
@@ -228,6 +234,47 @@ func TestValidateProxyRejectsMalformedProxyEnvironmentValues(t *testing.T) {
 				t.Fatalf("Validate() error = %q, want proxy validation failure", err.Error())
 			}
 		})
+	}
+}
+
+func TestValidateHeadscaleMetricsPort(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		port    int
+		wantErr string
+	}{
+		{name: "missing", port: 0, wantErr: "advanced.headscale.metrics_port is required"},
+		{name: "too low", port: -1, wantErr: "advanced.headscale.metrics_port must be between 1 and 65535"},
+		{name: "too high", port: 70000, wantErr: "advanced.headscale.metrics_port must be between 1 and 65535"},
+		{name: "control plane", port: 8080, wantErr: "advanced.headscale.metrics_port must not reuse"},
+		{name: "grpc", port: 50443, wantErr: "advanced.headscale.metrics_port must not reuse"},
+		{name: "public http", port: 80, wantErr: "advanced.headscale.metrics_port must not reuse"},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := validConfig()
+			cfg.Advanced.Headscale.MetricsPort = tt.port
+
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatal("Validate() error = nil, want metrics port failure")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Validate() error = %q, want substring %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+
+	cfg := validConfig()
+	cfg.Advanced.Headscale.MetricsPort = 19091
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v, want nil for custom metrics port", err)
 	}
 }
 
@@ -560,6 +607,7 @@ func TestExportAndLoadFileRoundTrip(t *testing.T) {
 	want := validConfig()
 	want.Advanced.Proxy.HTTPProxy = "http://proxy.internal:8080"
 	want.Advanced.Proxy.NoProxy = "127.0.0.1,localhost"
+	want.Advanced.Headscale.MetricsPort = 19091
 	want.Advanced.Network.PublicIPv4 = "203.0.113.10"
 	want.Advanced.Platform.Arch = ArchARM64
 

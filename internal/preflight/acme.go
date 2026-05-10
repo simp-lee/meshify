@@ -2,10 +2,10 @@ package preflight
 
 import (
 	"fmt"
+	"meshify/internal/config"
 	"strings"
 
 	acmecatalog "meshify/internal/acme"
-	"meshify/internal/config"
 )
 
 type ACMEState struct {

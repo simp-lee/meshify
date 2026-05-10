@@ -143,7 +143,6 @@ func TestOnboardingCreatePreAuthKeyUsesUserIDAndReturnsKey(t *testing.T) {
 	}
 	runner := &scriptedRunner{
 		results: []host.Result{
-			{},
 			{Stdout: `[{"id":2,"name":"meshify"}]` + "\n"},
 			{Stdout: "hskey-auth-example\n"},
 		},
@@ -157,10 +156,44 @@ func TestOnboardingCreatePreAuthKeyUsesUserIDAndReturnsKey(t *testing.T) {
 	if key != "hskey-auth-example" {
 		t.Fatalf("key = %q", key)
 	}
-	if len(results) != 3 || len(runner.commands) != 3 {
-		t.Fatalf("results = %d commands = %d, want 3", len(results), len(runner.commands))
+	if len(results) != 2 || len(runner.commands) != 2 {
+		t.Fatalf("results = %d commands = %d, want 2", len(results), len(runner.commands))
 	}
-	if got := strings.Join(runner.commands[2].Args, " "); !strings.Contains(got, "preauthkeys create --user 2") {
+	if got := strings.Join(runner.commands[0].Args, " "); !strings.Contains(got, "users list --output json") {
+		t.Fatalf("first command args = %q, want users list", got)
+	}
+	if got := strings.Join(runner.commands[1].Args, " "); !strings.Contains(got, "preauthkeys create --user 2") {
+		t.Fatalf("preauth command args = %q", got)
+	}
+}
+
+func TestOnboardingCreatesMissingUserBeforePreAuthKey(t *testing.T) {
+	t.Parallel()
+
+	plan, err := NewOnboardingPlan(OnboardingOptions{UserName: "meshify"})
+	if err != nil {
+		t.Fatalf("NewOnboardingPlan() error = %v", err)
+	}
+	runner := &scriptedRunner{
+		results: []host.Result{
+			{Stdout: `[]` + "\n"},
+			{},
+			{Stdout: "ID | Name\n2 | meshify\n"},
+			{Stdout: "hskey-auth-example\n"},
+		},
+	}
+	onboarding := NewOnboarding(host.NewExecutor(runner, nil))
+
+	if _, _, err := onboarding.CreatePreAuthKey(context.Background(), plan); err != nil {
+		t.Fatalf("CreatePreAuthKey() error = %v", err)
+	}
+	if len(runner.commands) != 4 {
+		t.Fatalf("commands = %d, want 4", len(runner.commands))
+	}
+	if got := strings.Join(runner.commands[1].Args, " "); !strings.Contains(got, "users create meshify") {
+		t.Fatalf("create command args = %q", got)
+	}
+	if got := strings.Join(runner.commands[3].Args, " "); !strings.Contains(got, "preauthkeys create --user 2") {
 		t.Fatalf("preauth command args = %q", got)
 	}
 }
@@ -174,16 +207,144 @@ func TestOnboardingIgnoresExistingUserCreateFailure(t *testing.T) {
 	}
 	runner := &scriptedRunner{
 		results: []host.Result{
-			{Stderr: "user already exists"},
+			{Stdout: `[]` + "\n"},
+			{Stderr: "Cannot create user: failed to create user: creating user: UNIQUE constraint failed: users.name"},
 			{Stdout: "ID | Name\n2 | meshify\n"},
 			{Stdout: "hskey-auth-example\n"},
 		},
-		errors: map[int]error{0: errors.New("exit status 1")},
+		errors: map[int]error{1: errors.New("exit status 1")},
 	}
 	onboarding := NewOnboarding(host.NewExecutor(runner, nil))
 
 	if _, _, err := onboarding.CreatePreAuthKey(context.Background(), plan); err != nil {
 		t.Fatalf("CreatePreAuthKey() error = %v", err)
+	}
+}
+
+func TestOnboardingCommandErrorsIncludeFirstOutputLine(t *testing.T) {
+	t.Parallel()
+
+	plan, err := NewOnboardingPlan(OnboardingOptions{UserName: "meshify"})
+	if err != nil {
+		t.Fatalf("NewOnboardingPlan() error = %v", err)
+	}
+	runner := &scriptedRunner{
+		results: []host.Result{
+			{Stderr: "Cannot get users: database is locked\ntrace detail"},
+		},
+		errors: map[int]error{0: errors.New("exit status 1")},
+	}
+	onboarding := NewOnboarding(host.NewExecutor(runner, nil))
+
+	_, _, err = onboarding.CreatePreAuthKey(context.Background(), plan)
+	if err == nil {
+		t.Fatal("CreatePreAuthKey() error = nil, want command failure")
+	}
+	if !strings.Contains(err.Error(), "Cannot get users: database is locked") {
+		t.Fatalf("CreatePreAuthKey() error = %q, want stderr detail", err.Error())
+	}
+	if strings.Contains(err.Error(), "trace detail") {
+		t.Fatalf("CreatePreAuthKey() error = %q, do not want multiline detail", err.Error())
+	}
+}
+
+func TestOnboardingRetriesTransientUsersListReadinessFailure(t *testing.T) {
+	t.Parallel()
+
+	plan, err := NewOnboardingPlan(OnboardingOptions{UserName: "meshify"})
+	if err != nil {
+		t.Fatalf("NewOnboardingPlan() error = %v", err)
+	}
+	runner := &scriptedRunner{
+		results: []host.Result{
+			{Stderr: "Could not connect: context deadline exceeded"},
+			{Stdout: `[{"id":2,"name":"meshify"}]` + "\n"},
+			{Stdout: "hskey-auth-example\n"},
+		},
+		errors: map[int]error{0: errors.New("exit status 1")},
+	}
+	onboarding := Onboarding{
+		executor:              host.NewExecutor(runner, nil),
+		readinessTimeout:      time.Second,
+		readinessPollInterval: time.Nanosecond,
+	}
+
+	key, _, err := onboarding.CreatePreAuthKey(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("CreatePreAuthKey() error = %v", err)
+	}
+	if key != "hskey-auth-example" {
+		t.Fatalf("key = %q", key)
+	}
+	if len(runner.commands) != 3 {
+		t.Fatalf("commands = %d, want retried users list plus preauth command", len(runner.commands))
+	}
+	if got := strings.Join(runner.commands[0].Args, " "); !strings.Contains(got, "users list --output json") {
+		t.Fatalf("first command args = %q, want users list", got)
+	}
+	if got := strings.Join(runner.commands[1].Args, " "); !strings.Contains(got, "users list --output json") {
+		t.Fatalf("second command args = %q, want users list retry", got)
+	}
+}
+
+func TestOnboardingRetriesHeadscaleCLINilSocketPanic(t *testing.T) {
+	t.Parallel()
+
+	plan, err := NewOnboardingPlan(OnboardingOptions{UserName: "meshify"})
+	if err != nil {
+		t.Fatalf("NewOnboardingPlan() error = %v", err)
+	}
+	runner := &scriptedRunner{
+		results: []host.Result{
+			{Stderr: "panic: runtime error: invalid memory address or nil pointer dereference\nmeshify/vendor/github.com/juanfont/headscale/cmd/headscale/cli.newHeadscaleCLIWithConfig()"},
+			{Stdout: `[{"id":2,"name":"meshify"}]` + "\n"},
+			{Stdout: "hskey-auth-example\n"},
+		},
+		errors: map[int]error{0: errors.New("exit status 2")},
+	}
+	onboarding := Onboarding{
+		executor:              host.NewExecutor(runner, nil),
+		readinessTimeout:      time.Second,
+		readinessPollInterval: time.Nanosecond,
+	}
+
+	key, _, err := onboarding.CreatePreAuthKey(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("CreatePreAuthKey() error = %v", err)
+	}
+	if key != "hskey-auth-example" {
+		t.Fatalf("key = %q", key)
+	}
+	if len(runner.commands) != 3 {
+		t.Fatalf("commands = %d, want retried users list plus preauth command", len(runner.commands))
+	}
+}
+
+func TestOnboardingDoesNotRetryNonReadinessUsersListFailure(t *testing.T) {
+	t.Parallel()
+
+	plan, err := NewOnboardingPlan(OnboardingOptions{UserName: "meshify"})
+	if err != nil {
+		t.Fatalf("NewOnboardingPlan() error = %v", err)
+	}
+	runner := &scriptedRunner{
+		results: []host.Result{
+			{Stderr: "Error loading config file /etc/headscale/config.yaml"},
+		},
+		errors: map[int]error{0: errors.New("exit status 1")},
+	}
+	onboarding := Onboarding{
+		executor:              host.NewExecutor(runner, nil),
+		readinessTimeout:      time.Second,
+		readinessPollInterval: time.Nanosecond,
+	}
+
+	_, _, err = onboarding.CreatePreAuthKey(context.Background(), plan)
+	if err == nil {
+		t.Fatal("CreatePreAuthKey() error = nil, want command failure")
+	}
+	if len(runner.commands) != 1 {
+		t.Fatalf("commands = %d, want no retry", len(runner.commands))
 	}
 }
 

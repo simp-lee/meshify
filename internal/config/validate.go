@@ -2,14 +2,13 @@ package config
 
 import (
 	"fmt"
+	"meshify/internal/acme"
 	"net"
 	"net/mail"
 	"net/url"
 	"path/filepath"
 	"strings"
 	"unicode"
-
-	"meshify/internal/acme"
 )
 
 type validationErrors []string
@@ -90,6 +89,7 @@ func (c Config) Validate() error {
 	}
 
 	validateHeadscaleSource(&errs, c.Advanced.HeadscaleSource)
+	validateHeadscale(&errs, c.Advanced.Headscale)
 	validateLegoSource(&errs, c.Advanced.LegoSource)
 	validateProxyURL(&errs, "advanced.proxy.http_proxy", c.Advanced.Proxy.HTTPProxy)
 	validateProxyURL(&errs, "advanced.proxy.https_proxy", c.Advanced.Proxy.HTTPSProxy)
@@ -103,6 +103,22 @@ func (c Config) Validate() error {
 	}
 
 	return errs
+}
+
+func validateHeadscale(errs *validationErrors, headscale HeadscaleConfig) {
+	port := headscale.MetricsPort
+	if port == 0 {
+		*errs = append(*errs, "advanced.headscale.metrics_port is required")
+		return
+	}
+	if port < 1 || port > 65535 {
+		*errs = append(*errs, "advanced.headscale.metrics_port must be between 1 and 65535")
+		return
+	}
+	switch port {
+	case 80, 443, 3478, 8080, 50443:
+		*errs = append(*errs, "advanced.headscale.metrics_port must not reuse meshify public, Headscale control-plane, gRPC, or STUN ports")
+	}
 }
 
 func validateHeadscaleSource(errs *validationErrors, source HeadscaleSourceConfig) {

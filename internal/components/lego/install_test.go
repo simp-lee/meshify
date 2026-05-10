@@ -3,11 +3,10 @@ package lego
 import (
 	"context"
 	"errors"
-	"strings"
-	"testing"
-
 	"meshify/internal/config"
 	"meshify/internal/host"
+	"strings"
+	"testing"
 )
 
 func TestNewArchivePlanDirectPinsOfficialReleaseArtifact(t *testing.T) {

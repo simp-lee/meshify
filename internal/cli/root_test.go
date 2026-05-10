@@ -72,6 +72,30 @@ func TestExecute_HelpOutput(t *testing.T) {
 	}
 }
 
+func TestParsePlatformInfoFromOSReleaseFallsBackToUsrLib(t *testing.T) {
+	t.Parallel()
+
+	readPaths := []string{}
+	info := parsePlatformInfoFromOSRelease(func(path string) ([]byte, error) {
+		readPaths = append(readPaths, path)
+		switch path {
+		case "/etc/os-release":
+			return nil, os.ErrNotExist
+		case "/usr/lib/os-release":
+			return []byte("ID=debian\nID_LIKE=debian\nVERSION_ID=12\nPRETTY_NAME=\"Debian GNU/Linux 12\"\n"), nil
+		default:
+			return nil, os.ErrNotExist
+		}
+	}, "/etc/os-release", "/usr/lib/os-release")
+
+	if strings.Join(readPaths, ",") != "/etc/os-release,/usr/lib/os-release" {
+		t.Fatalf("read paths = %v, want /etc then /usr/lib fallback", readPaths)
+	}
+	if info.ID != "debian" || info.IDLike != "debian" || info.VersionID != "12" {
+		t.Fatalf("platform info = %#v, want Debian fallback data", info)
+	}
+}
+
 func TestExecute_InitWritesExampleConfig(t *testing.T) {
 	t.Parallel()
 
@@ -179,6 +203,7 @@ func TestExecute_DeployJSONSummary(t *testing.T) {
 
 	previousPermissionState := detectPermissionStateFn
 	previousPlatformInfo := detectPlatformInfoFn
+	previousHostCapabilityState := detectHostCapabilityStateFn
 	previousDNSProbe := detectDNSProbeFn
 	previousPortBindings := detectPortBindingsFn
 	previousFirewallState := detectFirewallStateFn
@@ -190,6 +215,7 @@ func TestExecute_DeployJSONSummary(t *testing.T) {
 	t.Cleanup(func() {
 		detectPermissionStateFn = previousPermissionState
 		detectPlatformInfoFn = previousPlatformInfo
+		detectHostCapabilityStateFn = previousHostCapabilityState
 		detectDNSProbeFn = previousDNSProbe
 		detectPortBindingsFn = previousPortBindings
 		detectFirewallStateFn = previousFirewallState
@@ -206,10 +232,11 @@ func TestExecute_DeployJSONSummary(t *testing.T) {
 	detectPlatformInfoFn = func() preflight.PlatformInfo {
 		return preflight.PlatformInfo{ID: "debian", VersionID: "13", PrettyName: "Debian GNU/Linux 13"}
 	}
+	detectHostCapabilityStateFn = passingHostCapabilities
 	detectDNSProbeFn = func(serverURL string) preflight.DNSProbe {
 		return preflight.DNSProbe{Host: "hs.example.com", ResolvedIPs: []string{"8.8.8.8"}}
 	}
-	detectPortBindingsFn = func() []preflight.PortBinding {
+	detectPortBindingsFn = func(config.Config) []preflight.PortBinding {
 		return []preflight.PortBinding{
 			{Port: 80, Protocol: "tcp", InUse: false},
 			{Port: 443, Protocol: "tcp", InUse: false},
@@ -312,6 +339,7 @@ func TestExecute_DeployJSONBlocksOnManualHostChecks(t *testing.T) {
 
 	previousPermissionState := detectPermissionStateFn
 	previousPlatformInfo := detectPlatformInfoFn
+	previousHostCapabilityState := detectHostCapabilityStateFn
 	previousDNSProbe := detectDNSProbeFn
 	previousPortBindings := detectPortBindingsFn
 	previousFirewallState := detectFirewallStateFn
@@ -323,6 +351,7 @@ func TestExecute_DeployJSONBlocksOnManualHostChecks(t *testing.T) {
 	t.Cleanup(func() {
 		detectPermissionStateFn = previousPermissionState
 		detectPlatformInfoFn = previousPlatformInfo
+		detectHostCapabilityStateFn = previousHostCapabilityState
 		detectDNSProbeFn = previousDNSProbe
 		detectPortBindingsFn = previousPortBindings
 		detectFirewallStateFn = previousFirewallState
@@ -339,10 +368,11 @@ func TestExecute_DeployJSONBlocksOnManualHostChecks(t *testing.T) {
 	detectPlatformInfoFn = func() preflight.PlatformInfo {
 		return preflight.PlatformInfo{ID: "debian", VersionID: "13", PrettyName: "Debian GNU/Linux 13"}
 	}
+	detectHostCapabilityStateFn = passingHostCapabilities
 	detectDNSProbeFn = func(serverURL string) preflight.DNSProbe {
 		return preflight.DNSProbe{Host: "hs.example.com", ResolvedIPs: []string{"8.8.8.8"}}
 	}
-	detectPortBindingsFn = func() []preflight.PortBinding {
+	detectPortBindingsFn = func(config.Config) []preflight.PortBinding {
 		return []preflight.PortBinding{
 			{Port: 80, Protocol: "tcp", InUse: false},
 			{Port: 443, Protocol: "tcp", InUse: false},
@@ -1223,8 +1253,8 @@ type rootOwnedFileInfo struct {
 
 func (info rootOwnedFileInfo) Sys() any {
 	return struct {
-		Uid uint32
-	}{Uid: 0}
+		UID uint32
+	}{UID: 0}
 }
 
 func TestDeployDesiredStateDigestIgnoresShellCredentialSecretValues(t *testing.T) {
@@ -2114,6 +2144,113 @@ func TestExecute_DeployResumesFromRecordedCheckpoint(t *testing.T) {
 	}
 }
 
+func TestExecute_DeployClearsServicesCheckpointWhenOnboardingFails(t *testing.T) {
+	baseDir := t.TempDir()
+	configPath := filepath.Join(baseDir, "meshify.yaml")
+	if err := config.WriteExampleFile(configPath); err != nil {
+		t.Fatalf("WriteExampleFile() error = %v", err)
+	}
+	cfg, err := config.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	desiredStateDigest, err := deployDesiredStateDigest(cfg)
+	if err != nil {
+		t.Fatalf("deployDesiredStateDigest() error = %v", err)
+	}
+
+	stubPassingDeployPreflight(t)
+
+	checkpointPath := filepath.Join(baseDir, "state", "checkpoint.json")
+	if err := state.NewStore(checkpointPath).Save(state.Checkpoint{
+		DesiredStateDigest: desiredStateDigest,
+		CurrentCheckpoint:  deployCheckpointServicesEnabled,
+		CompletedCheckpoints: []string{
+			deployCheckpointPackageManagerReady,
+			deployCheckpointPackageArchitectureConfirmed,
+			deployCheckpointHostDependenciesInstalled,
+			deployCheckpointLegoInstalled,
+			deployCheckpointHeadscalePackageInstalled,
+			deployCheckpointRuntimeAssetsInstalled,
+			deployCheckpointTLSBootstrapReady,
+			deployCheckpointNginxActivated,
+			deployCheckpointLegoCommandReady,
+			deployCheckpointCertificateIssued,
+			deployCheckpointSystemdDaemonReloaded,
+			deployCheckpointServicesEnabled,
+		},
+	}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	previousCheckpointPath := checkpointPathForConfigFn
+	previousStore := checkpointStoreForConfigFn
+	previousExecutor := newHostExecutorFn
+	previousSystemd := newHostSystemdFn
+	previousOnboarder := newHeadscaleOnboarderFn
+	runner := &scriptedHostRunner{}
+	t.Cleanup(func() {
+		checkpointPathForConfigFn = previousCheckpointPath
+		checkpointStoreForConfigFn = previousStore
+		newHostExecutorFn = previousExecutor
+		newHostSystemdFn = previousSystemd
+		newHeadscaleOnboarderFn = previousOnboarder
+	})
+	checkpointPathForConfigFn = func(string) string {
+		return checkpointPath
+	}
+	checkpointStoreForConfigFn = func(string) state.Store {
+		return state.NewStore(checkpointPath)
+	}
+	runner.run = func(command host.Command) (host.Result, error) {
+		actual := unwrapMaybeSudoHostCommand(command)
+		if actual.Name != "systemctl" || strings.Join(actual.Args, " ") != "restart headscale.service" {
+			t.Fatalf("unexpected host command %q", command.String())
+		}
+		return host.Result{Command: command}, nil
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+	newHostSystemdFn = func(executor host.Executor) host.Systemd {
+		return host.NewSystemd(executor)
+	}
+	newHeadscaleOnboarderFn = func(host.Executor) headscaleOnboarder {
+		return stubHeadscaleOnboarder{err: errors.New("headscale users list timed out")}
+	}
+
+	stdout, stderr, err := runCLI(t, "deploy", "--config", configPath)
+	if err == nil {
+		t.Fatal("Execute() error = nil, want onboarding failure")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	if !strings.Contains(stdout, "meshify deploy: create onboarding preauthkey failed") {
+		t.Fatalf("stdout = %q, want onboarding failure summary", stdout)
+	}
+	if !strings.Contains(stdout, "journalctl -u headscale.service") {
+		t.Fatalf("stdout = %q, want service-health remediation", stdout)
+	}
+	if len(runner.commands) != 1 {
+		t.Fatalf("commands = %d, want resumed Headscale restart before onboarding", len(runner.commands))
+	}
+
+	checkpoint, err := state.NewStore(checkpointPath).Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if slices.Contains(checkpoint.CompletedCheckpoints, deployCheckpointServicesEnabled) {
+		t.Fatalf("CompletedCheckpoints = %v, do not want stale services checkpoint after onboarding failure", checkpoint.CompletedCheckpoints)
+	}
+	if checkpoint.CurrentCheckpoint == deployCheckpointServicesEnabled {
+		t.Fatalf("CurrentCheckpoint = %q, want services checkpoint cleared", checkpoint.CurrentCheckpoint)
+	}
+	if checkpoint.LastFailure == nil || checkpoint.LastFailure.Step != "create onboarding preauthkey" {
+		t.Fatalf("LastFailure = %#v, want onboarding failure snapshot", checkpoint.LastFailure)
+	}
+}
+
 func TestExecute_DeployIgnoresCompletedCheckpointWhenDesiredStateChanges(t *testing.T) {
 	baseDir := t.TempDir()
 	configPath := filepath.Join(baseDir, "meshify.yaml")
@@ -2921,6 +3058,7 @@ func TestExecute_DeployUsesConfiguredProxyForGoPreflightProbes(t *testing.T) {
 
 	previousPermissionState := detectPermissionStateFn
 	previousPlatformInfo := detectPlatformInfoFn
+	previousHostCapabilityState := detectHostCapabilityStateFn
 	previousDNSProbe := detectDNSProbeFn
 	previousPortBindings := detectPortBindingsFn
 	previousFirewallState := detectFirewallStateFn
@@ -2936,6 +3074,7 @@ func TestExecute_DeployUsesConfiguredProxyForGoPreflightProbes(t *testing.T) {
 	t.Cleanup(func() {
 		detectPermissionStateFn = previousPermissionState
 		detectPlatformInfoFn = previousPlatformInfo
+		detectHostCapabilityStateFn = previousHostCapabilityState
 		detectDNSProbeFn = previousDNSProbe
 		detectPortBindingsFn = previousPortBindings
 		detectFirewallStateFn = previousFirewallState
@@ -2956,11 +3095,19 @@ func TestExecute_DeployUsesConfiguredProxyForGoPreflightProbes(t *testing.T) {
 	detectPlatformInfoFn = func() preflight.PlatformInfo {
 		return preflight.PlatformInfo{ID: "debian", VersionID: "13", PrettyName: "Debian GNU/Linux 13"}
 	}
+	detectHostCapabilityStateFn = passingHostCapabilities
 	detectDNSProbeFn = func(string) preflight.DNSProbe {
 		return preflight.DNSProbe{Host: "hs-proxy.invalid", ResolvedIPs: []string{"8.8.8.8"}}
 	}
-	detectPortBindingsFn = func() []preflight.PortBinding {
-		return []preflight.PortBinding{{Port: 80, Protocol: "tcp"}, {Port: 443, Protocol: "tcp"}, {Port: 3478, Protocol: "udp"}}
+	detectPortBindingsFn = func(config.Config) []preflight.PortBinding {
+		return []preflight.PortBinding{
+			{Port: 80, Protocol: "tcp"},
+			{Port: 443, Protocol: "tcp"},
+			{Port: 8080, Protocol: "tcp"},
+			{Port: config.DefaultHeadscaleMetricsPort, Protocol: "tcp"},
+			{Port: 50443, Protocol: "tcp"},
+			{Port: 3478, Protocol: "udp"},
+		}
 	}
 	detectFirewallStateFn = func() preflight.FirewallState {
 		return preflight.FirewallState{Inspected: true, Active: true, AllowedPorts: []string{"80/tcp", "443/tcp", "3478/udp"}}
@@ -3938,15 +4085,13 @@ func (installer stubFileInstaller) Install(_ []render.StagedFile) ([]host.FileIn
 	return append([]host.FileInstallResult(nil), installer.results...), installer.err
 }
 
-func stagedFileByHostPath(t *testing.T, files []render.StagedFile, hostPath string) render.StagedFile {
-	t.Helper()
-	for _, file := range files {
-		if file.HostPath == hostPath {
-			return file
-		}
-	}
-	t.Fatalf("staged files = %#v, want host path %s", files, hostPath)
-	return render.StagedFile{}
+type stubHeadscaleOnboarder struct {
+	key string
+	err error
+}
+
+func (onboarder stubHeadscaleOnboarder) CreatePreAuthKey(stdcontext.Context, headscale.OnboardingPlan) (string, []host.Result, error) {
+	return onboarder.key, nil, onboarder.err
 }
 
 func unwrapMaybeSudoHostCommand(command host.Command) host.Command {
@@ -4029,6 +4174,7 @@ func stubPassingDeployPreflight(t *testing.T) {
 
 	previousPermissionState := detectPermissionStateFn
 	previousPlatformInfo := detectPlatformInfoFn
+	previousHostCapabilityState := detectHostCapabilityStateFn
 	previousDNSProbe := detectDNSProbeFn
 	previousPortBindings := detectPortBindingsFn
 	previousFirewallState := detectFirewallStateFn
@@ -4040,6 +4186,7 @@ func stubPassingDeployPreflight(t *testing.T) {
 	t.Cleanup(func() {
 		detectPermissionStateFn = previousPermissionState
 		detectPlatformInfoFn = previousPlatformInfo
+		detectHostCapabilityStateFn = previousHostCapabilityState
 		detectDNSProbeFn = previousDNSProbe
 		detectPortBindingsFn = previousPortBindings
 		detectFirewallStateFn = previousFirewallState
@@ -4056,13 +4203,17 @@ func stubPassingDeployPreflight(t *testing.T) {
 	detectPlatformInfoFn = func() preflight.PlatformInfo {
 		return preflight.PlatformInfo{ID: "debian", VersionID: "13", PrettyName: "Debian GNU/Linux 13"}
 	}
+	detectHostCapabilityStateFn = passingHostCapabilities
 	detectDNSProbeFn = func(string) preflight.DNSProbe {
 		return preflight.DNSProbe{Host: "hs.example.com", ResolvedIPs: []string{"8.8.8.8"}}
 	}
-	detectPortBindingsFn = func() []preflight.PortBinding {
+	detectPortBindingsFn = func(config.Config) []preflight.PortBinding {
 		return []preflight.PortBinding{
 			{Port: 80, Protocol: "tcp"},
 			{Port: 443, Protocol: "tcp"},
+			{Port: 8080, Protocol: "tcp"},
+			{Port: config.DefaultHeadscaleMetricsPort, Protocol: "tcp"},
+			{Port: 50443, Protocol: "tcp"},
 			{Port: 3478, Protocol: "udp"},
 		}
 	}
@@ -4090,6 +4241,15 @@ func stubPassingDeployPreflight(t *testing.T) {
 	}
 	detectACMEStateFn = func(config.Config) preflight.ACMEState {
 		return preflight.ACMEState{HTTP01Checked: true, HTTP01Ready: true}
+	}
+}
+
+func passingHostCapabilities() preflight.HostCapabilityState {
+	return preflight.HostCapabilityState{
+		AptGetAvailable:         true,
+		DpkgAvailable:           true,
+		SystemctlAvailable:      true,
+		SystemdRuntimeAvailable: true,
 	}
 }
 

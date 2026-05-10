@@ -1,10 +1,9 @@
 package preflight
 
 import (
+	"meshify/internal/config"
 	"strings"
 	"testing"
-
-	"meshify/internal/config"
 )
 
 func TestBuildReportDoesNotBlockOnAdvisoryManualChecklist(t *testing.T) {
@@ -13,10 +12,19 @@ func TestBuildReportDoesNotBlockOnAdvisoryManualChecklist(t *testing.T) {
 	report := BuildReport(config.ExampleConfig(), Inputs{
 		Permissions: PermissionState{User: "deployer", SudoWorks: true},
 		Platform:    PlatformInfo{ID: "debian", VersionID: "13", PrettyName: "Debian GNU/Linux 13"},
-		DNS:         DNSProbe{Host: "hs.example.com", ResolvedIPs: []string{"8.8.8.8"}},
+		Capabilities: HostCapabilityState{
+			AptGetAvailable:         true,
+			DpkgAvailable:           true,
+			SystemctlAvailable:      true,
+			SystemdRuntimeAvailable: true,
+		},
+		DNS: DNSProbe{Host: "hs.example.com", ResolvedIPs: []string{"8.8.8.8"}},
 		Ports: []PortBinding{
 			{Port: 80, Protocol: "tcp", InUse: false},
 			{Port: 443, Protocol: "tcp", InUse: false},
+			{Port: 8080, Protocol: "tcp", InUse: false},
+			{Port: config.DefaultHeadscaleMetricsPort, Protocol: "tcp", InUse: false},
+			{Port: 50443, Protocol: "tcp", InUse: false},
 			{Port: 3478, Protocol: "udp", InUse: false},
 		},
 		Firewall: FirewallState{Inspected: true, Active: true, AllowedPorts: []string{"80/tcp", "443/tcp", "3478/udp"}},
@@ -65,10 +73,19 @@ func TestBuildReportAllowsDigitalOceanDNS01OnDebian13(t *testing.T) {
 	report := BuildReport(cfg, Inputs{
 		Permissions: PermissionState{User: "deployer", SudoWorks: true},
 		Platform:    PlatformInfo{ID: "debian", VersionID: "13", PrettyName: "Debian GNU/Linux 13"},
-		DNS:         DNSProbe{Host: "hs.example.com", ResolvedIPs: []string{"8.8.8.8"}},
+		Capabilities: HostCapabilityState{
+			AptGetAvailable:         true,
+			DpkgAvailable:           true,
+			SystemctlAvailable:      true,
+			SystemdRuntimeAvailable: true,
+		},
+		DNS: DNSProbe{Host: "hs.example.com", ResolvedIPs: []string{"8.8.8.8"}},
 		Ports: []PortBinding{
 			{Port: 80, Protocol: "tcp", InUse: false},
 			{Port: 443, Protocol: "tcp", InUse: false},
+			{Port: 8080, Protocol: "tcp", InUse: false},
+			{Port: config.DefaultHeadscaleMetricsPort, Protocol: "tcp", InUse: false},
+			{Port: 50443, Protocol: "tcp", InUse: false},
 			{Port: 3478, Protocol: "udp", InUse: false},
 		},
 		Firewall: FirewallState{Inspected: true, Active: true, AllowedPorts: []string{"80/tcp", "443/tcp", "3478/udp"}},

@@ -1,8 +1,9 @@
 package config
 
 const (
-	APIVersion              = "meshify/v1alpha1"
-	DefaultHeadscaleVersion = "0.28.0"
+	APIVersion                  = "meshify/v1alpha1"
+	DefaultHeadscaleVersion     = "0.28.0"
+	DefaultHeadscaleMetricsPort = 19090
 
 	ACMEChallengeHTTP01 = "http-01"
 	ACMEChallengeDNS01  = "dns-01"
@@ -30,6 +31,7 @@ type DefaultConfig struct {
 
 type AdvancedConfig struct {
 	HeadscaleSource HeadscaleSourceConfig `yaml:"headscale_source"`
+	Headscale       HeadscaleConfig       `yaml:"headscale"`
 	LegoSource      LegoSourceConfig      `yaml:"lego_source"`
 	Proxy           ProxyConfig           `yaml:"proxy"`
 	DNS01           DNS01Config           `yaml:"dns01"`
@@ -43,6 +45,10 @@ type HeadscaleSourceConfig struct {
 	URL      string `yaml:"url"`
 	SHA256   string `yaml:"sha256"`
 	FilePath string `yaml:"file_path"`
+}
+
+type HeadscaleConfig struct {
+	MetricsPort int `yaml:"metrics_port"`
 }
 
 type LegoSourceConfig struct {
