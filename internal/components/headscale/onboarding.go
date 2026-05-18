@@ -18,6 +18,7 @@ const (
 )
 
 var safeUserNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$`)
+var sensitiveAuthKeyPattern = regexp.MustCompile(`(?:tskey|hskey|authkey)-[^\s]+`)
 
 type OnboardingOptions struct {
 	UserName   string
@@ -143,7 +144,7 @@ func (onboarding Onboarding) CreatePreAuthKey(ctx context.Context, plan Onboardi
 	keyResult, err := onboarding.executor.Run(ctx, CreatePreAuthKeyCommand(userID, plan))
 	results = append(results, keyResult)
 	if err != nil {
-		return "", results, commandErrorWithOutput(keyResult, err)
+		return "", results, preAuthKeyCommandError(keyResult, err)
 	}
 	key := strings.TrimSpace(keyResult.Stdout)
 	if key == "" {
@@ -366,6 +367,22 @@ func commandErrorWithOutput(result host.Result, err error) error {
 		return err
 	}
 	return fmt.Errorf("%w: %s", err, detail)
+}
+
+func preAuthKeyCommandError(result host.Result, err error) error {
+	if err == nil {
+		return nil
+	}
+	message := maskSensitiveAuthKeys(err.Error())
+	detail := maskSensitiveAuthKeys(firstNonEmptyLine(result.Stderr))
+	if detail == "" {
+		return errors.New(message)
+	}
+	return fmt.Errorf("%s: %s", message, detail)
+}
+
+func maskSensitiveAuthKeys(text string) string {
+	return sensitiveAuthKeyPattern.ReplaceAllString(text, "<redacted>")
 }
 
 func firstNonEmptyLine(values ...string) string {

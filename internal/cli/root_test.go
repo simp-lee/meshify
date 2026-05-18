@@ -7,7 +7,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io/fs"
+	"meshify/internal/appconfig"
+	"meshify/internal/apprender"
 	"meshify/internal/assets"
+	"meshify/internal/components/appsvc"
 	"meshify/internal/components/headscale"
 	legocomponent "meshify/internal/components/lego"
 	"meshify/internal/config"
@@ -59,12 +63,37 @@ func TestExecute_HelpOutput(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"meshify manages init, deploy, verify, and status workflows.",
+		"meshify manages init, deploy, verify, status, and app workflows.",
 		"Happy path:",
 		"meshify init",
 		"meshify deploy",
 		"meshify verify",
+		"app      管理附加 app 部署。",
 		"status   Show config readiness and persisted deploy context.",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("stdout = %q, want substring %q", stdout, want)
+		}
+	}
+}
+
+func TestExecute_AppHelpOutputIsChineseReadable(t *testing.T) {
+	t.Parallel()
+
+	stdout, stderr, err := runCLI(t, "app", "--help")
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	for _, want := range []string{
+		"meshify app 管理附加 Go 服务和 tailnet upstream。",
+		"用法:",
+		"命令:",
+		"生成可编辑的 app 示例配置。",
+		"按配置部署一个 app。",
+		"校验 app 配置和 runtime 模板。",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("stdout = %q, want substring %q", stdout, want)
@@ -126,6 +155,2104 @@ func TestExecute_InitWritesExampleConfig(t *testing.T) {
 	}
 	if loaded.Default.CertificateEmail != "ops@example.com" {
 		t.Fatalf("default.certificate_email = %q, want example value", loaded.Default.CertificateEmail)
+	}
+}
+
+func TestExecute_AppInitWritesExampleConfig(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "meshify-app.yaml")
+	stdout, stderr, err := runCLI(t, "app", "init", "--config", configPath)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	if !strings.Contains(stdout, "meshify app init: 已写入 app 示例配置") {
+		t.Fatalf("stdout = %q, want app init summary", stdout)
+	}
+	loaded, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	if loaded.App.Name != "example-app" {
+		t.Fatalf("app.name = %q, want example-app", loaded.App.Name)
+	}
+}
+
+func TestExecute_AppVerifyRejectsExampleFlag(t *testing.T) {
+	t.Parallel()
+
+	stdout, stderr, err := runCLI(t, "app", "init", "--example")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want non-nil")
+	}
+	if !strings.Contains(err.Error(), "flag provided but not defined: -example") {
+		t.Fatalf("error = %q, want unknown example flag", err.Error())
+	}
+	if stdout != "" || stderr != "" {
+		t.Fatalf("stdout=%q stderr=%q, want empty", stdout, stderr)
+	}
+}
+
+func TestExecute_AppVerifyJSON(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "meshify-app.yaml")
+	if err := appconfig.WriteExampleFile(configPath); err != nil {
+		t.Fatalf("WriteExampleFile() error = %v", err)
+	}
+	stdout, stderr, err := runCLI(t, "app", "verify", "--config", configPath, "--format", "json")
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	var response output.Response
+	if err := json.Unmarshal([]byte(stdout), &response); err != nil {
+		t.Fatalf("Unmarshal() error = %v\n%s", err, stdout)
+	}
+	if response.Command != "app verify" || response.Status != "static-passed" {
+		t.Fatalf("response = %#v, want app verify static-passed", response)
+	}
+	if !strings.Contains(response.Summary, "app 静态检查通过") {
+		t.Fatalf("summary = %q, want Chinese app verify summary", response.Summary)
+	}
+	scope, ok := fieldValue(response.Fields, "verification scope")
+	if !ok || !strings.Contains(scope, "static-only") {
+		t.Fatalf("verification scope = %q, %v; fields = %#v", scope, ok, response.Fields)
+	}
+}
+
+func TestExecute_AppVerifyMissingConfigReturnsErrorWithJSON(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "missing-app.yaml")
+	stdout, stderr, err := runCLI(t, "app", "verify", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want missing config error")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Command != "app verify" || response.Status != "missing-config" {
+		t.Fatalf("response = %#v, want app verify missing-config", response)
+	}
+}
+
+func TestExecute_AppDeployInvalidConfigReturnsErrorWithJSON(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "meshify-app.yaml")
+	if err := os.WriteFile(configPath, []byte("api_version: wrong\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want invalid config error")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Command != "app deploy" || response.Status != "invalid-config" {
+		t.Fatalf("response = %#v, want app deploy invalid-config", response)
+	}
+}
+
+func TestExecute_AppDeployPreflightBlockReturnsErrorWithJSON(t *testing.T) {
+	configPath := writeReviewAppConfig(t)
+	stubPassingAppDeployPreflight(t)
+	detectPermissionStateFn = func() preflight.PermissionState {
+		return preflight.PermissionState{User: "deploy", SudoWorks: true}
+	}
+	detectAppDNSFn = func(appconfig.Config) map[string]preflight.DNSProbe {
+		t.Fatal("detectAppDNSFn called before app deploy root gate")
+		return nil
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want non-nil")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Command != "app deploy" || response.Status != "blocked" {
+		t.Fatalf("response = %#v, want app deploy blocked", response)
+	}
+	if got, ok := fieldValue(response.Fields, "check permissions"); !ok || !strings.Contains(got, "root 权限") || !strings.Contains(got, "deploy") {
+		t.Fatalf("permissions field = %q, %v; fields = %#v", got, ok, response.Fields)
+	}
+	if !strings.Contains(err.Error(), response.Summary) {
+		t.Fatalf("error = %q, want summary %q", err.Error(), response.Summary)
+	}
+}
+
+func TestExecute_AppDeployBlocksInvalidAuthKeyFileEvenWhenTailscaleAlreadyLoggedIn(t *testing.T) {
+	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
+		cfg.App.Listen = ""
+		cfg.App.Upstream = "100.64.10.20:18001"
+		cfg.Service.ExecStart = ""
+		cfg.Service.WorkingDirectory = ""
+		cfg.Tailscale.LoginServer = "https://hs.example.com"
+		cfg.Tailscale.AuthKeyFile = "/run/meshify/missing-auth.key"
+	})
+	cfg, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	staged := stagedRuntimeWithTempHostPaths(t, cfg)
+	stubPassingAppDeployPreflight(t)
+	detectAppTailscaleAuthKeyFileStateFn = func(appconfig.Config) (bool, bool, string) {
+		return true, false, "tailscale auth key file must be root-only"
+	}
+
+	previousStage := stageAppRuntimeFilesFn
+	previousExecutor := newHostExecutorFn
+	previousInstaller := newAppFileInstallerFn
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		actual := unwrapMaybeSudoHostCommand(command)
+		if actual.Name == "tailscale" {
+			switch strings.Join(actual.Args, " ") {
+			case "status --json":
+				return host.Result{Stdout: `{"BackendState":"Running","Self":{"Online":true}}`}, nil
+			case "debug prefs":
+				return host.Result{Stdout: `{"ControlURL":"https://hs.example.com","RouteAll":false,"CorpDNS":false,"ShieldsUp":true}`}, nil
+			}
+		}
+		if actual.Name == "cat" && len(actual.Args) == 1 && actual.Args[0] == "/var/lib/meshify/tailscale-client.json" {
+			return host.Result{Stdout: `{"login_server":"https://hs.example.com","accept_dns":false,"accept_routes":false,"shields_up":true,"managed_by":"meshify"}`}, nil
+		}
+		return host.Result{}, nil
+	}}
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+		newHostExecutorFn = previousExecutor
+		newAppFileInstallerFn = previousInstaller
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return staged, nil
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+	newAppFileInstallerFn = func(host.Executor, host.PrivilegeStrategy) appStagedFileInstaller {
+		return stubFileInstaller{results: []host.FileInstallResult{{HostPath: "/etc/nginx/sites-available/review-app.conf", Changed: true}}}
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want auth key preflight failure")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Command != "app deploy" || response.Status != "blocked" {
+		t.Fatalf("response = %#v, want app deploy blocked", response)
+	}
+	if got, ok := fieldValue(response.Fields, "check tailscale-auth-key-file"); !ok || !strings.Contains(got, "root-only") {
+		t.Fatalf("tailscale auth key check = %q, %v; fields = %#v", got, ok, response.Fields)
+	}
+	for _, command := range runner.commands {
+		actual := unwrapMaybeSudoHostCommand(command)
+		if actual.Name == "tailscale" || actual.Name == "apt-get" || actual.Name == "install" || appDeployOrderEvent(command) == "install-files" {
+			t.Fatalf("commands = %#v, wanted auth key failure before host mutations", runner.commands)
+		}
+	}
+}
+
+func TestExecute_AppDeployReadsAuthKeyFileOnlyWhenLoginNeeded(t *testing.T) {
+	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
+		cfg.App.Listen = ""
+		cfg.App.Upstream = "100.64.10.20:18001"
+		cfg.Service.ExecStart = ""
+		cfg.Service.WorkingDirectory = ""
+		cfg.Tailscale.LoginServer = "https://hs.example.com"
+		cfg.Tailscale.AuthKeyFile = "/run/meshify/missing-auth.key"
+	})
+	stubPassingAppDeployPreflight(t)
+	detectAppTailscaleAuthKeyFileStateFn = func(appconfig.Config) (bool, bool, string) {
+		return true, true, "tailscale.auth_key_file 已通过 root-only 校验"
+	}
+
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		actual := unwrapMaybeSudoHostCommand(command)
+		if actual.Name == "tailscale" && strings.Join(actual.Args, " ") == "status --json" {
+			return host.Result{Stdout: `{"BackendState":"NeedsLogin"}`}, nil
+		}
+		return host.Result{}, nil
+	}}
+	previousExecutor := newHostExecutorFn
+	t.Cleanup(func() {
+		newHostExecutorFn = previousExecutor
+	})
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want auth key read failure")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Summary != "Tailscale client 前置条件失败" {
+		t.Fatalf("summary = %q, want Tailscale failure", response.Summary)
+	}
+	details, ok := fieldValue(response.Fields, "details")
+	if !ok || !strings.Contains(details, "tailscale.auth_key_file") {
+		t.Fatalf("details = %q, %v; fields = %#v", details, ok, response.Fields)
+	}
+	for _, command := range runner.commands {
+		actual := unwrapMaybeSudoHostCommand(command)
+		if actual.Name == "apt-get" || actual.Name == "install" || appDeployOrderEvent(command) == "install-files" {
+			t.Fatalf("commands = %#v, wanted auth key failure before app host mutations", runner.commands)
+		}
+	}
+}
+
+func TestExecute_AppDeployBlocksInvalidServiceEnvFileBeforeHostMutation(t *testing.T) {
+	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
+		cfg.Service.EnvFile = "/opt/review-app/web.env"
+	})
+	stubPassingAppDeployPreflight(t)
+	detectAppServiceEnvFileStateFn = func(appconfig.Config) (bool, bool, string) {
+		return true, false, "service.env_file must be root-only"
+	}
+
+	runner := &scriptedHostRunner{}
+	previousExecutor := newHostExecutorFn
+	t.Cleanup(func() {
+		newHostExecutorFn = previousExecutor
+	})
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want non-nil")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Command != "app deploy" || response.Status != "blocked" {
+		t.Fatalf("response = %#v, want app deploy blocked", response)
+	}
+	if got, ok := fieldValue(response.Fields, "check service-env-file"); !ok || !strings.Contains(got, "root-only") {
+		t.Fatalf("service-env-file field = %q, %v; fields = %#v", got, ok, response.Fields)
+	}
+	if len(runner.commands) != 0 {
+		t.Fatalf("host commands = %#v, want no host mutation before service.env_file readiness passes", runner.commands)
+	}
+}
+
+func TestExecute_AppVerifyRejectsDefaultMeshifyServerDomain(t *testing.T) {
+	baseDir := t.TempDir()
+	previousDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error = %v", err)
+	}
+	if err := os.Chdir(baseDir); err != nil {
+		t.Fatalf("Chdir() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(previousDir); err != nil {
+			t.Fatalf("restore Chdir() error = %v", err)
+		}
+	})
+	writeReviewMainConfig(t, filepath.Join(baseDir, "meshify.yaml"), "https://hs.example.com")
+	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
+		cfg.App.Domains = []string{"hs.example.com"}
+	})
+
+	stdout, stderr, err := runCLI(t, "app", "verify", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want non-nil")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Command != "app verify" || response.Status != "invalid-config" {
+		t.Fatalf("response = %#v, want app verify invalid-config", response)
+	}
+	if !strings.Contains(response.Summary, "Headscale server_url") {
+		t.Fatalf("summary = %q, want server_url conflict", response.Summary)
+	}
+	details, ok := fieldValue(response.Fields, "details")
+	if !ok || !strings.Contains(details, "hs.example.com") {
+		t.Fatalf("details = %q, %v; fields = %#v", details, ok, response.Fields)
+	}
+}
+
+func TestExecute_AppDeployRejectsMeshifyConfigServerDomain(t *testing.T) {
+	baseDir := t.TempDir()
+	mainConfigPath := filepath.Join(baseDir, "meshify.yaml")
+	writeReviewMainConfig(t, mainConfigPath, "https://hs.example.com")
+	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
+		cfg.App.Domains = []string{"hs.example.com"}
+		cfg.App.Listen = ""
+		cfg.App.Upstream = "100.64.10.20:18001"
+		cfg.Service.ExecStart = ""
+		cfg.Service.WorkingDirectory = ""
+		cfg.Tailscale.MeshifyConfig = mainConfigPath
+	})
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want non-nil")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Command != "app deploy" || response.Status != "invalid-config" {
+		t.Fatalf("response = %#v, want app deploy invalid-config", response)
+	}
+	details, ok := fieldValue(response.Fields, "details")
+	if !ok || !strings.Contains(details, mainConfigPath) || !strings.Contains(details, "hs.example.com") {
+		t.Fatalf("details = %q, %v; fields = %#v", details, ok, response.Fields)
+	}
+}
+
+func TestExecute_AppVerifyRejectsCustomHeadscaleMetricsPortConflict(t *testing.T) {
+	baseDir := t.TempDir()
+	previousDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error = %v", err)
+	}
+	if err := os.Chdir(baseDir); err != nil {
+		t.Fatalf("Chdir() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(previousDir); err != nil {
+			t.Fatalf("restore Chdir() error = %v", err)
+		}
+	})
+	mainCfg := config.ExampleConfig()
+	mainCfg.Advanced.Headscale.MetricsPort = 18001
+	if err := mainCfg.WriteFile(filepath.Join(baseDir, "meshify.yaml")); err != nil {
+		t.Fatalf("WriteFile(main config) error = %v", err)
+	}
+	configPath := writeReviewAppConfig(t)
+
+	stdout, stderr, err := runCLI(t, "app", "verify", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want non-nil")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Command != "app verify" || response.Status != "invalid-config" {
+		t.Fatalf("response = %#v, want app verify invalid-config", response)
+	}
+	details, ok := fieldValue(response.Fields, "details")
+	if !ok || !strings.Contains(details, "metrics port 18001") {
+		t.Fatalf("details = %q, %v; fields = %#v", details, ok, response.Fields)
+	}
+}
+
+func TestExecute_AppDeployRejectsCustomHeadscaleMetricsPortConflict(t *testing.T) {
+	baseDir := t.TempDir()
+	mainConfigPath := filepath.Join(baseDir, "meshify.yaml")
+	mainCfg := config.ExampleConfig()
+	mainCfg.Advanced.Headscale.MetricsPort = 18001
+	if err := mainCfg.WriteFile(mainConfigPath); err != nil {
+		t.Fatalf("WriteFile(main config) error = %v", err)
+	}
+	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
+		cfg.Tailscale.MeshifyConfig = mainConfigPath
+	})
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want non-nil")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Command != "app deploy" || response.Status != "invalid-config" {
+		t.Fatalf("response = %#v, want app deploy invalid-config", response)
+	}
+	details, ok := fieldValue(response.Fields, "details")
+	if !ok || !strings.Contains(details, "metrics port 18001") {
+		t.Fatalf("details = %q, %v; fields = %#v", details, ok, response.Fields)
+	}
+}
+
+func TestExecute_AppDeployStaticFailureReturnsErrorWithJSON(t *testing.T) {
+	configPath := writeReviewAppConfig(t)
+	stubPassingAppDeployPreflight(t)
+	previousStage := stageAppRuntimeFilesFn
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return []apprender.StagedFile{{
+			SourcePath: "templates/app/nginx.conf.tmpl",
+			HostPath:   filepath.Join(t.TempDir(), "review-app.conf"),
+			Mode:       0o644,
+			Content:    []byte("server { listen 443 ssl; }"),
+		}}, nil
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want non-nil")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Command != "app deploy" || response.Status != "failed" {
+		t.Fatalf("response = %#v, want app deploy failed", response)
+	}
+	if !strings.Contains(response.Summary, "app verify 发现") {
+		t.Fatalf("summary = %q, want static verify failure", response.Summary)
+	}
+}
+
+func TestExecute_AppVerifyStaticFailureReturnsErrorWithJSON(t *testing.T) {
+	configPath := writeReviewAppConfig(t)
+	previousStage := stageAppRuntimeFilesFn
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return []apprender.StagedFile{{
+			SourcePath: "templates/app/nginx.conf.tmpl",
+			HostPath:   filepath.Join(t.TempDir(), "review-app.conf"),
+			Mode:       0o644,
+			Content:    []byte("server { listen 443 ssl; }"),
+		}}, nil
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "verify", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want non-nil")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Command != "app verify" || response.Status != "failed" {
+		t.Fatalf("response = %#v, want app verify failed", response)
+	}
+}
+
+func TestExecute_AppDeployOwnershipBlockReturnsErrorWithJSON(t *testing.T) {
+	configPath := writeReviewAppConfig(t)
+	cfg, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	staged := stagedRuntimeWithTempHostPaths(t, cfg)
+	stubPassingAppDeployPreflight(t)
+	previousStage := stageAppRuntimeFilesFn
+	previousFileSystem := newAppHostFileSystemFn
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+		newAppHostFileSystemFn = previousFileSystem
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return staged, nil
+	}
+	newAppHostFileSystemFn = func(host.Executor, host.PrivilegeStrategy) host.FileSystem {
+		return readOnlyAppFileSystem{files: map[string][]byte{
+			staged[0].HostPath: []byte("foreign content\n"),
+		}}
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want non-nil")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Command != "app deploy" || response.Status != "blocked" {
+		t.Fatalf("response = %#v, want app deploy blocked", response)
+	}
+	if !strings.Contains(response.Summary, "目标文件存在") {
+		t.Fatalf("summary = %q, want ownership block", response.Summary)
+	}
+}
+
+func TestExecute_AppDeployHostFailureReturnsErrorWithJSON(t *testing.T) {
+	configPath := writeReviewAppConfig(t)
+	cfg, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	staged := stagedRuntimeWithTempHostPaths(t, cfg)
+	stubPassingAppDeployPreflight(t)
+
+	previousStage := stageAppRuntimeFilesFn
+	previousExecutor := newHostExecutorFn
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		if command.Name == "apt-get" && slices.Contains(command.Args, "update") {
+			return host.Result{ExitCode: 100, Stderr: "apt failed"}, errors.New("apt update failed")
+		}
+		return host.Result{}, nil
+	}}
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+		newHostExecutorFn = previousExecutor
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return staged, nil
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want non-nil")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Command != "app deploy" || response.Status != "failed" {
+		t.Fatalf("response = %#v, want app deploy failed", response)
+	}
+	if response.Summary != "安装 app 宿主机依赖失败" {
+		t.Fatalf("summary = %q, want host dependency failure", response.Summary)
+	}
+	if !strings.Contains(err.Error(), "apt update failed") {
+		t.Fatalf("error = %q, want apt failure", err.Error())
+	}
+}
+
+func TestExecute_AppDeployInstallsFullHostDependencySet(t *testing.T) {
+	configPath := writeReviewAppConfig(t)
+	cfg, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	staged := stagedRuntimeWithTempHostPaths(t, cfg)
+	stubPassingAppDeployPreflight(t)
+
+	previousStage := stageAppRuntimeFilesFn
+	previousExecutor := newHostExecutorFn
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		if command.Name == "mkdir" {
+			return host.Result{ExitCode: 1}, errors.New("stop after dependency install")
+		}
+		return host.Result{}, nil
+	}}
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+		newHostExecutorFn = previousExecutor
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return staged, nil
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+
+	_, _, err = runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want non-nil")
+	}
+	var installArgs []string
+	for _, command := range runner.commands {
+		if command.Name == "apt-get" && len(command.Args) >= 2 && command.Args[0] == "install" {
+			installArgs = command.Args
+			break
+		}
+	}
+	if len(installArgs) == 0 {
+		t.Fatalf("commands = %#v, want apt-get install", runner.commands)
+	}
+	for _, want := range []string{"nginx", "ca-certificates", "curl", "tar", "openssl"} {
+		if !slices.Contains(installArgs, want) {
+			t.Fatalf("apt-get install args = %#v, want %s", installArgs, want)
+		}
+	}
+}
+
+func TestExecute_AppDeploySurfacesPreflightWarningsOnSuccess(t *testing.T) {
+	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
+		cfg.App.ACMEChallenge = appconfig.ACMEChallengeDNS01
+		cfg.DNS01.Provider = "route53"
+	})
+	cfg, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	staged := stagedRuntimeWithTempHostPaths(t, cfg)
+	stubPassingAppDeployPreflight(t)
+	detectAppDNSFn = func(cfg appconfig.Config) map[string]preflight.DNSProbe {
+		return map[string]preflight.DNSProbe{
+			cfg.App.Domains[0]: {Host: cfg.App.Domains[0], ResolvedIPs: []string{"8.8.8.8"}},
+		}
+	}
+	detectAppDNSCredentialStateFn = func(appconfig.Config) (bool, bool, string) {
+		return true, true, "ready"
+	}
+
+	previousStage := stageAppRuntimeFilesFn
+	previousExecutor := newHostExecutorFn
+	previousInstaller := newAppFileInstallerFn
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+		newHostExecutorFn = previousExecutor
+		newAppFileInstallerFn = previousInstaller
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return staged, nil
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(&scriptedHostRunner{}, env)
+	}
+	newAppFileInstallerFn = func(host.Executor, host.PrivilegeStrategy) appStagedFileInstaller {
+		return stubFileInstaller{results: []host.FileInstallResult{{HostPath: "/etc/nginx/sites-available/review-app.conf", Changed: true}}}
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err != nil {
+		t.Fatalf("Execute() error = %v\nstdout=%s", err, stdout)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Status != "applied" {
+		t.Fatalf("response = %#v, want applied", response)
+	}
+	warning, ok := fieldValue(response.Fields, "preflight warning dns:app.example.com")
+	if !ok || !strings.Contains(warning, "未能确认") {
+		t.Fatalf("preflight warning field = %q, %v; fields = %#v", warning, ok, response.Fields)
+	}
+	if !slices.ContainsFunc(response.NextSteps, func(step string) bool {
+		return strings.Contains(step, "advanced.network.public_ipv4")
+	}) {
+		t.Fatalf("next steps = %#v, want DNS warning remediation", response.NextSteps)
+	}
+}
+
+func TestExecute_AppDeployBlocksHTTP01WhenHostAlignmentIsUnproven(t *testing.T) {
+	configPath := writeReviewAppConfig(t)
+	stubPassingAppDeployPreflight(t)
+	detectAppDNSFn = func(cfg appconfig.Config) map[string]preflight.DNSProbe {
+		return map[string]preflight.DNSProbe{
+			cfg.App.Domains[0]: {Host: cfg.App.Domains[0], ResolvedIPs: []string{"8.8.8.8"}},
+		}
+	}
+
+	previousExecutor := newHostExecutorFn
+	runner := &scriptedHostRunner{}
+	t.Cleanup(func() {
+		newHostExecutorFn = previousExecutor
+	})
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want HTTP-01 DNS alignment block")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Status != "blocked" {
+		t.Fatalf("response = %#v, want blocked", response)
+	}
+	dnsCheck, ok := fieldValue(response.Fields, "check dns:app.example.com")
+	if !ok || !strings.Contains(dnsCheck, "未能确认") {
+		t.Fatalf("dns check = %q, %v; fields = %#v", dnsCheck, ok, response.Fields)
+	}
+	if len(runner.commands) != 0 {
+		t.Fatalf("host commands = %#v, want block before host mutation", runner.commands)
+	}
+}
+
+func TestDetectAppExpectedPublicIPsFallsBackToCurrentHostProbe(t *testing.T) {
+	previousDetect := detectAppCurrentPublicIPsFn
+	t.Cleanup(func() {
+		detectAppCurrentPublicIPsFn = previousDetect
+	})
+	detectAppCurrentPublicIPsFn = func(*http.Client) (string, string) {
+		return "8.8.8.8", "2001:4860:4860::8888"
+	}
+
+	cfg := appconfig.New()
+	cfg.Tailscale.LoginServer = "https://hs.example.com"
+	ipv4, ipv6 := detectAppExpectedPublicIPs(cfg)
+	if ipv4 != "8.8.8.8" || ipv6 != "2001:4860:4860::8888" {
+		t.Fatalf("detectAppExpectedPublicIPs() = %q, %q; want detected public IPs", ipv4, ipv6)
+	}
+}
+
+func TestExecute_AppDeployFileInstallFailureReportsModifiedPaths(t *testing.T) {
+	configPath := writeReviewAppConfig(t)
+	cfg, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	staged := stagedRuntimeWithTempHostPaths(t, cfg)
+	stubPassingAppDeployPreflight(t)
+
+	previousStage := stageAppRuntimeFilesFn
+	previousInstaller := newAppFileInstallerFn
+	previousExecutor := newHostExecutorFn
+	runner := &scriptedHostRunner{}
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+		newAppFileInstallerFn = previousInstaller
+		newHostExecutorFn = previousExecutor
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return staged, nil
+	}
+	newAppFileInstallerFn = func(host.Executor, host.PrivilegeStrategy) appStagedFileInstaller {
+		return stubFileInstaller{
+			results: []host.FileInstallResult{{HostPath: "/etc/nginx/sites-available/review-app.conf", Changed: true}},
+			err:     errors.New("write failed"),
+		}
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want non-nil")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Summary != "写入 app runtime 文件失败" {
+		t.Fatalf("summary = %q, want file install failure", response.Summary)
+	}
+	paths, ok := fieldValue(response.Fields, "modified paths")
+	if !ok || !strings.Contains(paths, "/etc/nginx/sites-available/review-app.conf") {
+		t.Fatalf("modified paths = %q, %v; fields = %#v", paths, ok, response.Fields)
+	}
+}
+
+func TestExecute_AppDeployPostInstallFailureReportsModifiedPaths(t *testing.T) {
+	configPath := writeReviewAppConfig(t)
+	cfg, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	staged := stagedRuntimeWithTempHostPaths(t, cfg)
+	stubPassingAppDeployPreflight(t)
+
+	previousStage := stageAppRuntimeFilesFn
+	previousInstaller := newAppFileInstallerFn
+	previousExecutor := newHostExecutorFn
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		if command.Name == "systemctl" && strings.Join(command.Args, " ") == "daemon-reload" {
+			return host.Result{ExitCode: 1, Stderr: "daemon reload failed"}, errors.New("daemon reload failed")
+		}
+		return host.Result{}, nil
+	}}
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+		newAppFileInstallerFn = previousInstaller
+		newHostExecutorFn = previousExecutor
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return staged, nil
+	}
+	newAppFileInstallerFn = func(host.Executor, host.PrivilegeStrategy) appStagedFileInstaller {
+		return stubFileInstaller{results: []host.FileInstallResult{{HostPath: "/etc/nginx/sites-available/review-app.conf", Changed: true}}}
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want non-nil")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Summary != "systemd daemon-reload 失败" {
+		t.Fatalf("summary = %q, want daemon-reload failure", response.Summary)
+	}
+	paths, ok := fieldValue(response.Fields, "modified paths")
+	if !ok || !strings.Contains(paths, "/etc/nginx/sites-available/review-app.conf") {
+		t.Fatalf("modified paths = %q, %v; fields = %#v", paths, ok, response.Fields)
+	}
+}
+
+func TestExecute_AppDeployEnablesNginxBeforeRuntimeActivation(t *testing.T) {
+	configPath := writeReviewAppConfig(t)
+	cfg, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	staged := stagedRuntimeWithTempHostPaths(t, cfg)
+	stubPassingAppDeployPreflight(t)
+
+	events := []string{}
+	previousStage := stageAppRuntimeFilesFn
+	previousInstaller := newAppFileInstallerFn
+	previousExecutor := newHostExecutorFn
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		actual := unwrapMaybeSudoHostCommand(command)
+		if actual.Name == "systemctl" && strings.Join(actual.Args, " ") == "enable --now nginx.service" {
+			events = append(events, "systemctl-enable-now nginx.service")
+		}
+		if event := appDeployOrderEvent(command); event != "" {
+			events = append(events, event)
+		}
+		return host.Result{}, nil
+	}}
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+		newAppFileInstallerFn = previousInstaller
+		newHostExecutorFn = previousExecutor
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return staged, nil
+	}
+	newAppFileInstallerFn = func(host.Executor, host.PrivilegeStrategy) appStagedFileInstaller {
+		return recordingAppInstaller{
+			events:  &events,
+			results: []host.FileInstallResult{{HostPath: "/etc/nginx/sites-available/review-app.conf", Changed: true}},
+		}
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err != nil {
+		t.Fatalf("Execute() error = %v\nstdout=%s", err, stdout)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	assertEventBefore(t, events, "systemctl-enable-now nginx.service", "install-files")
+	assertEventBefore(t, events, "systemctl-enable-now nginx.service", "nginx-reload")
+}
+
+func TestExecute_AppDeployCertificateFailureReportsCommandEffects(t *testing.T) {
+	configPath := writeReviewAppConfig(t)
+	cfg, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	staged := stagedRuntimeWithTempHostPaths(t, cfg)
+	stubPassingAppDeployPreflight(t)
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+
+	previousStage := stageAppRuntimeFilesFn
+	previousInstaller := newAppFileInstallerFn
+	previousExecutor := newHostExecutorFn
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		actual := unwrapMaybeSudoHostCommand(command)
+		if actual.Name == "sh" && len(actual.Args) >= 3 && actual.Args[2] == "meshify-app-lego-issue-or-renew" {
+			return host.Result{ExitCode: 1, Stderr: "lego failed"}, errors.New("lego failed")
+		}
+		return host.Result{}, nil
+	}}
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+		newAppFileInstallerFn = previousInstaller
+		newHostExecutorFn = previousExecutor
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return staged, nil
+	}
+	newAppFileInstallerFn = func(host.Executor, host.PrivilegeStrategy) appStagedFileInstaller {
+		return stubFileInstaller{results: []host.FileInstallResult{{HostPath: "/etc/nginx/sites-available/review-app.conf", Changed: true}}}
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want non-nil")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Summary != "申请 app TLS 证书失败" {
+		t.Fatalf("summary = %q, want certificate failure", response.Summary)
+	}
+	paths, ok := fieldValue(response.Fields, "modified paths")
+	if !ok {
+		t.Fatalf("fields = %#v, want modified paths", response.Fields)
+	}
+	for _, want := range []string{
+		"/etc/nginx/sites-available/review-app.conf",
+		names.TLSMarkerPath,
+		names.FullchainPath,
+		names.PrivateKeyPath,
+		names.NginxEnabledPath,
+	} {
+		if !strings.Contains(paths, want) {
+			t.Fatalf("modified paths = %q, want %s", paths, want)
+		}
+	}
+	actions, ok := fieldValue(response.Fields, "host actions")
+	if !ok || !strings.Contains(actions, "reloaded Nginx") {
+		t.Fatalf("host actions = %q, %v; fields = %#v", actions, ok, response.Fields)
+	}
+}
+
+func TestExecute_AppDeployUpstreamRemovesManagedListenService(t *testing.T) {
+	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
+		cfg.App.Listen = ""
+		cfg.App.Upstream = "100.64.10.20:18001"
+		cfg.Service.ExecStart = ""
+		cfg.Service.WorkingDirectory = ""
+		cfg.Tailscale.LoginServer = "https://hs.example.com"
+	})
+	cfg, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	staged := stagedRuntimeWithTempHostPaths(t, cfg)
+	stubPassingAppDeployPreflight(t)
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+	servicePath := "/etc/systemd/system/" + names.ServiceUnit
+
+	events := []string{}
+	previousStage := stageAppRuntimeFilesFn
+	previousInstaller := newAppFileInstallerFn
+	previousExecutor := newHostExecutorFn
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		if event := appDeployOrderEvent(command); event != "" {
+			events = append(events, event)
+		}
+		actual := unwrapMaybeSudoHostCommand(command)
+		if actual.Name == "tailscale" && strings.Join(actual.Args, " ") == "status --json" {
+			return host.Result{Stdout: `{"BackendState":"Running","Self":{"Online":true}}`}, nil
+		}
+		if actual.Name == "tailscale" && strings.Join(actual.Args, " ") == "debug prefs" {
+			return host.Result{Stdout: `{"ControlURL":"https://hs.example.com","RouteAll":false,"CorpDNS":false,"ShieldsUp":true}`}, nil
+		}
+		if actual.Name == "cat" && len(actual.Args) == 1 && actual.Args[0] == "/var/lib/meshify/tailscale-client.json" {
+			return host.Result{Stdout: `{"login_server":"https://hs.example.com","accept_dns":false,"accept_routes":false,"shields_up":true,"managed_by":"meshify"}`}, nil
+		}
+		if actual.Name == "sh" && len(actual.Args) >= 3 && actual.Args[2] == "meshify-app-remove-stale-service" {
+			return host.Result{Stdout: servicePath + "\n"}, nil
+		}
+		return host.Result{}, nil
+	}}
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+		newAppFileInstallerFn = previousInstaller
+		newHostExecutorFn = previousExecutor
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return staged, nil
+	}
+	newAppFileInstallerFn = func(host.Executor, host.PrivilegeStrategy) appStagedFileInstaller {
+		return recordingAppInstaller{
+			events:  &events,
+			results: []host.FileInstallResult{{HostPath: "/etc/nginx/sites-available/review-app.conf", Changed: true}},
+		}
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err != nil {
+		t.Fatalf("Execute() error = %v\nstdout=%s", err, stdout)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Status != "applied" {
+		t.Fatalf("response = %#v, want applied", response)
+	}
+	assertEventBefore(t, events, "install-files", "remove-stale-service")
+	assertEventBefore(t, events, "nginx-reload", "remove-stale-service")
+	assertEventBefore(t, events, "lego-run", "remove-stale-service")
+	removeIndex := slices.Index(events, "remove-stale-service")
+	lastDaemonReloadIndex := -1
+	for index, event := range events {
+		if event == "systemd-daemon-reload" {
+			lastDaemonReloadIndex = index
+		}
+	}
+	if removeIndex < 0 || lastDaemonReloadIndex < 0 || removeIndex > lastDaemonReloadIndex {
+		t.Fatalf("events = %v, want stale service removal before final daemon-reload", events)
+	}
+	paths, ok := fieldValue(response.Fields, "modified paths")
+	if !ok || !strings.Contains(paths, servicePath) {
+		t.Fatalf("modified paths = %q, %v; fields = %#v", paths, ok, response.Fields)
+	}
+	if slices.Contains(events, "systemctl-enable review-app.service") || slices.Contains(events, "systemctl-restart review-app.service") {
+		t.Fatalf("events = %v, did not expect local app service activation", events)
+	}
+}
+
+func TestExecute_AppDeployEnabledSiteGuardBlocksForeignPath(t *testing.T) {
+	configPath := writeReviewAppConfig(t)
+	cfg, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	staged := stagedRuntimeWithTempHostPaths(t, cfg)
+	stubPassingAppDeployPreflight(t)
+
+	installerCalled := false
+	previousStage := stageAppRuntimeFilesFn
+	previousInstaller := newAppFileInstallerFn
+	previousExecutor := newHostExecutorFn
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		if command.DisplayName == "guard-nginx-enabled-site" {
+			return host.Result{ExitCode: 1, Stderr: "foreign enabled site"}, errors.New("foreign enabled site")
+		}
+		return host.Result{}, nil
+	}}
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+		newAppFileInstallerFn = previousInstaller
+		newHostExecutorFn = previousExecutor
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return staged, nil
+	}
+	newAppFileInstallerFn = func(host.Executor, host.PrivilegeStrategy) appStagedFileInstaller {
+		installerCalled = true
+		return stubFileInstaller{results: []host.FileInstallResult{{HostPath: "/etc/nginx/sites-available/review-app.conf", Changed: true}}}
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want non-nil")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Status != "blocked" || response.Summary != "Nginx enabled site 已存在且不属于当前 app" {
+		t.Fatalf("response = %#v, want pre-write enabled-site block", response)
+	}
+	if details, ok := fieldValue(response.Fields, "details"); !ok || !strings.Contains(details, "foreign enabled site") {
+		t.Fatalf("details = %q, %v; fields = %#v", details, ok, response.Fields)
+	}
+	if installerCalled {
+		t.Fatal("app file installer was called before enabled-site guard passed")
+	}
+	for _, command := range runner.commands {
+		actual := unwrapMaybeSudoHostCommand(command)
+		if actual.Name == "ln" || actual.Name == "apt-get" || actual.Name == "mkdir" || actual.Name == "/opt/meshify/bin/lego" {
+			t.Fatalf("commands = %#v, wanted enabled-site guard to block before host mutations", runner.commands)
+		}
+	}
+}
+
+func TestExecute_AppDeployTLSOwnershipGuardBlocksBeforeRuntimeInstall(t *testing.T) {
+	configPath := writeReviewAppConfig(t)
+	cfg, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	staged := stagedRuntimeWithTempHostPaths(t, cfg)
+	stubPassingAppDeployPreflight(t)
+
+	installerCalled := false
+	previousStage := stageAppRuntimeFilesFn
+	previousInstaller := newAppFileInstallerFn
+	previousExecutor := newHostExecutorFn
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		if command.DisplayName == "guard-app-tls" {
+			return host.Result{ExitCode: 1, Stderr: "foreign tls files"}, errors.New("foreign tls files")
+		}
+		return host.Result{}, nil
+	}}
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+		newAppFileInstallerFn = previousInstaller
+		newHostExecutorFn = previousExecutor
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return staged, nil
+	}
+	newAppFileInstallerFn = func(host.Executor, host.PrivilegeStrategy) appStagedFileInstaller {
+		installerCalled = true
+		return stubFileInstaller{results: []host.FileInstallResult{{HostPath: "/etc/nginx/sites-available/review-app.conf", Changed: true}}}
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want non-nil")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Summary != "app TLS 证书目录所有权检查失败" {
+		t.Fatalf("summary = %q, want TLS ownership failure", response.Summary)
+	}
+	if installerCalled {
+		t.Fatal("app file installer was called before TLS ownership guard passed")
+	}
+	for _, command := range runner.commands {
+		if appDeployOrderEvent(command) == "install-files" {
+			t.Fatalf("commands = %#v, wanted TLS guard to block before runtime install", runner.commands)
+		}
+	}
+}
+
+func TestExecute_AppDeployServiceAccessGuardBlocksBeforeRuntimeInstall(t *testing.T) {
+	configPath := writeReviewAppConfig(t)
+	cfg, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	staged := stagedRuntimeWithTempHostPaths(t, cfg)
+	stubPassingAppDeployPreflight(t)
+
+	installerCalled := false
+	previousStage := stageAppRuntimeFilesFn
+	previousInstaller := newAppFileInstallerFn
+	previousExecutor := newHostExecutorFn
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		if command.DisplayName == "guard-app-service-access" {
+			return host.Result{ExitCode: 1, Stderr: "app user cannot execute root-only binary"}, errors.New("app user cannot execute root-only binary")
+		}
+		return host.Result{}, nil
+	}}
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+		newAppFileInstallerFn = previousInstaller
+		newHostExecutorFn = previousExecutor
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return staged, nil
+	}
+	newAppFileInstallerFn = func(host.Executor, host.PrivilegeStrategy) appStagedFileInstaller {
+		installerCalled = true
+		return stubFileInstaller{results: []host.FileInstallResult{{HostPath: "/etc/nginx/sites-available/review-app.conf", Changed: true}}}
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want service access guard failure")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Summary != "app service 用户访问检查失败" {
+		t.Fatalf("summary = %q, want service access failure", response.Summary)
+	}
+	if installerCalled {
+		t.Fatal("app file installer was called before service access guard passed")
+	}
+	for _, command := range runner.commands {
+		if appDeployOrderEvent(command) == "install-files" || appDeployOrderEvent(command) == "lego-run" {
+			t.Fatalf("commands = %#v, wanted service access guard to block before runtime or certificate changes", runner.commands)
+		}
+	}
+}
+
+func TestExecute_AppDeployRootDirectoryGuardBlocksBeforeRuntimeInstall(t *testing.T) {
+	configPath := writeReviewAppConfig(t)
+	cfg, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	staged := stagedRuntimeWithTempHostPaths(t, cfg)
+	stubPassingAppDeployPreflight(t)
+
+	installerCalled := false
+	previousStage := stageAppRuntimeFilesFn
+	previousInstaller := newAppFileInstallerFn
+	previousExecutor := newHostExecutorFn
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		if command.DisplayName == "guard-app-root-directories" {
+			return host.Result{ExitCode: 1, Stderr: "/etc/review-app exists without marker"}, errors.New("foreign app root")
+		}
+		return host.Result{}, nil
+	}}
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+		newAppFileInstallerFn = previousInstaller
+		newHostExecutorFn = previousExecutor
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return staged, nil
+	}
+	newAppFileInstallerFn = func(host.Executor, host.PrivilegeStrategy) appStagedFileInstaller {
+		installerCalled = true
+		return stubFileInstaller{}
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want root directory guard failure")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Summary != "app 目录根所有权检查失败" {
+		t.Fatalf("summary = %q, want app root ownership failure", response.Summary)
+	}
+	if installerCalled {
+		t.Fatal("app file installer was called before app root directory guard passed")
+	}
+	for _, command := range runner.commands {
+		actual := unwrapMaybeSudoHostCommand(command)
+		if command.DisplayName == "ensure-app-user" {
+			t.Fatalf("commands = %#v, wanted root guard to block before app user creation", runner.commands)
+		}
+		if actual.Name == "install" || appDeployOrderEvent(command) == "install-files" {
+			t.Fatalf("commands = %#v, wanted root guard to block before app directory/runtime writes", runner.commands)
+		}
+	}
+}
+
+func TestExecute_AppDeployBlocksNginxDomainConflictBeforeRuntimeInstall(t *testing.T) {
+	configPath := writeReviewAppConfig(t)
+	cfg, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	staged := stagedRuntimeWithTempHostPaths(t, cfg)
+	stubPassingAppDeployPreflight(t)
+
+	installerCalled := false
+	previousStage := stageAppRuntimeFilesFn
+	previousInstaller := newAppFileInstallerFn
+	previousExecutor := newHostExecutorFn
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		if command.DisplayName == "guard-nginx-server-names" {
+			return host.Result{ExitCode: 1, Stderr: "duplicate server_name"}, errors.New("duplicate server_name")
+		}
+		return host.Result{}, nil
+	}}
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+		newAppFileInstallerFn = previousInstaller
+		newHostExecutorFn = previousExecutor
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return staged, nil
+	}
+	newAppFileInstallerFn = func(host.Executor, host.PrivilegeStrategy) appStagedFileInstaller {
+		installerCalled = true
+		return stubFileInstaller{}
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want Nginx server_name conflict")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Summary != "Nginx server_name 冲突" {
+		t.Fatalf("summary = %q, want server_name conflict", response.Summary)
+	}
+	if installerCalled {
+		t.Fatal("app file installer was called before Nginx server_name guard passed")
+	}
+}
+
+func TestExecute_AppDeployBlocksNginxDefaultServerConflictBeforeRuntimeInstall(t *testing.T) {
+	configPath := writeReviewAppConfig(t)
+	cfg, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	staged := stagedRuntimeWithTempHostPaths(t, cfg)
+	stubPassingAppDeployPreflight(t)
+
+	installerCalled := false
+	previousStage := stageAppRuntimeFilesFn
+	previousInstaller := newAppFileInstallerFn
+	previousExecutor := newHostExecutorFn
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		if command.DisplayName == "guard-nginx-default-server" {
+			return host.Result{ExitCode: 1, Stderr: "custom default_server"}, errors.New("custom default_server")
+		}
+		return host.Result{}, nil
+	}}
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+		newAppFileInstallerFn = previousInstaller
+		newHostExecutorFn = previousExecutor
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return staged, nil
+	}
+	newAppFileInstallerFn = func(host.Executor, host.PrivilegeStrategy) appStagedFileInstaller {
+		installerCalled = true
+		return stubFileInstaller{}
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want Nginx default_server conflict")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Summary != "Nginx default_server 冲突" {
+		t.Fatalf("summary = %q, want default_server conflict", response.Summary)
+	}
+	if installerCalled {
+		t.Fatal("app file installer was called before Nginx default_server guard passed")
+	}
+}
+
+func TestExecute_AppDeployHappyPathOrder(t *testing.T) {
+	tests := []struct {
+		name       string
+		configure  func(*appconfig.Config)
+		wantBefore [][2]string
+		wantAbsent []string
+	}{
+		{
+			name: "listen http01",
+			wantBefore: [][2]string{
+				{"install-files", "systemd-daemon-reload"},
+				{"systemd-daemon-reload", "http01-bootstrap"},
+				{"http01-bootstrap", "nginx-enabled-guard-activate"},
+				{"nginx-enabled-guard-activate", "nginx-enable"},
+				{"nginx-enable", "lego-run"},
+				{"lego-run", "systemctl-enable review-app.service"},
+				{"systemctl-restart review-app.service", "systemctl-enable review-app-lego-renew.timer"},
+			},
+		},
+		{
+			name: "listen dns01",
+			configure: func(cfg *appconfig.Config) {
+				cfg.App.ACMEChallenge = appconfig.ACMEChallengeDNS01
+				cfg.DNS01.Provider = "route53"
+			},
+			wantBefore: [][2]string{
+				{"install-files", "systemd-daemon-reload"},
+				{"systemd-daemon-reload", "lego-run"},
+				{"lego-run", "nginx-enabled-guard-activate"},
+				{"nginx-enabled-guard-activate", "nginx-enable"},
+				{"nginx-enable", "systemctl-enable review-app.service"},
+			},
+		},
+		{
+			name: "upstream http01",
+			configure: func(cfg *appconfig.Config) {
+				cfg.App.Listen = ""
+				cfg.App.Upstream = "100.64.10.20:18001"
+				cfg.Service.ExecStart = ""
+				cfg.Service.WorkingDirectory = ""
+				cfg.Tailscale.LoginServer = "https://hs.example.com"
+			},
+			wantBefore: [][2]string{
+				{"tailscale-status", "install-files"},
+				{"install-files", "systemd-daemon-reload"},
+				{"systemd-daemon-reload", "http01-bootstrap"},
+				{"http01-bootstrap", "nginx-enabled-guard-activate"},
+				{"nginx-enable", "lego-run"},
+				{"lego-run", "systemctl-enable review-app-lego-renew.timer"},
+			},
+			wantAbsent: []string{"systemctl-enable review-app.service", "systemctl-restart review-app.service"},
+		},
+		{
+			name: "upstream dns01",
+			configure: func(cfg *appconfig.Config) {
+				cfg.App.Listen = ""
+				cfg.App.Upstream = "100.64.10.20:18001"
+				cfg.App.ACMEChallenge = appconfig.ACMEChallengeDNS01
+				cfg.Service.ExecStart = ""
+				cfg.Service.WorkingDirectory = ""
+				cfg.DNS01.Provider = "route53"
+				cfg.Tailscale.LoginServer = "https://hs.example.com"
+			},
+			wantBefore: [][2]string{
+				{"tailscale-status", "install-files"},
+				{"install-files", "systemd-daemon-reload"},
+				{"systemd-daemon-reload", "lego-run"},
+				{"lego-run", "nginx-enabled-guard-activate"},
+				{"nginx-enable", "systemctl-enable review-app-lego-renew.timer"},
+			},
+			wantAbsent: []string{"systemctl-enable review-app.service", "systemctl-restart review-app.service"},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			configPath := writeReviewAppConfigWith(t, tt.configure)
+			cfg, err := appconfig.LoadFile(configPath)
+			if err != nil {
+				t.Fatalf("LoadFile() error = %v", err)
+			}
+			staged := stagedRuntimeWithTempHostPaths(t, cfg)
+			stubPassingAppDeployPreflight(t)
+			if cfg.App.ACMEChallenge == appconfig.ACMEChallengeDNS01 {
+				detectAppDNSCredentialStateFn = func(appconfig.Config) (bool, bool, string) {
+					return true, true, "ready"
+				}
+			}
+
+			events := []string{}
+			enabledSiteGuardCount := 0
+			previousStage := stageAppRuntimeFilesFn
+			previousInstaller := newAppFileInstallerFn
+			previousExecutor := newHostExecutorFn
+			runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+				if event := appDeployOrderEvent(command); event != "" {
+					if event == "nginx-enabled-guard" {
+						enabledSiteGuardCount++
+						if enabledSiteGuardCount == 1 {
+							event = "nginx-enabled-guard-prewrite"
+						} else {
+							event = "nginx-enabled-guard-activate"
+						}
+					}
+					events = append(events, event)
+				}
+				actual := unwrapMaybeSudoHostCommand(command)
+				if actual.Name == "tailscale" && strings.Join(actual.Args, " ") == "status --json" {
+					return host.Result{Stdout: `{"BackendState":"Running","Self":{"Online":true}}`}, nil
+				}
+				if actual.Name == "tailscale" && strings.Join(actual.Args, " ") == "debug prefs" {
+					return host.Result{Stdout: `{"ControlURL":"https://hs.example.com","RouteAll":false,"CorpDNS":false,"ShieldsUp":true}`}, nil
+				}
+				if actual.Name == "cat" && len(actual.Args) == 1 && actual.Args[0] == "/var/lib/meshify/tailscale-client.json" {
+					return host.Result{Stdout: `{"login_server":"https://hs.example.com","accept_dns":false,"accept_routes":false,"shields_up":true,"managed_by":"meshify"}`}, nil
+				}
+				return host.Result{}, nil
+			}}
+			t.Cleanup(func() {
+				stageAppRuntimeFilesFn = previousStage
+				newAppFileInstallerFn = previousInstaller
+				newHostExecutorFn = previousExecutor
+			})
+			stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+				return staged, nil
+			}
+			newAppFileInstallerFn = func(host.Executor, host.PrivilegeStrategy) appStagedFileInstaller {
+				return recordingAppInstaller{
+					events:  &events,
+					results: []host.FileInstallResult{{HostPath: "/etc/nginx/sites-available/review-app.conf", Changed: true}},
+				}
+			}
+			newHostExecutorFn = func(env map[string]string) host.Executor {
+				return host.NewExecutor(runner, env)
+			}
+
+			stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+			if err != nil {
+				t.Fatalf("Execute() error = %v\nstdout=%s", err, stdout)
+			}
+			if stderr != "" {
+				t.Fatalf("stderr = %q, want empty", stderr)
+			}
+			response := mustDecodeResponse(t, stdout)
+			if response.Status != "applied" {
+				t.Fatalf("response = %#v, want applied", response)
+			}
+			for _, pair := range tt.wantBefore {
+				assertEventBefore(t, events, pair[0], pair[1])
+			}
+			assertEventBefore(t, events, "nginx-enabled-guard-prewrite", "install-files")
+			for _, absent := range tt.wantAbsent {
+				if slices.Contains(events, absent) {
+					t.Fatalf("events = %v, did not expect %q", events, absent)
+				}
+			}
+		})
+	}
+}
+
+func TestExecute_AppDeployChecksTailscaleBeforeAppHostMutations(t *testing.T) {
+	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
+		cfg.App.Listen = ""
+		cfg.App.Upstream = "100.64.10.20:18001"
+		cfg.Service.ExecStart = ""
+		cfg.Service.WorkingDirectory = ""
+		cfg.Tailscale.LoginServer = "https://hs.example.com"
+	})
+	cfg, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	staged := stagedRuntimeWithTempHostPaths(t, cfg)
+	stubPassingAppDeployPreflight(t)
+
+	installerCalled := false
+	previousStage := stageAppRuntimeFilesFn
+	previousInstaller := newAppFileInstallerFn
+	previousExecutor := newHostExecutorFn
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		actual := unwrapMaybeSudoHostCommand(command)
+		if actual.Name == "tailscale" {
+			switch strings.Join(actual.Args, " ") {
+			case "version":
+				return host.Result{Command: command, Stdout: "1.80.0\n"}, nil
+			case "status --json":
+				return host.Result{Command: command, Stdout: `{"BackendState":"Running","Self":{"Online":true}}`}, nil
+			case "debug prefs":
+				return host.Result{Command: command, Stdout: `{"ControlURL":"https://other.example.com","RouteAll":false,"CorpDNS":false,"ShieldsUp":true}`}, nil
+			}
+		}
+		return host.Result{Command: command}, nil
+	}}
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+		newAppFileInstallerFn = previousInstaller
+		newHostExecutorFn = previousExecutor
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return staged, nil
+	}
+	newAppFileInstallerFn = func(host.Executor, host.PrivilegeStrategy) appStagedFileInstaller {
+		installerCalled = true
+		return stubFileInstaller{}
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want non-nil")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Summary != "Tailscale client 前置条件失败" {
+		t.Fatalf("summary = %q, want Tailscale failure", response.Summary)
+	}
+	if installerCalled {
+		t.Fatal("app file installer was called before Tailscale correctness was proven")
+	}
+	for _, command := range runner.commands {
+		actual := unwrapMaybeSudoHostCommand(command)
+		if actual.Name == "apt-get" || actual.Name == "mkdir" {
+			t.Fatalf("commands = %#v, want no app host dependency or directory mutation before Tailscale failure", runner.commands)
+		}
+	}
+}
+
+func TestExecute_AppDeployCreatesLocalHeadscalePreauthKeyForDerivedLoginServer(t *testing.T) {
+	baseDir := t.TempDir()
+	mainConfigPath := filepath.Join(baseDir, "meshify.yaml")
+	writeReviewMainConfig(t, mainConfigPath, "https://hs.example.com")
+	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
+		cfg.App.Listen = ""
+		cfg.App.Upstream = "100.64.10.20:18001"
+		cfg.Service.ExecStart = ""
+		cfg.Service.WorkingDirectory = ""
+		cfg.Tailscale.MeshifyConfig = mainConfigPath
+	})
+	cfg, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	staged := stagedRuntimeWithTempHostPaths(t, cfg)
+	stubPassingAppDeployPreflight(t)
+
+	secret := "tskey-auth-secret-cli-regression"
+	previousStage := stageAppRuntimeFilesFn
+	previousInstaller := newAppFileInstallerFn
+	previousExecutor := newHostExecutorFn
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		actual := unwrapMaybeSudoHostCommand(command)
+		switch actual.Name {
+		case "tailscale":
+			if strings.Join(actual.Args, " ") == "status --json" {
+				return host.Result{Command: command, Stdout: `{"BackendState":"NeedsLogin"}`}, nil
+			}
+		case "headscale":
+			args := strings.Join(actual.Args, " ")
+			switch {
+			case strings.Contains(args, "users list --output json"):
+				return host.Result{Command: command, Stdout: `[{"id":2,"name":"meshify"}]`}, nil
+			case strings.Contains(args, "preauthkeys create"):
+				return host.Result{Command: command, Stdout: secret + "\n"}, nil
+			}
+		}
+		return host.Result{Command: command}, nil
+	}}
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+		newAppFileInstallerFn = previousInstaller
+		newHostExecutorFn = previousExecutor
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return staged, nil
+	}
+	newAppFileInstallerFn = func(host.Executor, host.PrivilegeStrategy) appStagedFileInstaller {
+		return stubFileInstaller{results: []host.FileInstallResult{{HostPath: "/etc/nginx/sites-available/review-app.conf", Changed: true}}}
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err != nil {
+		t.Fatalf("Execute() error = %v\nstdout=%s", err, stdout)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Status != "applied" {
+		t.Fatalf("response = %#v, want applied", response)
+	}
+	if strings.Contains(stdout, secret) {
+		t.Fatalf("stdout leaked local Headscale preauth key: %q", stdout)
+	}
+
+	preauthFound := false
+	tailscaleUpFound := false
+	tailscaledEnableCount := 0
+	for _, command := range runner.commands {
+		actual := unwrapMaybeSudoHostCommand(command)
+		args := strings.Join(actual.Args, " ")
+		if actual.Name == "systemctl" && args == "enable --now tailscaled.service" {
+			tailscaledEnableCount++
+		}
+		if actual.Name == "headscale" && strings.Contains(args, "preauthkeys create") {
+			preauthFound = true
+			if !strings.Contains(args, "--expiration 1h") {
+				t.Fatalf("preauth command args = %q, want 1h expiration", args)
+			}
+			if strings.Contains(args, "--reusable") {
+				t.Fatalf("preauth command args = %q, must not be reusable", args)
+			}
+		}
+		if actual.Name == "tailscale" && len(actual.Args) > 0 && actual.Args[0] == "up" {
+			tailscaleUpFound = true
+			if !slices.Contains(actual.Args, "--login-server") || !slices.Contains(actual.Args, "https://hs.example.com") {
+				t.Fatalf("tailscale up args = %#v, want derived login server", actual.Args)
+			}
+			if !slices.Contains(actual.Args, secret) {
+				t.Fatalf("tailscale up args = %#v, want auth key passed to child process", actual.Args)
+			}
+			if strings.Contains(command.String(), secret) {
+				t.Fatalf("tailscale up display leaked auth key: %q", command.String())
+			}
+			if !strings.Contains(command.String(), "<redacted>") {
+				t.Fatalf("tailscale up display = %q, want redacted auth key", command.String())
+			}
+		}
+	}
+	if !preauthFound {
+		t.Fatalf("commands = %#v, want local Headscale preauth creation", runner.commands)
+	}
+	if !tailscaleUpFound {
+		t.Fatalf("commands = %#v, want tailscale up", runner.commands)
+	}
+	if tailscaledEnableCount != 1 {
+		t.Fatalf("tailscaled enable count = %d, want 1; commands = %#v", tailscaledEnableCount, runner.commands)
+	}
+}
+
+func TestExecute_AppDeployMasksLocalHeadscalePreauthKeyWhenPreauthCreationFails(t *testing.T) {
+	baseDir := t.TempDir()
+	mainConfigPath := filepath.Join(baseDir, "meshify.yaml")
+	writeReviewMainConfig(t, mainConfigPath, "https://hs.example.com")
+	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
+		cfg.App.Listen = ""
+		cfg.App.Upstream = "100.64.10.20:18001"
+		cfg.Service.ExecStart = ""
+		cfg.Service.WorkingDirectory = ""
+		cfg.Tailscale.MeshifyConfig = mainConfigPath
+	})
+	cfg, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	staged := stagedRuntimeWithTempHostPaths(t, cfg)
+	stubPassingAppDeployPreflight(t)
+
+	secret := "tskey-auth-secret-cli-regression"
+	previousStage := stageAppRuntimeFilesFn
+	previousExecutor := newHostExecutorFn
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		actual := unwrapMaybeSudoHostCommand(command)
+		switch actual.Name {
+		case "tailscale":
+			if strings.Join(actual.Args, " ") == "status --json" {
+				return host.Result{Command: command, Stdout: `{"BackendState":"NeedsLogin"}`}, nil
+			}
+		case "headscale":
+			args := strings.Join(actual.Args, " ")
+			switch {
+			case strings.Contains(args, "users list --output json"):
+				return host.Result{Command: command, Stdout: `[{"id":2,"name":"meshify"}]`}, nil
+			case strings.Contains(args, "preauthkeys create"):
+				return host.Result{Command: command, Stdout: secret + "\n", Stderr: "created " + secret + " but failed", ExitCode: 1}, errors.New("headscale failed with " + secret)
+			}
+		}
+		return host.Result{Command: command}, nil
+	}}
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+		newHostExecutorFn = previousExecutor
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return staged, nil
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want non-nil")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	if strings.Contains(stdout, secret) || strings.Contains(err.Error(), secret) {
+		t.Fatalf("failure output leaked local Headscale preauth key:\nstdout=%s\nerr=%v", stdout, err)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Summary != "Tailscale client 前置条件失败" {
+		t.Fatalf("summary = %q, want Tailscale failure", response.Summary)
+	}
+	details, ok := fieldValue(response.Fields, "details")
+	if !ok || !strings.Contains(details, "<redacted>") {
+		t.Fatalf("details = %q, %v; want redacted auth key", details, ok)
+	}
+}
+
+func TestExecute_AppDeployMasksLocalHeadscalePreauthKeyWhenTailscaleUpFails(t *testing.T) {
+	baseDir := t.TempDir()
+	mainConfigPath := filepath.Join(baseDir, "meshify.yaml")
+	writeReviewMainConfig(t, mainConfigPath, "https://hs.example.com")
+	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
+		cfg.App.Listen = ""
+		cfg.App.Upstream = "100.64.10.20:18001"
+		cfg.Service.ExecStart = ""
+		cfg.Service.WorkingDirectory = ""
+		cfg.Tailscale.MeshifyConfig = mainConfigPath
+	})
+	cfg, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	staged := stagedRuntimeWithTempHostPaths(t, cfg)
+	stubPassingAppDeployPreflight(t)
+
+	secret := "tskey-auth-secret-cli-regression"
+	previousStage := stageAppRuntimeFilesFn
+	previousExecutor := newHostExecutorFn
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		actual := unwrapMaybeSudoHostCommand(command)
+		switch actual.Name {
+		case "tailscale":
+			if strings.Join(actual.Args, " ") == "status --json" {
+				return host.Result{Command: command, Stdout: `{"BackendState":"NeedsLogin"}`}, nil
+			}
+			if len(actual.Args) > 0 && actual.Args[0] == "up" {
+				return host.Result{Command: command, Stderr: "failed with " + secret, ExitCode: 1}, errors.New("tailscale rejected " + secret)
+			}
+		case "headscale":
+			args := strings.Join(actual.Args, " ")
+			switch {
+			case strings.Contains(args, "users list --output json"):
+				return host.Result{Command: command, Stdout: `[{"id":2,"name":"meshify"}]`}, nil
+			case strings.Contains(args, "preauthkeys create"):
+				return host.Result{Command: command, Stdout: secret + "\n"}, nil
+			}
+		}
+		return host.Result{Command: command}, nil
+	}}
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+		newHostExecutorFn = previousExecutor
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return staged, nil
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want non-nil")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	if strings.Contains(stdout, secret) || strings.Contains(err.Error(), secret) {
+		t.Fatalf("failure output leaked local Headscale preauth key:\nstdout=%s\nerr=%v", stdout, err)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Summary != "Tailscale client 前置条件失败" {
+		t.Fatalf("summary = %q, want Tailscale failure", response.Summary)
+	}
+	details, ok := fieldValue(response.Fields, "details")
+	if !ok || !strings.Contains(details, "<redacted>") {
+		t.Fatalf("details = %q, %v; want redacted auth key", details, ok)
+	}
+}
+
+func mustDecodeResponse(t *testing.T, stdout string) output.Response {
+	t.Helper()
+
+	var response output.Response
+	if err := json.Unmarshal([]byte(stdout), &response); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v; stdout = %q", err, stdout)
+	}
+	return response
+}
+
+func writeReviewAppConfig(t *testing.T) string {
+	t.Helper()
+
+	return writeReviewAppConfigWith(t, nil)
+}
+
+func writeReviewAppConfigWith(t *testing.T, configure func(*appconfig.Config)) string {
+	t.Helper()
+
+	configPath := filepath.Join(t.TempDir(), "meshify-app.yaml")
+	cfg := appconfig.New()
+	cfg.App.Name = "review-app"
+	cfg.App.Domains = []string{"app.example.com"}
+	cfg.App.CertificateEmail = "ops@example.com"
+	cfg.App.Listen = "127.0.0.1:18001"
+	cfg.Service.ExecStart = "/bin/true --listen 127.0.0.1:18001"
+	cfg.Service.WorkingDirectory = "/tmp"
+	if configure != nil {
+		configure(&cfg)
+	}
+	if err := cfg.WriteFile(configPath); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	return configPath
+}
+
+func writeReviewMainConfig(t *testing.T, path string, serverURL string) {
+	t.Helper()
+
+	cfg := config.ExampleConfig()
+	cfg.Default.ServerURL = serverURL
+	cfg.Default.BaseDomain = "tailnet.example.com"
+	if err := cfg.WriteFile(path); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+}
+
+func appDeployOrderEvent(command host.Command) string {
+	if command.DisplayName == "guard-nginx-enabled-site" {
+		return "nginx-enabled-guard"
+	}
+	actual := unwrapMaybeSudoHostCommand(command)
+	switch actual.Name {
+	case "tailscale":
+		if len(actual.Args) > 0 && actual.Args[0] == "status" {
+			return "tailscale-status"
+		}
+	case "systemctl":
+		switch strings.Join(actual.Args, " ") {
+		case "daemon-reload":
+			return "systemd-daemon-reload"
+		case "enable review-app.service":
+			return "systemctl-enable review-app.service"
+		case "restart review-app.service":
+			return "systemctl-restart review-app.service"
+		case "enable review-app-lego-renew.timer":
+			return "systemctl-enable review-app-lego-renew.timer"
+		case "start review-app-lego-renew.timer":
+			return "systemctl-start review-app-lego-renew.timer"
+		case "reload-or-restart nginx.service":
+			return "nginx-reload"
+		}
+	case "sh":
+		if len(actual.Args) >= 3 {
+			switch actual.Args[2] {
+			case "meshify-app-tls-bootstrap":
+				return "http01-bootstrap"
+			case "meshify-app-remove-stale-service":
+				return "remove-stale-service"
+			case "meshify-app-lego-issue-or-renew":
+				return "lego-run"
+			case "meshify-app-lego-dns01":
+				return "lego-run"
+			}
+		}
+	case "ln":
+		return "nginx-enable"
+	case "nginx":
+		if strings.Join(actual.Args, " ") == "-t" {
+			return "nginx-test"
+		}
+	case "/opt/meshify/bin/lego":
+		if len(actual.Args) == 1 && actual.Args[0] == "--version" {
+			return "lego-version"
+		}
+		return "lego-run"
+	}
+	return ""
+}
+
+func assertEventBefore(t *testing.T, events []string, before string, after string) {
+	t.Helper()
+
+	beforeIndex := slices.Index(events, before)
+	afterIndex := slices.Index(events, after)
+	if beforeIndex < 0 || afterIndex < 0 || beforeIndex >= afterIndex {
+		t.Fatalf("events = %v, want %q before %q", events, before, after)
+	}
+}
+
+type recordingAppInstaller struct {
+	events  *[]string
+	results []host.FileInstallResult
+}
+
+func (installer recordingAppInstaller) Install(_ []render.StagedFile) ([]host.FileInstallResult, error) {
+	*installer.events = append(*installer.events, "install-files")
+	return append([]host.FileInstallResult(nil), installer.results...), nil
+}
+
+func stagedRuntimeWithTempHostPaths(t *testing.T, cfg appconfig.Config) []apprender.StagedFile {
+	t.Helper()
+
+	staged, err := apprender.StageRuntime(cfg)
+	if err != nil {
+		t.Fatalf("StageRuntime() error = %v", err)
+	}
+	return staged
+}
+
+type readOnlyAppFileSystem struct {
+	files map[string][]byte
+}
+
+func (fileSystem readOnlyAppFileSystem) MkdirAll(string, fs.FileMode) error {
+	return nil
+}
+
+func (fileSystem readOnlyAppFileSystem) ReadFile(name string) ([]byte, error) {
+	content, ok := fileSystem.files[name]
+	if !ok {
+		return nil, os.ErrNotExist
+	}
+	return append([]byte(nil), content...), nil
+}
+
+func (fileSystem readOnlyAppFileSystem) WriteFile(string, []byte, fs.FileMode) error {
+	return nil
+}
+
+func (fileSystem readOnlyAppFileSystem) Chmod(string, fs.FileMode) error {
+	return nil
+}
+
+func (fileSystem readOnlyAppFileSystem) Stat(string) (fs.FileInfo, error) {
+	return nil, os.ErrNotExist
+}
+
+func stubPassingAppDeployPreflight(t *testing.T) {
+	t.Helper()
+
+	previousPermissionState := detectPermissionStateFn
+	previousDetectAppDNS := detectAppDNSFn
+	previousDetectAppCurrentPublicIPs := detectAppCurrentPublicIPsFn
+	previousDetectAppPortBindings := detectAppPortBindingsFn
+	previousDetectAppDNSCredentialState := detectAppDNSCredentialStateFn
+	previousDetectAppServiceEnvFileState := detectAppServiceEnvFileStateFn
+	previousDetectAppTailscaleAuthKeyFileState := detectAppTailscaleAuthKeyFileStateFn
+	previousStatAppServiceBinary := statAppServiceBinaryFn
+	previousEnsureAppNginxCompatibility := ensureAppNginxCompatibilityFn
+	previousAppHostFileSystem := newAppHostFileSystemFn
+	t.Cleanup(func() {
+		detectPermissionStateFn = previousPermissionState
+		detectAppDNSFn = previousDetectAppDNS
+		detectAppCurrentPublicIPsFn = previousDetectAppCurrentPublicIPs
+		detectAppPortBindingsFn = previousDetectAppPortBindings
+		detectAppDNSCredentialStateFn = previousDetectAppDNSCredentialState
+		detectAppServiceEnvFileStateFn = previousDetectAppServiceEnvFileState
+		detectAppTailscaleAuthKeyFileStateFn = previousDetectAppTailscaleAuthKeyFileState
+		statAppServiceBinaryFn = previousStatAppServiceBinary
+		ensureAppNginxCompatibilityFn = previousEnsureAppNginxCompatibility
+		newAppHostFileSystemFn = previousAppHostFileSystem
+	})
+
+	detectPermissionStateFn = func() preflight.PermissionState {
+		return preflight.PermissionState{User: "root", IsRoot: true}
+	}
+	detectAppDNSFn = func(cfg appconfig.Config) map[string]preflight.DNSProbe {
+		probes := make(map[string]preflight.DNSProbe, len(cfg.App.Domains))
+		for _, domain := range cfg.App.Domains {
+			probes[domain] = preflight.DNSProbe{Host: domain, ResolvedIPs: []string{"8.8.8.8"}, ExpectedIPv4: "8.8.8.8"}
+		}
+		return probes
+	}
+	detectAppPortBindingsFn = func() []preflight.PortBinding {
+		return []preflight.PortBinding{
+			{Port: 80, Protocol: "tcp"},
+			{Port: 443, Protocol: "tcp"},
+		}
+	}
+	detectAppDNSCredentialStateFn = func(appconfig.Config) (bool, bool, string) {
+		return false, false, ""
+	}
+	detectAppServiceEnvFileStateFn = func(appconfig.Config) (bool, bool, string) {
+		return false, false, ""
+	}
+	detectAppTailscaleAuthKeyFileStateFn = func(appconfig.Config) (bool, bool, string) {
+		return false, false, ""
+	}
+	statAppServiceBinaryFn = func(string) (os.FileInfo, error) {
+		return os.Stat("/bin/true")
+	}
+	ensureAppNginxCompatibilityFn = func(stdcontext.Context, appconfig.Config, host.Executor) error {
+		return nil
+	}
+	newAppHostFileSystemFn = func(host.Executor, host.PrivilegeStrategy) host.FileSystem {
+		return readOnlyAppFileSystem{}
 	}
 }
 
@@ -1222,6 +3349,282 @@ func TestInspectDNSCredentialsFileDoesNotApproveUninspectablePath(t *testing.T) 
 	}
 	if !strings.Contains(detail, "cannot be inspected") {
 		t.Fatalf("detail = %q, want inspection failure guidance", detail)
+	}
+}
+
+func TestDetectAppServiceEnvFileStateRequiresRootOnlyFile(t *testing.T) {
+	envFile := filepath.Join(t.TempDir(), "web.env")
+	if err := os.Chmod(filepath.Dir(envFile), 0o700); err != nil {
+		t.Fatalf("Chmod(temp dir) error = %v", err)
+	}
+	if err := os.WriteFile(envFile, []byte("WEB_ENV=production\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	cfg := appconfig.New()
+	cfg.App.Name = "review-app"
+	cfg.App.Domains = []string{"app.example.com"}
+	cfg.App.CertificateEmail = "ops@example.com"
+	cfg.App.Listen = "127.0.0.1:18001"
+	cfg.Service.ExecStart = "/bin/true --listen 127.0.0.1:18001"
+	cfg.Service.EnvFile = envFile
+
+	previousLstat := lstatAppServicePathFn
+	t.Cleanup(func() {
+		lstatAppServicePathFn = previousLstat
+	})
+	lstatAppServicePathFn = func(path string) (os.FileInfo, error) {
+		info, err := os.Lstat(path)
+		if err != nil {
+			return nil, err
+		}
+		return rootOwnedFileInfo{FileInfo: info}, nil
+	}
+
+	checked, ready, detail := detectAppServiceEnvFileState(cfg)
+	if !checked || !ready {
+		t.Fatalf("detectAppServiceEnvFileState() = checked %t ready %t detail %q, want ready", checked, ready, detail)
+	}
+
+	if err := os.Chmod(envFile, 0o644); err != nil {
+		t.Fatalf("Chmod() error = %v", err)
+	}
+	checked, ready, detail = detectAppServiceEnvFileState(cfg)
+	if !checked || ready || !strings.Contains(detail, "root-only") {
+		t.Fatalf("detectAppServiceEnvFileState() = checked %t ready %t detail %q, want root-only failure", checked, ready, detail)
+	}
+
+	if err := os.Chmod(envFile, 0o600); err != nil {
+		t.Fatalf("Chmod() error = %v", err)
+	}
+	linkPath := filepath.Join(filepath.Dir(envFile), "web-link.env")
+	if err := os.Symlink(envFile, linkPath); err != nil {
+		t.Fatalf("Symlink() error = %v", err)
+	}
+	cfg.Service.EnvFile = linkPath
+	checked, ready, detail = detectAppServiceEnvFileState(cfg)
+	if !checked || ready || !strings.Contains(detail, "must not be a symlink") {
+		t.Fatalf("detectAppServiceEnvFileState() = checked %t ready %t detail %q, want symlink failure", checked, ready, detail)
+	}
+
+	writableDir := filepath.Join(filepath.Dir(envFile), "writable")
+	if err := os.Mkdir(writableDir, 0o700); err != nil {
+		t.Fatalf("Mkdir() error = %v", err)
+	}
+	if err := os.Chmod(writableDir, 0o777); err != nil {
+		t.Fatalf("Chmod(writableDir) error = %v", err)
+	}
+	writableEnvFile := filepath.Join(writableDir, "web.env")
+	if err := os.WriteFile(writableEnvFile, []byte("WEB_ENV=production\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(writableEnvFile) error = %v", err)
+	}
+	cfg.Service.EnvFile = writableEnvFile
+	checked, ready, detail = detectAppServiceEnvFileState(cfg)
+	if !checked || ready || !strings.Contains(detail, "must not be writable by group or others") {
+		t.Fatalf("detectAppServiceEnvFileState() = checked %t ready %t detail %q, want writable parent failure", checked, ready, detail)
+	}
+}
+
+func TestDetectAppDNSCredentialStateRequiresRootOnlyEnvFileAndReferences(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatalf("Chmod(temp dir) error = %v", err)
+	}
+	tokenFile := filepath.Join(dir, "cloudflare-token")
+	if err := os.WriteFile(tokenFile, []byte("token-value\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(tokenFile) error = %v", err)
+	}
+	envFile := filepath.Join(dir, "cloudflare.env")
+	if err := os.WriteFile(envFile, []byte("CLOUDFLARE_DNS_API_TOKEN_FILE="+tokenFile+"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(envFile) error = %v", err)
+	}
+	cfg := appconfig.New()
+	cfg.App.Name = "review-app"
+	cfg.App.Domains = []string{"app.example.com"}
+	cfg.App.CertificateEmail = "ops@example.com"
+	cfg.App.Listen = "127.0.0.1:18001"
+	cfg.App.ACMEChallenge = appconfig.ACMEChallengeDNS01
+	cfg.Service.ExecStart = "/bin/true --listen 127.0.0.1:18001"
+	cfg.DNS01.Provider = "cloudflare"
+	cfg.DNS01.EnvFile = envFile
+
+	previousLstat := lstatAppServicePathFn
+	t.Cleanup(func() {
+		lstatAppServicePathFn = previousLstat
+	})
+	lstatAppServicePathFn = func(path string) (os.FileInfo, error) {
+		info, err := os.Lstat(path)
+		if err != nil {
+			return nil, err
+		}
+		return rootOwnedFileInfo{FileInfo: info}, nil
+	}
+
+	checked, ready, detail := detectAppDNSCredentialState(cfg)
+	if !checked || !ready {
+		t.Fatalf("detectAppDNSCredentialState() = checked %t ready %t detail %q, want ready", checked, ready, detail)
+	}
+
+	envLink := filepath.Join(dir, "cloudflare-link.env")
+	if err := os.Symlink(envFile, envLink); err != nil {
+		t.Fatalf("Symlink(envFile) error = %v", err)
+	}
+	cfg.DNS01.EnvFile = envLink
+	checked, ready, detail = detectAppDNSCredentialState(cfg)
+	if !checked || ready || !strings.Contains(detail, "dns01.env_file must not be a symlink") {
+		t.Fatalf("detectAppDNSCredentialState() = checked %t ready %t detail %q, want env_file symlink failure", checked, ready, detail)
+	}
+
+	cfg.DNS01.EnvFile = envFile
+	tokenLink := filepath.Join(dir, "cloudflare-token-link")
+	if err := os.Symlink(tokenFile, tokenLink); err != nil {
+		t.Fatalf("Symlink(tokenFile) error = %v", err)
+	}
+	if err := os.WriteFile(envFile, []byte("CLOUDFLARE_DNS_API_TOKEN_FILE="+tokenLink+"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(envFile token symlink) error = %v", err)
+	}
+	checked, ready, detail = detectAppDNSCredentialState(cfg)
+	if !checked || ready || !strings.Contains(detail, "CLOUDFLARE_DNS_API_TOKEN_FILE") || !strings.Contains(detail, "must not be a symlink") {
+		t.Fatalf("detectAppDNSCredentialState() = checked %t ready %t detail %q, want referenced credential symlink failure", checked, ready, detail)
+	}
+
+	writableDir := filepath.Join(dir, "writable")
+	if err := os.Mkdir(writableDir, 0o700); err != nil {
+		t.Fatalf("Mkdir(writableDir) error = %v", err)
+	}
+	if err := os.Chmod(writableDir, 0o777); err != nil {
+		t.Fatalf("Chmod(writableDir) error = %v", err)
+	}
+	writableEnvFile := filepath.Join(writableDir, "cloudflare.env")
+	if err := os.WriteFile(writableEnvFile, []byte("CLOUDFLARE_DNS_API_TOKEN_FILE="+tokenFile+"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(writableEnvFile) error = %v", err)
+	}
+	cfg.DNS01.EnvFile = writableEnvFile
+	checked, ready, detail = detectAppDNSCredentialState(cfg)
+	if !checked || ready || !strings.Contains(detail, "dns01.env_file parent directory") || !strings.Contains(detail, "must not be writable by group or others") {
+		t.Fatalf("detectAppDNSCredentialState() = checked %t ready %t detail %q, want writable parent failure", checked, ready, detail)
+	}
+}
+
+func TestEnsureAppNginxRuntimeCompatibilityChecksHTTP2DirectiveVersion(t *testing.T) {
+	cfg := appconfig.New()
+	cfg.App.Name = "review-app"
+	cfg.App.Domains = []string{"app.example.com"}
+	cfg.App.CertificateEmail = "ops@example.com"
+	cfg.App.Listen = "127.0.0.1:18001"
+	cfg.Service.ExecStart = "/bin/true --listen 127.0.0.1:18001"
+
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		actual := unwrapMaybeSudoHostCommand(command)
+		if actual.Name == "nginx" && strings.Join(actual.Args, " ") == "-V" {
+			return host.Result{Stderr: "nginx version: nginx/1.24.0\nconfigure arguments: --with-http_v2_module --with-http_gzip_static_module"}, nil
+		}
+		return host.Result{}, nil
+	}}
+	err := ensureAppNginxRuntimeCompatibility(stdcontext.Background(), cfg, host.NewExecutor(runner, nil))
+	if err == nil || !strings.Contains(err.Error(), "require nginx >= 1.25.1") {
+		t.Fatalf("ensureAppNginxRuntimeCompatibility() error = %v, want nginx version failure", err)
+	}
+
+	disabled := false
+	cfg.Nginx.HTTP2 = &disabled
+	runner.commands = nil
+	if err := ensureAppNginxRuntimeCompatibility(stdcontext.Background(), cfg, host.NewExecutor(runner, nil)); err != nil {
+		t.Fatalf("ensureAppNginxRuntimeCompatibility() with http2 disabled error = %v", err)
+	}
+	if len(runner.commands) != 0 {
+		t.Fatalf("commands = %#v, want no nginx -v when http2 disabled", runner.commands)
+	}
+
+	enabled := true
+	cfg.Nginx.HTTP2 = &enabled
+	runner.run = func(command host.Command) (host.Result, error) {
+		actual := unwrapMaybeSudoHostCommand(command)
+		if actual.Name == "nginx" && strings.Join(actual.Args, " ") == "-V" {
+			return host.Result{Stderr: "nginx version: nginx/1.26.3\nconfigure arguments: --with-http_v2_module --with-http_gzip_static_module"}, nil
+		}
+		return host.Result{}, nil
+	}
+	if err := ensureAppNginxRuntimeCompatibility(stdcontext.Background(), cfg, host.NewExecutor(runner, nil)); err != nil {
+		t.Fatalf("ensureAppNginxRuntimeCompatibility() with nginx 1.26.3 error = %v", err)
+	}
+}
+
+func TestEnsureAppNginxRuntimeCompatibilityChecksGzipStaticModule(t *testing.T) {
+	disabled := false
+	cfg := appconfig.New()
+	cfg.App.Name = "review-app"
+	cfg.App.Domains = []string{"app.example.com"}
+	cfg.App.CertificateEmail = "ops@example.com"
+	cfg.App.Listen = "127.0.0.1:18001"
+	cfg.Service.ExecStart = "/bin/true --listen 127.0.0.1:18001"
+	cfg.Nginx.HTTP2 = &disabled
+	cfg.Nginx.StaticLocations = []appconfig.NginxStaticLocationConfig{{
+		Path:       "/static/",
+		Alias:      "/opt/review-app/static/",
+		GzipStatic: true,
+	}}
+
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		actual := unwrapMaybeSudoHostCommand(command)
+		if actual.Name == "nginx" && strings.Join(actual.Args, " ") == "-V" {
+			return host.Result{Stderr: "nginx version: nginx/1.26.3\nconfigure arguments: --with-http_v2_module"}, nil
+		}
+		return host.Result{}, nil
+	}}
+	err := ensureAppNginxRuntimeCompatibility(stdcontext.Background(), cfg, host.NewExecutor(runner, nil))
+	if err == nil || !strings.Contains(err.Error(), "--with-http_gzip_static_module") {
+		t.Fatalf("ensureAppNginxRuntimeCompatibility() error = %v, want gzip_static module failure", err)
+	}
+}
+
+func TestEnsureAppHostDependenciesFailsWhenLegoArchitectureCannotBeDetected(t *testing.T) {
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		actual := unwrapMaybeSudoHostCommand(command)
+		switch actual.Name {
+		case "/opt/meshify/bin/lego":
+			if strings.Join(actual.Args, " ") == "--version" {
+				return host.Result{Stderr: "lego: command not found"}, errors.New("lego: command not found")
+			}
+		case "dpkg":
+			return host.Result{ExitCode: 2, Stderr: "dpkg failed"}, errors.New("dpkg failed")
+		}
+		return host.Result{}, nil
+	}}
+
+	err := ensureAppHostDependencies(stdcontext.Background(), host.NewExecutor(runner, nil))
+	if err == nil || !strings.Contains(err.Error(), "detect package architecture with dpkg --print-architecture") {
+		t.Fatalf("ensureAppHostDependencies() error = %v, want explicit dpkg architecture failure", err)
+	}
+}
+
+func TestActivateAppNginxDoesNotFallbackAfterSystemctlReloadFailure(t *testing.T) {
+	cfg := appconfig.New()
+	cfg.App.Name = "review-app"
+	cfg.App.Domains = []string{"app.example.com"}
+	cfg.App.CertificateEmail = "ops@example.com"
+	cfg.App.Listen = "127.0.0.1:18001"
+	cfg.Service.ExecStart = "/bin/true --listen 127.0.0.1:18001"
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		actual := unwrapMaybeSudoHostCommand(command)
+		if actual.Name == "systemctl" && strings.Join(actual.Args, " ") == "reload-or-restart nginx.service" {
+			return host.Result{ExitCode: 1, Stderr: "reload failed"}, errors.New("reload failed")
+		}
+		return host.Result{}, nil
+	}}
+
+	err = activateAppNginx(stdcontext.Background(), host.NewExecutor(runner, nil), names)
+	if err == nil || !strings.Contains(err.Error(), "reload failed") {
+		t.Fatalf("activateAppNginx() error = %v, want systemctl reload failure", err)
+	}
+	for _, command := range runner.commands {
+		actual := unwrapMaybeSudoHostCommand(command)
+		if actual.Name == "nginx" && strings.Join(actual.Args, " ") == "-s reload" {
+			t.Fatalf("commands = %#v, must not fallback to nginx -s reload", runner.commands)
+		}
 	}
 }
 

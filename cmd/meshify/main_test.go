@@ -43,11 +43,12 @@ func TestRun_HelpOutput(t *testing.T) {
 				t.Fatalf("stderr = %q, want empty", stderr)
 			}
 			for _, want := range []string{
-				"meshify manages init, deploy, verify, and status workflows.",
+				"meshify manages init, deploy, verify, status, and app workflows.",
 				"Happy path:",
 				"meshify init",
 				"meshify deploy",
 				"meshify verify",
+				"app      管理附加 app 部署。",
 			} {
 				if !strings.Contains(stdout, want) {
 					t.Fatalf("stdout = %q, want substring %q", stdout, want)

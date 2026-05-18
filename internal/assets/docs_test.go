@@ -171,6 +171,122 @@ func TestUserGuideDocumentsRuntimeSecurityBoundaries(t *testing.T) {
 	}
 }
 
+func TestChineseReadmeDocumentsAppCLI(t *testing.T) {
+	t.Parallel()
+
+	content := readRepoDoc(t, "README.zh-CN.md")
+	for _, want := range []string{
+		"meshify app init --config meshify-apps/abc.yaml",
+		"sudo meshify app deploy --config meshify-apps/abc.yaml",
+		"meshify app verify --config meshify-apps/abc.yaml",
+		"deploy/config/meshify-app.yaml.example",
+		"`meshify app verify` 是 app 流程的静态配置和模板检查",
+		"状态通过时 CLI 输出 `static-passed`",
+		"它不读取宿主机上的已部署文件、systemd 状态、证书 SAN、Nginx runtime 或 Tailscale 在线状态",
+		"`listen` 表示本机 app 模式",
+		"`service.env_file`",
+		"`http2 on;`",
+		"`nginx.static_locations`",
+		"`proxy.read_timeout`",
+		"`upstream` 表示 tailnet upstream 模式",
+		"upstream` 模式自动需要 Tailscale client",
+		"app 首版没有独立 checkpoint store，因此不提供 `meshify app status`",
+		"release binary 的 app runtime 模板唯一来源是 `deploy/templates/app/`",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("additional Go services guide missing CLI guidance %q", want)
+		}
+	}
+
+	for _, unwanted := range []string{
+		"docs/additional-go-services",
+		"docs/templates/extra-go-service",
+		"sudo cp docs/templates/extra-go-service",
+		"sudoedit /etc/nginx/sites-available/example-app.conf",
+		"复制并编辑 systemd unit",
+	} {
+		if strings.Contains(content, unwanted) {
+			t.Fatalf("additional Go services guide still instructs manual runtime template deployment %q", unwanted)
+		}
+	}
+}
+
+func TestAppRuntimeTemplatesAreCanonicalDeployAssets(t *testing.T) {
+	t.Parallel()
+
+	if _, err := os.Stat(filepath.Join("..", "..", "deploy", "config", "meshify-app.yaml.example")); err != nil {
+		t.Fatalf("canonical app config example is not present: %v", err)
+	}
+	if _, ok := Lookup("config/meshify-app.yaml.example"); !ok {
+		t.Fatal("app config example is missing from embedded asset catalog")
+	}
+
+	templatePaths := readDeployAppTemplatePaths(t)
+	templateSet := make(map[string]struct{}, len(templatePaths))
+	for _, sourcePath := range templatePaths {
+		templateSet[sourcePath] = struct{}{}
+		asset, ok := Lookup(sourcePath)
+		if !ok {
+			t.Fatalf("app runtime template %q is missing from embedded asset catalog", sourcePath)
+		}
+		if asset.Role != RoleRuntime || asset.ContentMode != ContentModeRender {
+			t.Fatalf("catalog asset %q role/mode = %s/%s, want runtime/render", sourcePath, asset.Role, asset.ContentMode)
+		}
+		if _, err := NewLoader().Read(sourcePath); err != nil {
+			t.Fatalf("embedded loader cannot read app runtime template %q: %v", sourcePath, err)
+		}
+	}
+	for _, asset := range Catalog() {
+		if !strings.HasPrefix(asset.SourcePath, "templates/app/") {
+			continue
+		}
+		if _, ok := templateSet[asset.SourcePath]; !ok {
+			t.Fatalf("embedded asset catalog has app runtime template %q that is not present under deploy/templates/app", asset.SourcePath)
+		}
+	}
+
+	nginxTemplate := readRepoDoc(t, "deploy", "templates", "app", "nginx.conf.tmpl")
+	for _, want := range []string{
+		"map $http_host ${{ .VarPrefix }}_host_header_valid",
+		"map $http_host ${{ .VarPrefix }}_validated_host",
+		"map $ssl_server_name ${{ .VarPrefix }}_sni_valid",
+		"if (${{ .VarPrefix }}_sni_valid = 0)",
+		"if (${{ .VarPrefix }}_host_header_valid = 0)",
+		"return 421;",
+		"http2 on;",
+		"client_max_body_size {{ .ClientMaxBodySize }};",
+		"proxy_set_header Host ${{ .VarPrefix }}_validated_host;",
+		"proxy_set_header X-Forwarded-Host ${{ .VarPrefix }}_validated_host;",
+		"proxy_set_header Connection ${{ .VarPrefix }}_connection_upgrade;",
+		"proxy_read_timeout {{ .Proxy.ReadTimeout }};",
+	} {
+		if !strings.Contains(nginxTemplate, want) {
+			t.Fatalf("app nginx runtime template missing boundary %q", want)
+		}
+	}
+}
+
+func readDeployAppTemplatePaths(t *testing.T) []string {
+	t.Helper()
+
+	root := filepath.Join("..", "..", "deploy", "templates", "app")
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatalf("ReadDir(%s) error = %v", root, err)
+	}
+	paths := []string{}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			t.Fatalf("unexpected directory in deploy/templates/app: %s", entry.Name())
+		}
+		paths = append(paths, filepath.ToSlash(filepath.Join("templates", "app", entry.Name())))
+	}
+	if len(paths) == 0 {
+		t.Fatal("deploy/templates/app has no runtime templates")
+	}
+	return paths
+}
+
 func readRepoDoc(t *testing.T, path ...string) string {
 	t.Helper()
 

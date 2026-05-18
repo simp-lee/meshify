@@ -248,6 +248,38 @@ func TestOnboardingCommandErrorsIncludeFirstOutputLine(t *testing.T) {
 	}
 }
 
+func TestOnboardingMasksPreAuthKeyCommandFailureOutput(t *testing.T) {
+	t.Parallel()
+
+	plan, err := NewOnboardingPlan(OnboardingOptions{UserName: "meshify"})
+	if err != nil {
+		t.Fatalf("NewOnboardingPlan() error = %v", err)
+	}
+	secret := "hskey-auth-secret"
+	runner := &scriptedRunner{
+		results: []host.Result{
+			{Stdout: `[{"id":2,"name":"meshify"}]` + "\n"},
+			{Stdout: secret + "\n", Stderr: "created " + secret + " but failed\ntrace detail"},
+		},
+		errors: map[int]error{1: errors.New("exit status 1 with " + secret)},
+	}
+	onboarding := NewOnboarding(host.NewExecutor(runner, nil))
+
+	_, _, err = onboarding.CreatePreAuthKey(context.Background(), plan)
+	if err == nil {
+		t.Fatal("CreatePreAuthKey() error = nil, want command failure")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("CreatePreAuthKey() error leaked auth key: %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "<redacted>") {
+		t.Fatalf("CreatePreAuthKey() error = %q, want redacted key", err.Error())
+	}
+	if strings.Contains(err.Error(), "trace detail") {
+		t.Fatalf("CreatePreAuthKey() error = %q, do not want multiline detail", err.Error())
+	}
+}
+
 func TestOnboardingRetriesTransientUsersListReadinessFailure(t *testing.T) {
 	t.Parallel()
 

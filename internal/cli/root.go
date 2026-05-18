@@ -47,6 +47,7 @@ func (options sharedOptions) formatter(stdout io.Writer) (output.Formatter, erro
 }
 
 var commands = map[string]command{
+	"app":    newAppCommand(),
 	"deploy": newDeployCommand(),
 	"init":   newInitCommand(),
 	"status": newStatusCommand(),
@@ -149,7 +150,7 @@ func writeRootHelp(stdout io.Writer) error {
 	sort.Strings(names)
 
 	if err := writeHelpLines(stdout,
-		"meshify manages init, deploy, verify, and status workflows.",
+		"meshify manages init, deploy, verify, status, and app workflows.",
 		"",
 		"Usage:",
 		"  meshify <command> [flags]",

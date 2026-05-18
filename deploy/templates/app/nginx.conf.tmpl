@@ -1,0 +1,140 @@
+# Meshify-managed: app.name={{ .AppName }}
+# Source: deploy/templates/app/nginx.conf.tmpl
+
+map $http_upgrade ${{ .VarPrefix }}_connection_upgrade {
+    default upgrade;
+    '' close;
+}
+
+map $http_host ${{ .VarPrefix }}_host_header_valid {
+    default 0;
+{{- range .Domains }}
+    "{{ . }}" 1;
+    "{{ . }}:80" 1;
+    "{{ . }}:443" 1;
+{{- end }}
+}
+
+map $http_host ${{ .VarPrefix }}_validated_host {
+    default "";
+{{- range .Domains }}
+    "{{ . }}" "{{ . }}";
+    "{{ . }}:80" "{{ . }}";
+    "{{ . }}:443" "{{ . }}";
+{{- end }}
+}
+
+map $ssl_server_name ${{ .VarPrefix }}_sni_valid {
+    default 0;
+{{- range .Domains }}
+    "{{ . }}" 1;
+{{- end }}
+}
+
+upstream {{ .VarPrefix }}_upstream {
+    server {{ .UpstreamAddress }};
+    keepalive 32;
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name {{ .ServerNames }};
+{{- if .AccessLog }}
+    access_log {{ .AccessLog }};
+{{- end }}
+{{- if .ErrorLog }}
+    error_log {{ .ErrorLog }};
+{{- end }}
+
+    if (${{ .VarPrefix }}_host_header_valid = 0) {
+        return 421;
+    }
+
+    location /.well-known/acme-challenge/ {
+        root {{ .WebrootPath }};
+    }
+
+    location / {
+        return 301 https://${{ .VarPrefix }}_validated_host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name {{ .ServerNames }};
+{{- if .AccessLog }}
+    access_log {{ .AccessLog }};
+{{- end }}
+{{- if .ErrorLog }}
+    error_log {{ .ErrorLog }};
+{{- end }}
+{{- if .HTTP2 }}
+    http2 on;
+{{- end }}
+
+    ssl_certificate {{ .FullchainPath }};
+    ssl_certificate_key {{ .PrivateKeyPath }};
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_timeout 1d;
+    ssl_session_cache shared:{{ .VarPrefix }}_tls:10m;
+    ssl_prefer_server_ciphers off;
+
+    add_header Strict-Transport-Security "max-age=15552000" always;
+
+    client_max_body_size {{ .ClientMaxBodySize }};
+
+    if (${{ .VarPrefix }}_sni_valid = 0) {
+        return 421;
+    }
+
+    if (${{ .VarPrefix }}_host_header_valid = 0) {
+        return 421;
+    }
+
+{{ range .StaticLocations }}
+    location {{ if .Exact }}= {{ end }}{{ .Path }} {
+        alias {{ .Alias }};
+{{- if .Expires }}
+        expires {{ .Expires }};
+{{- end }}
+{{- if .CacheControl }}
+        add_header Cache-Control "{{ .CacheControl }}";
+{{- end }}
+{{- if .TryFiles }}
+        try_files $uri =404;
+{{- end }}
+{{- if .GzipStatic }}
+        gzip_static on;
+{{- end }}
+{{- if .AccessLogOff }}
+        access_log off;
+{{- end }}
+    }
+
+{{ end }}
+    location / {
+        proxy_pass http://{{ .VarPrefix }}_upstream;
+        proxy_http_version 1.1;
+        proxy_set_header Host ${{ .VarPrefix }}_validated_host;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection ${{ .VarPrefix }}_connection_upgrade;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Host ${{ .VarPrefix }}_validated_host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+{{- if .Proxy.ConnectTimeout }}
+        proxy_connect_timeout {{ .Proxy.ConnectTimeout }};
+{{- end }}
+        proxy_read_timeout {{ .Proxy.ReadTimeout }};
+        proxy_send_timeout {{ .Proxy.SendTimeout }};
+{{- if .Proxy.BufferingSet }}
+        proxy_buffering {{ .Proxy.Buffering }};
+{{- end }}
+{{- if .Proxy.RequestBufferingSet }}
+        proxy_request_buffering {{ .Proxy.RequestBuffering }};
+{{- end }}
+        proxy_redirect off;
+    }
+}

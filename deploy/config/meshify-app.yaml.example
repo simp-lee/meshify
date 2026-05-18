@@ -1,0 +1,72 @@
+api_version: meshify/app/v1alpha1
+
+app:
+  name: "example-app"
+  domains:
+    - "abc.com"
+    - "www.abc.com"
+  certificate_email: "ops@example.com"
+  acme_challenge: "http-01" # http-01 | dns-01
+
+  # Set exactly one mode:
+  # - listen: local Go service on this host, proxied by Nginx.
+  # - upstream: fixed tailnet HTTP/WebSocket upstream, for example 100.64.10.20:18001.
+  listen: "127.0.0.1:18001"
+  upstream: ""
+
+service:
+  # listen mode only. The first token must be the absolute business binary path.
+  exec_start: "/opt/example-app/example-app --listen 127.0.0.1:18001"
+  # Optional systemd WorkingDirectory. This is not the binary path.
+  working_directory: "/opt/example-app"
+  # Optional root-owned, root-only systemd EnvironmentFile for app config.
+  env_file: ""
+
+nginx:
+  client_max_body_size: "20m"
+  # Uses the modern "http2 on;" directive. Requires Nginx >= 1.25.1.
+  http2: true
+  # Optional per-app Nginx logs. access_log may also be "off".
+  access_log: ""
+  error_log: ""
+  proxy:
+    connect_timeout: ""
+    read_timeout: "600s"
+    send_timeout: "600s"
+    # Uncomment for streaming/SSE or upload-forwarding workloads.
+    # buffering: false
+    # request_buffering: false
+
+  # Optional HTTPS static aliases rendered before the app proxy location.
+  # Meshify configures Nginx only; publish these files with your app release.
+  static_locations: []
+  # Example:
+  #   - path: "/static/"
+  #     alias: "/opt/example-app/web/static/"
+  #     expires: "30d"
+  #     cache_control: "public, max-age=2592000"
+  #     try_files: true
+  #     gzip_static: true
+  #     access_log: false
+  #   - path: "/sitemap.xml"
+  #     match: "exact" # prefix | exact
+  #     alias: "/opt/example-app/web/static/sitemap.xml"
+
+dns01:
+  provider: ""
+  env_file: ""
+
+tailscale:
+  # upstream mode enables the Tailscale client precondition automatically.
+  # Set true only when a listen-mode app must also initiate tailnet access.
+  enabled_for_listen: false
+
+  # Defaults:
+  # - meshify_config: when login_server is empty, read ./meshify.yaml
+  # - login_server: derived from meshify_config default.server_url
+  # - hostname: omitted so Tailscale uses the system hostname
+  # - auth_key_file: root-only key file path for external Headscale only
+  meshify_config: ""
+  login_server: ""
+  hostname: ""
+  auth_key_file: ""
