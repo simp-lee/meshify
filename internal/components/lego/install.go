@@ -10,15 +10,15 @@ import (
 )
 
 const (
-	Version = "v4.35.2"
+	Version = "v5.0.4"
 
 	BinaryPath      = "/opt/meshify/bin/lego"
 	DefaultCacheDir = "/var/cache/meshify"
 )
 
 const (
-	sha256LinuxAMD64 = "ee5be4bf457de8e3efa86a51651c75c87f0ee0e4e9f3ae14f6034d68365770f3"
-	sha256LinuxARM64 = "e1f153179098d27ce044aaaa168c0e323d50ae71b0f1a147aa8ae49ac6b14d89"
+	sha256LinuxAMD64 = "b9ee4e690dd4d516c52c4dc71988caba474fc804a28daaf0760fbda3030ff95d"
+	sha256LinuxARM64 = "fe831bb1147cdaa2e0527dba0fb7c9bb3e9bcdb187619bee165e4cb6f260ca5f"
 )
 
 type ArchivePlan struct {

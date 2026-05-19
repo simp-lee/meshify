@@ -544,6 +544,9 @@ func runAppDeploy(ctx context, args []string) error {
 	if err != nil {
 		return appDeployFailureWithEffects(formatter, "生成 app TLS 证书计划失败", err, effects)
 	}
+	if _, err := privilegedExecutor.Run(stdcontext.Background(), legocomponent.MigrationGateCommand(names.LegoDataPath)); err != nil {
+		return appDeployFailureWithEffects(formatter, "迁移 app lego v5 storage 失败", err, effects)
+	}
 	if _, err := privilegedExecutor.Run(stdcontext.Background(), certPlan.Command); err != nil {
 		return appDeployFailureWithEffects(formatter, "申请 app TLS 证书失败", err, effects)
 	}

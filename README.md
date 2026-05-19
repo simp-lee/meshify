@@ -66,7 +66,7 @@ The default workflow above deploys a private Tailscale/Headscale network. If you
 | --- | --- |
 | Server OS | Debian, Ubuntu, or a Debian-family distribution with apt/dpkg/systemd |
 | Control plane | Headscale v0.28.0 on loopback behind Nginx |
-| TLS automation | HTTP-01 or DNS-01 with a meshify-managed pinned lego v4.35.2 binary |
+| TLS automation | HTTP-01 or DNS-01 with a meshify-managed pinned lego v5.0.4 binary |
 | Relay | Embedded Headscale DERP and STUN on `3478/udp`; no official DERP fallback |
 | Clients | Windows, macOS, Debian/Ubuntu Linux |
 | Client baseline | Tailscale client >= v1.74.0 |
@@ -414,6 +414,7 @@ Package and lego failures:
 - Mirror mode requires a reachable URL and explicit SHA-256 digest.
 - Offline mode requires a local `.deb` path and explicit SHA-256 digest.
 - Offline lego mode requires `advanced.lego_source.file_path` to point at the exact pinned lego archive for `advanced.platform.arch`.
+- When existing lego v4 storage is present, Meshify runs the guarded lego v5 storage migration before issuing or renewing certificates; fresh installs run the guard but skip the migration command.
 
 Runtime failures:
 

@@ -77,11 +77,17 @@ func TestStageRuntimeBuildsRuntimeOutputs(t *testing.T) {
 	if !bytes.Contains(renewService.Content, []byte("Requires=nginx.service")) {
 		t.Fatalf("renew service content missing Nginx requirement\n%s", string(renewService.Content))
 	}
-	if !bytes.Contains(renewService.Content, []byte("/opt/meshify/bin/lego --path /var/lib/meshify/lego")) {
+	if !bytes.Contains(renewService.Content, []byte("/opt/meshify/bin/lego run --path /var/lib/meshify/lego")) {
 		t.Fatalf("renew service content missing lego command\n%s", string(renewService.Content))
+	}
+	if !bytes.Contains(renewService.Content, []byte("migrate --path \"$lego_path\"")) {
+		t.Fatalf("renew service content missing lego migration gate\n%s", string(renewService.Content))
 	}
 	if !bytes.Contains(renewService.Content, []byte("--http --http.webroot /var/lib/meshify/acme-challenges")) {
 		t.Fatalf("renew service content missing HTTP-01 webroot\n%s", string(renewService.Content))
+	}
+	if bytes.Contains(renewService.Content, []byte(" renew ")) || bytes.Contains(renewService.Content, []byte("--renew-hook")) || bytes.Contains(renewService.Content, []byte("--run-hook")) {
+		t.Fatalf("renew service content contains v4 lego form\n%s", string(renewService.Content))
 	}
 
 	renewTimer := bySource["templates/etc/systemd/system/meshify-lego-renew.timer"]
@@ -113,7 +119,7 @@ func TestStageRuntimeRendersDNSRenewalEnvironmentFile(t *testing.T) {
 	text := string(renewService.Content)
 	for _, want := range []string{
 		"EnvironmentFile=/etc/meshify/dns01/cloudflare.env",
-		"--dns cloudflare renew --renew-hook",
+		"--dns cloudflare --deploy-hook",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("renew service content missing %q\n%s", want, text)
@@ -142,7 +148,7 @@ func TestStageRuntimeRendersCanonicalDNSProviderForRenewal(t *testing.T) {
 	}
 	renewService := bySource["templates/etc/systemd/system/meshify-lego-renew.service.tmpl"]
 	text := string(renewService.Content)
-	if !strings.Contains(text, "--dns gcloud renew --renew-hook") {
+	if !strings.Contains(text, "--dns gcloud --deploy-hook") {
 		t.Fatalf("renew service content missing canonical gcloud provider\n%s", text)
 	}
 	if !strings.Contains(text, "EnvironmentFile=/etc/meshify/dns01/gcloud.env") {

@@ -32,6 +32,7 @@ func NewCertificatePlan(cfg config.Config) (CertificatePlan, error) {
 	}
 	email := strings.TrimSpace(cfg.Default.CertificateEmail)
 	args := []string{
+		"run",
 		"--path", LegoDataPath,
 		"--email", email,
 		"--domains", serverName,
@@ -45,7 +46,7 @@ func NewCertificatePlan(cfg config.Config) (CertificatePlan, error) {
 	default:
 		return CertificatePlan{}, fmt.Errorf("unsupported ACME challenge %q", challenge.Challenge)
 	}
-	args = append(args, "run", "--run-hook", RunHookPath)
+	args = append(args, "--deploy-hook", RunHookPath)
 
 	command := host.Command{Name: LegoBinaryPath, Args: args}
 	if challenge.Challenge == config.ACMEChallengeDNS01 && strings.TrimSpace(challenge.EnvFile) != "" {

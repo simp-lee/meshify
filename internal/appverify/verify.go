@@ -58,6 +58,10 @@ func StaticReport(cfg appconfig.Config, staged []apprender.StagedFile) Report {
 	hasNginx := false
 	for _, file := range staged {
 		text := string(file.Content)
+		if stale, label := containsLegacyLegoV4Form(text); stale {
+			add("lego-v5", StatusFail, "渲染文件包含 lego v4 语法: "+label)
+			return Report{Checks: checks}
+		}
 		if sensitive, label := containsSensitiveValue(text); sensitive {
 			add("secrets", StatusFail, "渲染文件包含疑似敏感值: "+label)
 			return Report{Checks: checks}
@@ -78,11 +82,12 @@ func StaticReport(cfg appconfig.Config, staged []apprender.StagedFile) Report {
 	}
 	add("ownership", StatusPass, "渲染文件包含当前 app 的 Meshify-managed marker")
 	add("secrets", StatusPass, "渲染文件未包含 Tailscale auth key 或 DNS token")
+	add("lego-v5", StatusPass, "渲染文件未包含 lego v4 renew 或旧 hook 语法")
 	if err := validateStagedRuntimeSet(cfg, staged); err != nil {
 		add("templates", StatusFail, err.Error())
 		return Report{Checks: checks}
 	}
-	add("templates", StatusPass, fmt.Sprintf("已渲染 %d 个 app runtime 文件，且 systemd、Nginx、renew hook 计划完整", len(staged)))
+	add("templates", StatusPass, fmt.Sprintf("已渲染 %d 个 app runtime 文件，且 systemd、Nginx、deploy hook 计划完整", len(staged)))
 	if hasNginx {
 		add("nginx", StatusPass, "Nginx app 站点包含多域名、Host/SNI guard、WebSocket 和固定 upstream")
 	} else {
@@ -90,6 +95,15 @@ func StaticReport(cfg appconfig.Config, staged []apprender.StagedFile) Report {
 	}
 
 	return Report{Checks: checks}
+}
+
+func containsLegacyLegoV4Form(text string) (bool, string) {
+	for _, stale := range []string{" renew --renew-hook", "--run-hook", "--renew-hook", "LEGO_CERT_", "LEGO_ACCOUNT_EMAIL"} {
+		if strings.Contains(text, stale) {
+			return true, stale
+		}
+	}
+	return false, ""
 }
 
 func validateStagedRuntimeSet(cfg appconfig.Config, staged []apprender.StagedFile) error {

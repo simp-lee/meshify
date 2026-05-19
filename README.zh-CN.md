@@ -66,7 +66,7 @@ meshify status --config meshify.yaml
 | --- | --- |
 | 服务器系统 | Debian、Ubuntu，或具备 apt/dpkg/systemd 的 Debian 系发行版 |
 | 控制面 | Headscale v0.28.0 只监听本机，由 Nginx 对外代理 |
-| TLS 自动化 | HTTP-01 或 DNS-01，使用 Meshify 管理的固定版本 lego v4.35.2 |
+| TLS 自动化 | HTTP-01 或 DNS-01，使用 Meshify 管理的固定版本 lego v5.0.4 |
 | 中继 | Headscale 内置 DERP/STUN，监听 `3478/udp`；不接入官方 DERP 列表 |
 | 客户端 | Windows, macOS, Debian/Ubuntu Linux |
 | 客户端基线 | Tailscale client >= v1.74.0 |
@@ -414,6 +414,7 @@ release binary 的 app runtime 模板唯一来源是 `deploy/templates/app/`，�
 - mirror 模式需要可访问 URL 和明确的 SHA-256。
 - offline 模式需要本地 `.deb` 路径和明确的 SHA-256。
 - lego 离线模式要求 `advanced.lego_source.file_path` 指向匹配 `advanced.platform.arch` 的固定版本 archive。
+- 如果检测到已有 lego v4 storage，Meshify 会在签发或续期证书前执行受保护的 lego v5 storage 迁移；首次安装会运行 guard，但跳过迁移命令。
 
 运行时失败：
 

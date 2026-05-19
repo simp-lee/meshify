@@ -397,7 +397,7 @@ func TestValidateLegoSourceModes(t *testing.T) {
 
 	cfg := validConfig()
 	cfg.Advanced.LegoSource.Mode = PackageSourceModeOffline
-	cfg.Advanced.LegoSource.FilePath = "/srv/packages/lego_v4.35.2_linux_amd64.tar.gz"
+	cfg.Advanced.LegoSource.FilePath = "/srv/packages/lego_v5.0.4_linux_amd64.tar.gz"
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v, want nil for offline lego archive", err)
 	}

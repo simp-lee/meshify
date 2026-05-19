@@ -68,7 +68,7 @@ func TestRootReadmePointsToPrimaryDocs(t *testing.T) {
 		"meshify verify --config meshify.yaml",
 		"meshify status --config meshify.yaml",
 		"Debian, Ubuntu, or a Debian-family distribution with apt/dpkg/systemd",
-		"pinned lego v4.35.2",
+		"pinned lego v5.0.4",
 		"## Supported Scope",
 		"## Server Guide",
 		"## Client Guide",
@@ -157,7 +157,7 @@ func TestUserGuideDocumentsRuntimeSecurityBoundaries(t *testing.T) {
 		"Cloudflare and DigitalOcean require a root-only `advanced.dns01.env_file`",
 		"Route53 and gcloud may use lego's ambient credential chain",
 		"Raw DNS tokens or keys live in separate root-only files referenced by lego `_FILE` variables",
-		"v4.35.2",
+		"v5.0.4",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("user README missing runtime security boundary detail %q", want)

@@ -193,6 +193,8 @@ func TestRenewServiceRendersAllSANDomains(t *testing.T) {
 			"EnvironmentFile=/etc/example-app/dns/cloudflare.env",
 			"--domains abc.com --domains www.abc.com",
 			"--dns cloudflare",
+			"migrate --path \"$lego_path\"",
+			"--force-cert-domains --deploy-hook /usr/local/lib/meshify/apps/example-app/install-cert-and-reload-nginx.sh",
 		} {
 			if !strings.Contains(text, want) {
 				t.Fatalf("renew service missing %q\n%s", want, text)

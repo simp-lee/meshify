@@ -3,8 +3,8 @@
 # Source: deploy/templates/app/install-cert-and-reload-nginx.sh.tmpl
 set -eu
 
-: "${LEGO_CERT_PATH:?}"
-: "${LEGO_CERT_KEY_PATH:?}"
+: "${LEGO_HOOK_CERT_PATH:?}"
+: "${LEGO_HOOK_CERT_KEY_PATH:?}"
 
 target_dir="{{ .TLSDir }}"
 marker="{{ .TLSMarkerPath }}"
@@ -20,8 +20,8 @@ if [ "$actual_marker" != "$expected_marker" ]; then
     exit 1
 fi
 
-install -m 0644 "$LEGO_CERT_PATH" "$target_dir/fullchain.pem"
-install -m 0600 "$LEGO_CERT_KEY_PATH" "$target_dir/privkey.pem"
+install -m 0644 "$LEGO_HOOK_CERT_PATH" "$target_dir/fullchain.pem"
+install -m 0600 "$LEGO_HOOK_CERT_KEY_PATH" "$target_dir/privkey.pem"
 
 nginx -t
 systemctl reload-or-restart nginx.service

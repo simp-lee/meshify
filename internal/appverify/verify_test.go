@@ -85,6 +85,23 @@ func TestStaticReportAllowsCredentialFileReferences(t *testing.T) {
 	}
 }
 
+func TestStaticReportRejectsLegacyLegoV4Forms(t *testing.T) {
+	t.Parallel()
+
+	cfg := testAppConfig()
+	report := StaticReport(cfg, []apprender.StagedFile{{
+		SourcePath: "templates/app/lego-renew.service.tmpl",
+		HostPath:   "/etc/systemd/system/api-lego-renew.service",
+		Content:    []byte("# " + appsvc.ManagedMarker("api") + "\nExecStart=/opt/meshify/bin/lego renew --renew-hook /hook\n"),
+	}})
+	if report.FailedCount() == 0 {
+		t.Fatal("FailedCount() = 0, want legacy lego v4 failure")
+	}
+	if got := checkSummary(report, "lego-v5"); !strings.Contains(got, "--renew-hook") {
+		t.Fatalf("lego-v5 summary = %q, want stale hook detail", got)
+	}
+}
+
 func TestStaticReportRejectsSystemdUnsafeConfig(t *testing.T) {
 	t.Parallel()
 

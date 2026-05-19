@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestNewCertificatePlanHTTP01UsesLegoWebrootAndRunHook(t *testing.T) {
+func TestNewCertificatePlanHTTP01UsesLegoWebrootAndDeployHook(t *testing.T) {
 	t.Parallel()
 
 	plan, err := NewCertificatePlan(validConfig())
@@ -18,17 +18,26 @@ func TestNewCertificatePlanHTTP01UsesLegoWebrootAndRunHook(t *testing.T) {
 	if plan.Command.Name != LegoBinaryPath {
 		t.Fatalf("Command.Name = %q, want %q", plan.Command.Name, LegoBinaryPath)
 	}
+	if len(plan.Command.Args) == 0 || plan.Command.Args[0] != "run" {
+		t.Fatalf("Command.Args = %#v, want lego run command shape", plan.Command.Args)
+	}
 	args := strings.Join(plan.Command.Args, " ")
 	for _, want := range []string{
+		"run --path /var/lib/meshify/lego",
 		"--path /var/lib/meshify/lego",
 		"--email ops@example.com",
 		"--domains hs.example.com",
 		"--accept-tos",
 		"--http --http.webroot /var/lib/meshify/acme-challenges",
-		"run --run-hook /usr/local/lib/meshify/hooks/install-lego-cert-and-reload-nginx.sh",
+		"--deploy-hook /usr/local/lib/meshify/hooks/install-lego-cert-and-reload-nginx.sh",
 	} {
 		if !strings.Contains(args, want) {
 			t.Fatalf("args = %q, want %q", args, want)
+		}
+	}
+	for _, unwanted := range []string{"--run-hook", "--renew-hook", " renew "} {
+		if strings.Contains(args, unwanted) {
+			t.Fatalf("args = %q, must not contain v4 form %q", args, unwanted)
 		}
 	}
 	if plan.Fullchain != "/etc/meshify/tls/hs.example.com/fullchain.pem" {
@@ -56,9 +65,10 @@ func TestNewCertificatePlanDNS01UsesProviderAndEnvFileWrapper(t *testing.T) {
 	}
 	args := strings.Join(plan.Command.DisplayArgs, " ")
 	for _, want := range []string{
+		"run --path /var/lib/meshify/lego",
 		"--path /var/lib/meshify/lego",
 		"--dns cloudflare",
-		"run --run-hook /usr/local/lib/meshify/hooks/install-lego-cert-and-reload-nginx.sh",
+		"--deploy-hook /usr/local/lib/meshify/hooks/install-lego-cert-and-reload-nginx.sh",
 	} {
 		if !strings.Contains(args, want) {
 			t.Fatalf("args = %q, want %q", args, want)
@@ -210,7 +220,8 @@ After=network-online.target nginx.service
 
 [Service]
 Type=oneshot
-ExecStart=/opt/meshify/bin/lego --path /var/lib/meshify/lego --email ops@example.com --domains hs.example.com --http --http.webroot /var/lib/meshify/acme-challenges renew --renew-hook /usr/local/lib/meshify/hooks/install-lego-cert-and-reload-nginx.sh
+ExecStartPre=/bin/sh -c 'lego_path="/var/lib/meshify/lego"; marker="$lego_path/.meshify-lego-v5-ready"; touch "$marker"; /opt/meshify/bin/lego migrate --path "$lego_path"'
+ExecStart=/opt/meshify/bin/lego run --path /var/lib/meshify/lego --email ops@example.com --domains hs.example.com --http --http.webroot /var/lib/meshify/acme-challenges --deploy-hook /usr/local/lib/meshify/hooks/install-lego-cert-and-reload-nginx.sh
 `)
 	if err := ValidateRenewalService(content); err != nil {
 		t.Fatalf("ValidateRenewalService() error = %v", err)
@@ -228,7 +239,8 @@ After=network-online.target nginx.service
 [Service]
 Type=oneshot
 EnvironmentFile=/etc/meshify/dns01/cloudflare.env
-ExecStart=/opt/meshify/bin/lego --path /var/lib/meshify/lego --email ops@example.com --domains hs.example.com --dns cloudflare renew --renew-hook /usr/local/lib/meshify/hooks/install-lego-cert-and-reload-nginx.sh
+ExecStartPre=/bin/sh -c 'lego_path="/var/lib/meshify/lego"; marker="$lego_path/.meshify-lego-v5-ready"; touch "$marker"; /opt/meshify/bin/lego migrate --path "$lego_path"'
+ExecStart=/opt/meshify/bin/lego run --path /var/lib/meshify/lego --email ops@example.com --domains hs.example.com --dns cloudflare --deploy-hook /usr/local/lib/meshify/hooks/install-lego-cert-and-reload-nginx.sh
 `)
 	if err := ValidateRenewalService(content); err != nil {
 		t.Fatalf("ValidateRenewalService() error = %v", err)
@@ -245,7 +257,8 @@ After=network-online.target nginx.service
 
 [Service]
 Type=oneshot
-ExecStart=/opt/meshify/bin/lego --path /var/lib/meshify/lego --email ops@example.com --domains hs.example.com --dns route53 renew --renew-hook /usr/local/lib/meshify/hooks/install-lego-cert-and-reload-nginx.sh
+ExecStartPre=/bin/sh -c 'lego_path="/var/lib/meshify/lego"; marker="$lego_path/.meshify-lego-v5-ready"; touch "$marker"; /opt/meshify/bin/lego migrate --path "$lego_path"'
+ExecStart=/opt/meshify/bin/lego run --path /var/lib/meshify/lego --email ops@example.com --domains hs.example.com --dns route53 --deploy-hook /usr/local/lib/meshify/hooks/install-lego-cert-and-reload-nginx.sh
 `)
 	if err := ValidateRenewalService(content); err != nil {
 		t.Fatalf("ValidateRenewalService() error = %v", err)
@@ -262,7 +275,8 @@ After=network-online.target nginx.service
 
 [Service]
 Type=oneshot
-ExecStart=/opt/meshify/bin/lego --path /var/lib/meshify/lego --email ops@example.com --domains hs.example.com renew --renew-hook /usr/local/lib/meshify/hooks/install-lego-cert-and-reload-nginx.sh
+ExecStartPre=/bin/sh -c 'lego_path="/var/lib/meshify/lego"; marker="$lego_path/.meshify-lego-v5-ready"; touch "$marker"; /opt/meshify/bin/lego migrate --path "$lego_path"'
+ExecStart=/opt/meshify/bin/lego run --path /var/lib/meshify/lego --email ops@example.com --domains hs.example.com --deploy-hook /usr/local/lib/meshify/hooks/install-lego-cert-and-reload-nginx.sh
 `)
 	err := ValidateRenewalService(content)
 	if err == nil {
@@ -282,7 +296,8 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/opt/meshify/bin/lego --path /var/lib/meshify/lego --email ops@example.com --domains hs.example.com --http --http.webroot /var/lib/meshify/acme-challenges renew --renew-hook /usr/local/lib/meshify/hooks/install-lego-cert-and-reload-nginx.sh
+ExecStartPre=/bin/sh -c 'lego_path="/var/lib/meshify/lego"; marker="$lego_path/.meshify-lego-v5-ready"; touch "$marker"; /opt/meshify/bin/lego migrate --path "$lego_path"'
+ExecStart=/opt/meshify/bin/lego run --path /var/lib/meshify/lego --email ops@example.com --domains hs.example.com --http --http.webroot /var/lib/meshify/acme-challenges --deploy-hook /usr/local/lib/meshify/hooks/install-lego-cert-and-reload-nginx.sh
 `)
 	err := ValidateRenewalService(content)
 	if err == nil {
@@ -348,7 +363,7 @@ nginx -s reload
 	if err == nil {
 		t.Fatal("ValidateReloadHook() error = nil, want missing lego certificate install contract")
 	}
-	if !strings.Contains(err.Error(), "LEGO_CERT_PATH") || !strings.Contains(err.Error(), "fullchain install") {
+	if !strings.Contains(err.Error(), "LEGO_HOOK_CERT_PATH") || !strings.Contains(err.Error(), "fullchain install") {
 		t.Fatalf("error = %q, want lego hook contract failure", err.Error())
 	}
 }
@@ -358,14 +373,14 @@ func TestValidateReloadHookRejectsLetsEncryptHookAssumptions(t *testing.T) {
 
 	content := []byte(`#!/bin/sh
 set -eu
-: "${LEGO_CERT_DOMAIN:?}"
-: "${LEGO_CERT_PATH:?}"
-: "${LEGO_CERT_KEY_PATH:?}"
-target_dir="/etc/meshify/tls/$LEGO_CERT_DOMAIN"
+: "${LEGO_HOOK_CERT_NAME:?}"
+: "${LEGO_HOOK_CERT_PATH:?}"
+: "${LEGO_HOOK_CERT_KEY_PATH:?}"
+target_dir="/etc/meshify/tls/$LEGO_HOOK_CERT_NAME"
 install -d -m 0755 "$target_dir"
-install -m 0644 "$LEGO_CERT_PATH" "$target_dir/fullchain.pem"
-install -m 0600 "$LEGO_CERT_KEY_PATH" "$target_dir/privkey.pem"
-legacy_dir="/etc/letsencrypt/live/$LEGO_CERT_DOMAIN"
+install -m 0644 "$LEGO_HOOK_CERT_PATH" "$target_dir/fullchain.pem"
+install -m 0600 "$LEGO_HOOK_CERT_KEY_PATH" "$target_dir/privkey.pem"
+legacy_dir="/etc/letsencrypt/live/$LEGO_HOOK_CERT_NAME"
 nginx -t
 systemctl reload nginx
 nginx -s reload

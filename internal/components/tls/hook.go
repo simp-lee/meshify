@@ -33,17 +33,20 @@ func ValidateReloadHook(content []byte) error {
 		text  string
 		label string
 	}{
-		{text: `: "${LEGO_CERT_DOMAIN:?}"`, label: "reload hook LEGO_CERT_DOMAIN guard"},
-		{text: `: "${LEGO_CERT_PATH:?}"`, label: "reload hook LEGO_CERT_PATH guard"},
-		{text: `: "${LEGO_CERT_KEY_PATH:?}"`, label: "reload hook LEGO_CERT_KEY_PATH guard"},
-		{text: `target_dir="/etc/meshify/tls/$LEGO_CERT_DOMAIN"`, label: "reload hook stable TLS target directory"},
+		{text: `: "${LEGO_HOOK_CERT_NAME:?}"`, label: "reload hook LEGO_HOOK_CERT_NAME guard"},
+		{text: `: "${LEGO_HOOK_CERT_PATH:?}"`, label: "reload hook LEGO_HOOK_CERT_PATH guard"},
+		{text: `: "${LEGO_HOOK_CERT_KEY_PATH:?}"`, label: "reload hook LEGO_HOOK_CERT_KEY_PATH guard"},
+		{text: `target_dir="/etc/meshify/tls/$LEGO_HOOK_CERT_NAME"`, label: "reload hook stable TLS target directory"},
 		{text: `install -d -m 0755 "$target_dir"`, label: "reload hook stable TLS directory install"},
-		{text: `install -m 0644 "$LEGO_CERT_PATH" "$target_dir/fullchain.pem"`, label: "reload hook fullchain install"},
-		{text: `install -m 0600 "$LEGO_CERT_KEY_PATH" "$target_dir/privkey.pem"`, label: "reload hook private key install"},
+		{text: `install -m 0644 "$LEGO_HOOK_CERT_PATH" "$target_dir/fullchain.pem"`, label: "reload hook fullchain install"},
+		{text: `install -m 0600 "$LEGO_HOOK_CERT_KEY_PATH" "$target_dir/privkey.pem"`, label: "reload hook private key install"},
 		{text: `system has not been booted with systemd`, label: "reload hook systemd unavailable fallback marker"},
 		{text: `failed to connect to bus: no such file or directory`, label: "reload hook missing systemd bus fallback marker"},
 	} {
 		mustContainText(&errs, text, want.text, want.label)
+	}
+	if strings.Contains(text, "LEGO_CERT_") || strings.Contains(text, "LEGO_ACCOUNT_EMAIL") {
+		errs = append(errs, "reload hook must use LEGO_HOOK_* variables, not legacy lego hook variables")
 	}
 	if strings.Contains(text, "certbot") || strings.Contains(text, "/etc/letsencrypt") {
 		errs = append(errs, "reload hook must not reference Certbot or /etc/letsencrypt")
@@ -71,8 +74,14 @@ func ValidateRenewalService(content []byte) error {
 	mustContainText(&errs, text, "After=network-online.target nginx.service", "renewal service network and Nginx ordering")
 	mustContainText(&errs, text, "[Service]", "renewal service [Service] section")
 	mustContainText(&errs, text, "Type=oneshot", "renewal service oneshot type")
-	mustContainText(&errs, text, LegoBinaryPath+" --path "+LegoDataPath, "renewal service lego command")
-	mustContainText(&errs, text, " renew --renew-hook "+RunHookPath, "renewal service renew hook")
+	mustContainText(&errs, text, `lego_path="`+LegoDataPath+`"`, "renewal service migration path")
+	mustContainText(&errs, text, `migrate --path "$lego_path"`, "renewal service migration gate")
+	mustContainText(&errs, text, "touch \"$marker\"", "renewal service migration marker")
+	mustContainText(&errs, text, LegoBinaryPath+" run --path "+LegoDataPath, "renewal service lego run command")
+	mustContainText(&errs, text, " --deploy-hook "+RunHookPath, "renewal service deploy hook")
+	if strings.Contains(text, " renew ") || strings.Contains(text, "--renew-hook") || strings.Contains(text, "--run-hook") {
+		errs = append(errs, "renewal service must not use lego v4 renew or hook flags")
+	}
 	hasDNS := strings.Contains(text, " --dns ")
 	hasHTTP := strings.Contains(text, " --http ")
 	switch {

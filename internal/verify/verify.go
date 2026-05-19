@@ -94,14 +94,14 @@ func StaticReport(cfg config.Config, staged []render.StagedFile) Report {
 	if !ok {
 		add("certificate-hook", fmt.Errorf("lego certificate install hook is missing"), "")
 	} else {
-		add("certificate-hook", tlscomponent.ValidateReloadHook(hook), "lego run hook installs the issued certificate and reloads Nginx.")
+		add("certificate-hook", tlscomponent.ValidateReloadHook(hook), "lego deploy hook installs the issued certificate and reloads Nginx.")
 	}
 
 	renewService, ok := stagedContent(staged, "templates/etc/systemd/system/meshify-lego-renew.service.tmpl")
 	if !ok {
 		add("renewal-service", fmt.Errorf("lego renewal service is missing"), "")
 	} else {
-		add("renewal-service", validateRenewalServiceForConfig(cfg, renewService), "lego renewal service uses renew --renew-hook against meshify-managed certificate paths.")
+		add("renewal-service", validateRenewalServiceForConfig(cfg, renewService), "lego renewal service runs v5 migrate gate and lego run --deploy-hook against meshify-managed certificate paths.")
 	}
 
 	renewTimer, ok := stagedContent(staged, "templates/etc/systemd/system/meshify-lego-renew.timer")

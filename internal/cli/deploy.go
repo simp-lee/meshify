@@ -324,7 +324,7 @@ func runDeploy(ctx context, args []string) error {
 		if err != nil {
 			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 				Step:         "plan lego install",
-				Operation:    "selecting the pinned lego v4.35.2 Linux archive source and SHA-256 digest",
+				Operation:    "selecting the pinned lego v5.0.4 Linux archive source and SHA-256 digest",
 				Impact:       "meshify cannot continue certificate automation until the lego release artifact is fully pinned",
 				Remediation:  []string{"Use advanced.platform.arch amd64 or arm64, fix advanced.lego_source settings, then rerun deploy."},
 				RetryCommand: deployRetryCommand(options.configPath),
@@ -334,7 +334,7 @@ func runDeploy(ctx context, args []string) error {
 		if _, err := newLegoInstallerFn(privilegedExecutor).Install(stdcontext.Background(), installPlan); err != nil {
 			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 				Step:         "install lego binary",
-				Operation:    "verifying and installing the pinned lego v4.35.2 archive to /opt/meshify/bin/lego",
+				Operation:    "verifying and installing the pinned lego v5.0.4 archive to /opt/meshify/bin/lego",
 				Impact:       "meshify cannot continue ACME automation until the pinned lego binary is installed",
 				Remediation:  []string{"Fix GitHub release reachability, proxy settings, advanced.lego_source.file_path, archive permissions, or digest mismatches, then rerun deploy."},
 				RetryCommand: deployRetryCommand(options.configPath),
@@ -494,6 +494,16 @@ func runDeploy(ctx context, args []string) error {
 				Operation:    "building the lego command for the configured ACME challenge",
 				Impact:       "meshify cannot request the public TLS certificate until ACME inputs are valid",
 				Remediation:  []string{"Fix default.acme_challenge, default.certificate_email, or DNS-01 provider settings, then rerun deploy."},
+				RetryCommand: deployRetryCommand(options.configPath),
+				Cause:        err,
+			})
+		}
+		if _, err := privilegedExecutor.Run(stdcontext.Background(), legocomponent.MigrationGateCommand(tlscomponent.LegoDataPath)); err != nil {
+			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
+				Step:         "migrate lego storage",
+				Operation:    "running the guarded lego v5 storage migration before certificate issuance",
+				Impact:       "meshify cannot run lego v5 against existing certificate data until storage migration succeeds",
+				Remediation:  []string{"Inspect the lego data path, restore from the preserved backup if needed, fix permissions or unsupported legacy storage, then rerun deploy."},
 				RetryCommand: deployRetryCommand(options.configPath),
 				Cause:        err,
 			})

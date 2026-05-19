@@ -1,14 +1,14 @@
 #!/bin/sh
 set -eu
 
-: "${LEGO_CERT_DOMAIN:?}"
-: "${LEGO_CERT_PATH:?}"
-: "${LEGO_CERT_KEY_PATH:?}"
+: "${LEGO_HOOK_CERT_NAME:?}"
+: "${LEGO_HOOK_CERT_PATH:?}"
+: "${LEGO_HOOK_CERT_KEY_PATH:?}"
 
-target_dir="/etc/meshify/tls/$LEGO_CERT_DOMAIN"
+target_dir="/etc/meshify/tls/$LEGO_HOOK_CERT_NAME"
 install -d -m 0755 "$target_dir"
-install -m 0644 "$LEGO_CERT_PATH" "$target_dir/fullchain.pem"
-install -m 0600 "$LEGO_CERT_KEY_PATH" "$target_dir/privkey.pem"
+install -m 0644 "$LEGO_HOOK_CERT_PATH" "$target_dir/fullchain.pem"
+install -m 0600 "$LEGO_HOOK_CERT_KEY_PATH" "$target_dir/privkey.pem"
 
 nginx -t
 

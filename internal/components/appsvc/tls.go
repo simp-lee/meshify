@@ -17,6 +17,7 @@ func NewCertificatePlan(cfg appconfig.Config, names Names) (CertificatePlan, err
 		return CertificatePlan{}, err
 	}
 	args := []string{
+		"run",
 		"--path", names.LegoDataPath,
 		"--email", cfg.App.CertificateEmail,
 	}
@@ -36,6 +37,7 @@ func NewCertificatePlan(cfg appconfig.Config, names Names) (CertificatePlan, err
 	default:
 		return CertificatePlan{}, fmt.Errorf("unsupported ACME challenge %q", cfg.App.ACMEChallenge)
 	}
+	args = append(args, "--force-cert-domains")
 	command := legoIssueOrRenewCommand(names, cfg.PrimaryDomain(), args)
 	if cfg.App.ACMEChallenge == appconfig.ACMEChallengeDNS01 && strings.TrimSpace(cfg.DNS01.EnvFile) != "" {
 		command = commandWithEnvFile(cfg.DNS01.EnvFile, command)
@@ -54,14 +56,13 @@ cert="$lego_path/certificates/$primary_domain.crt"
 key="$lego_path/certificates/$primary_domain.key"
 metadata="$lego_path/certificates/$primary_domain.json"
 if [ -s "$cert" ] && [ -s "$key" ] && [ -s "$metadata" ]; then
-    LEGO_CERT_PATH="$cert" LEGO_CERT_KEY_PATH="$key" "$hook"
-    exec "$lego" "$@" renew --force-cert-domains --renew-hook "$hook"
+    LEGO_HOOK_CERT_PATH="$cert" LEGO_HOOK_CERT_KEY_PATH="$key" "$hook"
 fi
-exec "$lego" "$@" run --run-hook "$hook"`
+exec "$lego" "$@" --deploy-hook "$hook"`
 	args := []string{"-c", script, "meshify-app-lego-issue-or-renew", LegoBinaryPath, names.LegoDataPath, strings.TrimSpace(primaryDomain), names.HookPath}
 	args = append(args, legoArgs...)
 	displayArgs := append([]string(nil), legoArgs...)
-	displayArgs = append(displayArgs, "run|renew", "--hook", names.HookPath)
+	displayArgs = append(displayArgs, "--deploy-hook", names.HookPath)
 	return host.Command{
 		Name:        "sh",
 		Args:        args,

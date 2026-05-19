@@ -1560,7 +1560,8 @@ func TestExecute_AppDeployHappyPathOrder(t *testing.T) {
 				{"systemd-daemon-reload", "http01-bootstrap"},
 				{"http01-bootstrap", "nginx-enabled-guard-activate"},
 				{"nginx-enabled-guard-activate", "nginx-enable"},
-				{"nginx-enable", "lego-run"},
+				{"nginx-enable", "lego-migrate"},
+				{"lego-migrate", "lego-run"},
 				{"lego-run", "systemctl-enable review-app.service"},
 				{"systemctl-restart review-app.service", "systemctl-enable review-app-lego-renew.timer"},
 			},
@@ -1573,7 +1574,8 @@ func TestExecute_AppDeployHappyPathOrder(t *testing.T) {
 			},
 			wantBefore: [][2]string{
 				{"install-files", "systemd-daemon-reload"},
-				{"systemd-daemon-reload", "lego-run"},
+				{"systemd-daemon-reload", "lego-migrate"},
+				{"lego-migrate", "lego-run"},
 				{"lego-run", "nginx-enabled-guard-activate"},
 				{"nginx-enabled-guard-activate", "nginx-enable"},
 				{"nginx-enable", "systemctl-enable review-app.service"},
@@ -1593,7 +1595,8 @@ func TestExecute_AppDeployHappyPathOrder(t *testing.T) {
 				{"install-files", "systemd-daemon-reload"},
 				{"systemd-daemon-reload", "http01-bootstrap"},
 				{"http01-bootstrap", "nginx-enabled-guard-activate"},
-				{"nginx-enable", "lego-run"},
+				{"nginx-enable", "lego-migrate"},
+				{"lego-migrate", "lego-run"},
 				{"lego-run", "systemctl-enable review-app-lego-renew.timer"},
 			},
 			wantAbsent: []string{"systemctl-enable review-app.service", "systemctl-restart review-app.service"},
@@ -1612,7 +1615,8 @@ func TestExecute_AppDeployHappyPathOrder(t *testing.T) {
 			wantBefore: [][2]string{
 				{"tailscale-status", "install-files"},
 				{"install-files", "systemd-daemon-reload"},
-				{"systemd-daemon-reload", "lego-run"},
+				{"systemd-daemon-reload", "lego-migrate"},
+				{"lego-migrate", "lego-run"},
 				{"lego-run", "nginx-enabled-guard-activate"},
 				{"nginx-enable", "systemctl-enable review-app-lego-renew.timer"},
 			},
@@ -2115,6 +2119,8 @@ func appDeployOrderEvent(command host.Command) string {
 				return "http01-bootstrap"
 			case "meshify-app-remove-stale-service":
 				return "remove-stale-service"
+			case "meshify-lego-v5-migration-gate":
+				return "lego-migrate"
 			case "meshify-app-lego-issue-or-renew":
 				return "lego-run"
 			case "meshify-app-lego-dns01":
@@ -4092,7 +4098,7 @@ func TestDetectPackageSourceStateUsesHeadscaleComponentOfficialPackageURLs(t *te
 
 func TestDetectPackageSourceStateUsesOfflineLegoArchiveWithoutRemoteProbe(t *testing.T) {
 	cfg := config.ExampleConfig()
-	archivePath := filepath.Join(t.TempDir(), "lego_v4.35.2_linux_amd64.tar.gz")
+	archivePath := filepath.Join(t.TempDir(), "lego_v5.0.4_linux_amd64.tar.gz")
 	if err := os.WriteFile(archivePath, []byte("not the real archive"), 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
@@ -4400,7 +4406,7 @@ func TestExecute_DeployDNS01SourcesEnvFileThroughSudo(t *testing.T) {
 			t.Fatalf("sudo shell args = %q, want env_file path", actualArgs)
 		}
 		display := command.String()
-		if !strings.Contains(display, "/opt/meshify/bin/lego --path /var/lib/meshify/lego") || !strings.Contains(display, "--dns cloudflare") {
+		if !strings.Contains(display, "/opt/meshify/bin/lego run --path /var/lib/meshify/lego") || !strings.Contains(display, "--dns cloudflare") || !strings.Contains(display, "--deploy-hook") {
 			t.Fatalf("lego display command = %q, want lego DNS-01 command", display)
 		}
 		if strings.Contains(display, "/etc/meshify/dns01/cloudflare.env") {
@@ -4505,16 +4511,19 @@ func TestExecute_DeployResumesFromRecordedCheckpoint(t *testing.T) {
 	if got := len(runner.commands); got < 10 {
 		t.Fatalf("len(commands) = %d, want resumed certificate/service/onboarding commands", got)
 	}
-	foundLegoIssue := false
-	for _, command := range runner.commands {
+	migrationIndex := -1
+	issueIndex := -1
+	for index, command := range runner.commands {
 		actual := unwrapMaybeSudoHostCommand(command)
+		if actual.Name == "sh" && len(actual.Args) >= 3 && actual.Args[2] == "meshify-lego-v5-migration-gate" {
+			migrationIndex = index
+		}
 		if actual.Name == legocomponent.BinaryPath && strings.Join(actual.Args, " ") != "--version" {
-			foundLegoIssue = true
-			break
+			issueIndex = index
 		}
 	}
-	if runner.commands[0].Name != "mkdir" || !foundLegoIssue {
-		t.Fatalf("commands = %#v, want HTTP-01 bootstrap before lego issuance", runner.commands)
+	if runner.commands[0].Name != "mkdir" || migrationIndex < 0 || issueIndex < 0 || migrationIndex >= issueIndex {
+		t.Fatalf("commands = %#v, want HTTP-01 bootstrap and lego migration before lego issuance", runner.commands)
 	}
 
 	checkpoint, err := state.NewStore(checkpointPath).Load()

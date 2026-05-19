@@ -204,7 +204,8 @@ func TestCertificatePlanRepeatsDomainsAndMasksEnvFileDisplay(t *testing.T) {
 		"--domains abc.com",
 		"--domains www.abc.com",
 		"--dns gcloud",
-		"run|renew --hook /usr/local/lib/meshify/apps/example-app/install-cert-and-reload-nginx.sh",
+		"run --path /var/lib/example-app/lego",
+		"--force-cert-domains --deploy-hook /usr/local/lib/meshify/apps/example-app/install-cert-and-reload-nginx.sh",
 	} {
 		if !strings.Contains(display, want) {
 			t.Fatalf("command = %q, want substring %q", display, want)
@@ -238,12 +239,12 @@ func TestCertificatePlanIssueOrRenewWrapper(t *testing.T) {
 	}{
 		{
 			name:           "first issue",
-			wantSubstrings: []string{" run ", " --run-hook "},
+			wantSubstrings: []string{" run ", " --force-cert-domains ", " --deploy-hook "},
 		},
 		{
 			name:           "renew existing",
 			existingCert:   true,
-			wantSubstrings: []string{" renew ", " --force-cert-domains ", " --renew-hook "},
+			wantSubstrings: []string{" run ", " --force-cert-domains ", " --deploy-hook "},
 		},
 	} {
 		tt := tt
@@ -321,7 +322,7 @@ func TestCertificatePlanInstallsCachedLegoCertificateBeforeRenew(t *testing.T) {
 	hookLog := filepath.Join(dir, "hook.log")
 	hook := filepath.Join(dir, "hook")
 	writeExecutable(t, hook, `#!/bin/sh
-printf 'hook cert=%s key=%s\n' "$LEGO_CERT_PATH" "$LEGO_CERT_KEY_PATH" >> "`+hookLog+`"
+printf 'hook cert=%s key=%s\n' "$LEGO_HOOK_CERT_PATH" "$LEGO_HOOK_CERT_KEY_PATH" >> "`+hookLog+`"
 `)
 	fakeLegoLog := filepath.Join(dir, "lego.log")
 	fakeLego := filepath.Join(dir, "lego-bin")
@@ -349,8 +350,8 @@ printf 'lego %s\n' "$*" >> "`+fakeLegoLog+`"
 	if err != nil {
 		t.Fatalf("ReadFile(lego log) error = %v", err)
 	}
-	if !strings.Contains(string(legoOutput), " renew ") || !strings.Contains(string(legoOutput), " --renew-hook "+hook) {
-		t.Fatalf("lego log = %q, want renew after cached install hook", legoOutput)
+	if !strings.Contains(string(legoOutput), " run ") || !strings.Contains(string(legoOutput), " --deploy-hook "+hook) {
+		t.Fatalf("lego log = %q, want run after cached install hook", legoOutput)
 	}
 }
 
