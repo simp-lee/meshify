@@ -303,8 +303,24 @@ func TestParsePrefsJSONExtractsNormalizedControlURL(t *testing.T) {
 func writeExecutable(t *testing.T, path string, content string) {
 	t.Helper()
 
-	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
-		t.Fatalf("WriteFile(%s) error = %v", path, err)
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
+	if err != nil {
+		t.Fatalf("CreateTemp(%s) error = %v", path, err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.WriteString(content); err != nil {
+		tmp.Close()
+		t.Fatalf("WriteString(%s) error = %v", tmpPath, err)
+	}
+	if err := tmp.Close(); err != nil {
+		t.Fatalf("Close(%s) error = %v", tmpPath, err)
+	}
+	if err := os.Chmod(tmpPath, 0o755); err != nil {
+		t.Fatalf("Chmod(%s) error = %v", tmpPath, err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		t.Fatalf("Rename(%s, %s) error = %v", tmpPath, path, err)
 	}
 }
 
