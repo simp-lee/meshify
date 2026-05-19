@@ -2,11 +2,30 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Meshify is a Go CLI for deploying a small, single-host Headscale control plane. It turns one `meshify.yaml` file into a Debian-family server running Headscale behind Nginx TLS, with embedded DERP/STUN, MagicDNS, local onboarding, and static verification.
+Meshify is a Go server deployment tool, not a VPN client. It is for individuals or small teams who want a private Tailscale/Headscale network without hand-configuring Headscale, Nginx, HTTPS certificates, and systemd. Bring one Debian/Ubuntu cloud server, one domain name, and sudo access; Meshify deploys from `meshify.yaml`. You can also use `meshify app` to publish same-host or tailnet HTTP/WebSocket services to public HTTPS. If you only want to run your own Go web service on a cloud server, you can use only the app workflow and skip the private Tailscale/Headscale network.
+
+## Is Meshify A Fit?
+
+| What you want | Fit |
+| --- | --- |
+| Use the official Tailscale client to join your own private network | Yes. Meshify deploys the Headscale control plane. |
+| Automatically configure Headscale, Nginx, certificate renewal, and baseline verification on one cloud server | Yes. This is the core goal of this repository. |
+| Publish same-host Go web services or tailnet HTTP/WebSocket services to HTTPS | Yes. Use `meshify app`. |
+| Publish only a Go web service on the cloud server without a private Tailscale/Headscale network | Yes. Use `meshify app` in `listen` mode. |
+| Build multi-host high availability, Kubernetes, Terraform, Ansible, Web UI, or OIDC/SSO | No. These are outside the current scope. |
+| Find a Tailscale client, general reverse proxy framework, or Go SDK | No. This repository is mainly a CLI, config examples, and runtime templates. |
 
 ## Quick Start
 
-Download a published release binary for the target server. Replace `vX.Y.Z` with the release tag:
+Prepare three things before deploy:
+
+- A Debian/Ubuntu or Debian-family server with root or passwordless sudo.
+- A public DNS name, for example `hs.example.com`, pointed at the server.
+- `80/tcp`, `443/tcp`, and `3478/udp` allowed in both the host firewall and cloud security group.
+
+If you only want to deploy a same-host Go web service and are not creating a private network, you only need an app domain plus `80/tcp` and `443/tcp`; `3478/udp` is only for the main Headscale deployment.
+
+Download a published release binary on the target server. Replace `vX.Y.Z` with the release tag:
 
 ```bash
 VERSION=vX.Y.Z
@@ -27,16 +46,19 @@ meshify --help
 
 If you are using a source checkout instead of a release binary, run `make build` and install `./meshify` to `/usr/local/bin/meshify`.
 
-Then run the default workflow (`init -> deploy -> verify`), followed by a read-only status check:
+Then run the default workflow (`init -> deploy -> verify`), followed by a read-only status check. Before deploy, inspect `meshify.yaml`; if it still contains example values, change at least `default.server_url`, `default.base_domain`, and `default.certificate_email` to your real values.
 
 ```bash
 meshify init --config meshify.yaml
+# Check meshify.yaml; if it still has example values, edit default first.
 sudo meshify deploy --config meshify.yaml
 meshify verify --config meshify.yaml
 meshify status --config meshify.yaml
 ```
 
-Before deploying, point public DNS such as `hs.example.com` at the server and allow `80/tcp`, `443/tcp`, and `3478/udp`. After verification passes, use the printed preauth key or create a fresh one, then follow the client section below.
+After `deploy` succeeds, the CLI prints an initial preauth key. Use it for the first client, then create a fresh key for each additional client.
+
+The default workflow above deploys a private Tailscale/Headscale network. If you only want to publish a same-host Go service, skip the main `meshify init` and `meshify deploy` workflow and go to "Additional Go Services" below.
 
 ## Supported Scope
 
@@ -49,7 +71,7 @@ Before deploying, point public DNS such as `hs.example.com` at the server and al
 | Clients | Windows, macOS, Debian/Ubuntu Linux |
 | Client baseline | Tailscale client >= v1.74.0 |
 
-Meshify intentionally does not include multi-host high availability, Kubernetes, Terraform, Ansible, a Web UI, OIDC/SSO, automatic SQLite backup and restore, official DERP fallback, or remote gRPC/API-key management by default.
+Meshify intentionally keeps the scope small: no multi-host high availability, Kubernetes, Terraform, Ansible, Web UI, OIDC/SSO, automatic SQLite backup and restore, official DERP fallback, or remote gRPC/API-key management by default.
 
 ## Server Guide
 
@@ -75,7 +97,14 @@ default:
   acme_challenge: "http-01"
 ```
 
-`server_url` is the HTTPS Headscale endpoint clients use with `tailscale up --login-server`. It must be a DNS name and normally uses port 443. `base_domain` is the private MagicDNS suffix and must not equal the Headscale host or be its parent domain.
+Field meanings:
+
+| Field | Purpose |
+| --- | --- |
+| `server_url` | HTTPS endpoint clients use with `tailscale up --login-server`; it must be a DNS name and normally uses port 443 |
+| `base_domain` | Private MagicDNS suffix; it must not equal the Headscale hostname or be its parent domain |
+| `certificate_email` | ACME registration email |
+| `acme_challenge` | `http-01` or `dns-01` |
 
 Use advanced mode only when you need DNS-01, Headscale mirror/offline packages, Headscale metrics port changes, offline lego archives, proxies, architecture overrides, or public IP overrides:
 
@@ -92,50 +121,9 @@ default:
   acme_challenge: "http-01"
 ```
 
-Use DNS-01 only when port 80 cannot be used reliably or policy requires DNS validation. DNS-01 uses lego provider codes `cloudflare`, `route53`, `digitalocean`, and `gcloud`; `google` is accepted as a `gcloud` alias.
+Use DNS-01 only when public port 80 is unreliable or policy requires DNS validation. DNS-01 uses lego provider codes `cloudflare`, `route53`, `digitalocean`, and `gcloud`; `google` is accepted as a `gcloud` alias.
 
 Keep raw DNS values out of `meshify.yaml`. Cloudflare and DigitalOcean require a root-only `advanced.dns01.env_file`. Route53 and gcloud may use lego's ambient credential chain when deploy and systemd renewal run with the same host identity. Raw DNS tokens or keys live in separate root-only files referenced by lego `_FILE` variables.
-
-### Additional Go Services
-
-To run other Go services on the same cloud server, use a standalone app config and the `meshify app` workflow:
-
-```bash
-meshify app init --config meshify-apps/abc.yaml
-sudo meshify app deploy --config meshify-apps/abc.yaml
-meshify app verify --config meshify-apps/abc.yaml
-```
-
-The app workflow does not have `--example`: `meshify app init` already writes the editable example config. `--example` only applies to the main `meshify init` command.
-
-Use one config file per app. Multiple apps commonly live in the same directory:
-
-```text
-meshify.yaml
-meshify-apps/abc.yaml
-meshify-apps/admin.yaml
-meshify-apps/tailapp.yaml
-```
-
-The config filename is not the deployment identity. `app.name` names the systemd unit, Nginx site, and certificate directory, so renaming a config file does not rename installed runtime resources. The app config example source is [`deploy/config/meshify-app.yaml.example`](deploy/config/meshify-app.yaml.example); `meshify app init` writes the same editable structure.
-
-`listen` means local app mode: the Go service runs on the cloud server and listens on loopback, such as `127.0.0.1:18001`. Meshify generates the app systemd service, Nginx site, certificate, hook, and renewal timer. The application binary is still installed by you before deploy at the absolute path used by `service.exec_start`; Meshify verifies that executable path before installing runtime files. If the app needs a systemd environment file such as `web.env`, set `service.env_file` to that absolute path; deploy checks that it is a root-owned, root-only file and renders it as `EnvironmentFile=`.
-
-`upstream` means tailnet upstream mode: public Nginx proxies to a fixed HTTP/WebSocket address inside the tailnet, such as `100.64.10.20:18001`. This mode does not generate a local app systemd service, but it automatically requires the cloud server's Tailscale client. `listen` and `upstream` are mutually exclusive. Use `upstream` only for HTTP/WebSocket services, not PostgreSQL, Redis, MySQL, or other database ports.
-
-Multiple domains belong in one `app.domains` list. They are written to the same Nginx `server_name`, the same certificate SAN set, and the same Host/SNI allowlist. The first app release does not create canonical redirects between names such as `abc.com` and `www.abc.com`; they serve the same app by default.
-
-Use the `nginx` section for app-specific Nginx behavior. `client_max_body_size` defaults to `20m`; `http2` defaults to true and renders the modern `http2 on;` directive; `access_log` and `error_log` can point at per-app log files; `proxy.read_timeout`, `proxy.send_timeout`, `proxy.connect_timeout`, `proxy.buffering`, and `proxy.request_buffering` control the reverse proxy location. Use `nginx.static_locations` when the app also publishes static files such as `/static/`, `/sitemap.xml`, or `/sitemaps/` from an app release directory. Meshify renders those HTTPS `alias` locations before the app proxy location and supports optional `expires`, `Cache-Control`, `try_files $uri =404`, `gzip_static on`, and `access_log off`. Meshify does not copy static file contents; publish them with the same release process that installs the app binary.
-
-For Tailscale, `upstream` mode automatically needs the client. `listen` mode uses the client only when `tailscale.enabled_for_listen` is true. When `tailscale.login_server` is empty, Meshify reads `default.server_url` from `tailscale.meshify_config`; when `tailscale.meshify_config` is empty, it uses `meshify.yaml` in the current directory. An empty `tailscale.hostname` lets Tailscale use the system hostname. `tailscale.auth_key_file` stores only a root-only auth key file path, not the key value.
-
-Deploy checks whether the Tailscale client is installed, running, and logged in to the expected login server. If those conditions already hold, deploy skips install, preauth key creation, and re-login. When the client is not logged in, Meshify-managed Headscale creates a short-lived preauth key; external Headscale uses `tailscale.auth_key_file` or a pre-logged-in client. Meshify runs `tailscale up` with `--accept-dns=false`, `--accept-routes=false`, and `--shields-up`. If the machine is already logged in to a login server Meshify cannot prove matches, deploy fails explicitly and does not log out, reset state, or rejoin automatically.
-
-`meshify app verify` is a static config/template check for the app workflow. A passing run prints `static-passed`. It validates schema, template rendering, Nginx Host/SNI guards, certificate paths, systemd planning, Tailscale requirement inference, and sensitive-value leakage. It does not read deployed host files, systemd state, certificate SANs, Nginx runtime state, or Tailscale online state. The first app release has no separate checkpoint store, so there is no `meshify app status`.
-
-The release binary's app runtime templates only come from `deploy/templates/app/`, and `meshify app deploy` renders and installs them automatically. Before deploy, confirm that `app.domains` resolve to the cloud server, only public `80/tcp` and `443/tcp` are exposed for Nginx, local app ports such as `18001` are not public, `service.exec_start` starts with an absolute executable path, `service.env_file` points to a root-owned root-only file when set, `nginx.static_locations` aliases point at files or directories published with the app release, fixed tailnet upstreams are reachable from the cloud server, and DNS-01 or Tailscale secret files are root-only. When `nginx.http2` is true or any static location sets `gzip_static: true`, app deploy verifies `nginx -V` before writing runtime files; `http2 on;` requires Nginx `1.25.1` or newer and the `http_v2` module.
-
-Use `curl`, `nginx -t`, certificate inspection, `systemctl`, and `tailscale status` for deployed host-state validation. `upstream` mode has no local app service, so skip the `<app-name>.service` check and verify the fixed tailnet upstream from the cloud server instead.
 
 ### Deploy
 
@@ -168,11 +156,14 @@ Expected result:
 
 ### Runtime Topology
 
+The main deployment topology looks like this. The public internet should only see Nginx HTTP/HTTPS and the Headscale STUN port; Headscale control plane, metrics, and gRPC stay on loopback.
+
 ```text
-Internet
-  |
-  | 80/tcp, 443/tcp
-  v
+Internet, ACME CA, and Tailscale clients
+  |                         \
+  | 443/tcp control + DERP   \ 3478/udp STUN
+  | 80/tcp HTTP-01            \
+  v                            v
 +------------------------------------------------+
 | Debian-family apt/dpkg/systemd host            |
 |                                                |
@@ -180,22 +171,216 @@ Internet
 |   - HTTP-01 webroot                            |
 |   - TLS termination with fullchain.pem         |
 |   - reverse proxy to 127.0.0.1:8080            |
+|   - HTTP/1.1 upgrade for DERP WebSocket        |
 |                                                |
 | Headscale                                      |
-|   - control plane on loopback                  |
-|   - metrics on configurable loopback port      |
-|   - gRPC on loopback                           |
+|   - control plane on 127.0.0.1:8080            |
+|   - metrics on 127.0.0.1:<metrics_port>        |
+|   - gRPC on 127.0.0.1:50443                    |
 |   - local admin over unix socket               |
-|   - embedded DERP and STUN on 3478/udp         |
+|   - embedded DERP over HTTPS proxy path        |
+|   - STUN on 3478/udp                           |
 |                                                |
 | meshify-managed lego                           |
 |   - certificate issue/renew                    |
 |   - install hook reloads Nginx after validate  |
 +------------------------------------------------+
-  |
-  v
-Clients prefer direct WireGuard paths and fall back to DERP over 443.
 ```
+
+Clients prefer direct WireGuard paths. When direct connectivity fails, embedded DERP behind Nginx falls back over 443.
+
+If you deploy a Go service on the same host, the topology adds an app site. The app port still listens on loopback and is not exposed directly to the public internet.
+
+```text
+Internet
+  |
+  | app domain: 80/tcp, 443/tcp
+  v
++------------------------------------------------+
+| Nginx app site                                 |
+|   - app certificate and Host/SNI allowlist     |
+|   - optional static alias locations            |
+|   - proxy / to 127.0.0.1:18001                |
+|                                                |
+| example-app.service                            |
+|   - runs as app.name system user               |
+|   - ExecStart from service.exec_start          |
+|   - listens on loopback only                   |
++------------------------------------------------+
+```
+
+For a same-host Go service only, the app site above can be the complete topology: public traffic enters Nginx, Nginx proxies to the local Go service, and no Headscale or Tailscale client is required.
+
+If you publish an HTTP/WebSocket service on another tailnet node, the public entrypoint is still this cloud server, but the upstream goes through the local Tailscale client to a fixed `100.64.x.y:port`.
+
+```text
+Internet
+  |
+  | app domain: 80/tcp, 443/tcp
+  v
++------------------------------------------------+
+| Nginx app site                                 |
+|   - app certificate and Host/SNI allowlist     |
+|   - proxy / to fixed tailnet upstream          |
+|                                                |
+| Tailscale client on this host                  |
+|   - logged in to expected login server         |
++------------------------------------------------+
+  |
+  | tailnet HTTP/WebSocket
+  v
+100.64.x.y:port on another tailnet node
+```
+
+### Additional Go Services
+
+To run your own Go web service on the same cloud server, or to publish a tailnet HTTP/WebSocket service through this server, use a standalone app config and the `meshify app` workflow.
+
+If you do not want a private Tailscale/Headscale network and only want public HTTPS for a Go service on this cloud server, use `listen` mode here. This mode does not require a prior Headscale deployment; keep `upstream: ""` and do not change `tailscale.enabled_for_listen` to `true`, and Meshify only manages the local app, Nginx, certificates, and systemd.
+
+For a first deployment, use the shortest path: generate config, edit config, run static verification, then deploy.
+
+```bash
+meshify app init --config meshify-apps/abc.yaml
+# Edit meshify-apps/abc.yaml
+meshify app verify --config meshify-apps/abc.yaml
+sudo meshify app deploy --config meshify-apps/abc.yaml
+```
+
+The app workflow does not have `--example`: `meshify app init` already writes the editable example config. `--example` only applies to the main `meshify init` command. The app config example source is [`deploy/config/meshify-app.yaml.example`](deploy/config/meshify-app.yaml.example); `meshify app init` writes the same editable structure.
+
+Use one config file per app, commonly under `meshify-apps/`:
+
+```text
+meshify.yaml
+meshify-apps/abc.yaml
+meshify-apps/admin.yaml
+meshify-apps/tailapp.yaml
+```
+
+An app-only deployment can omit `meshify.yaml`; the layout above is just a common shape when one repo manages both the main private network and multiple apps.
+
+The config filename is not the deployment identity. `app.name` names the systemd unit, Nginx site, and certificate directory, so renaming a config file does not rename installed runtime resources.
+
+#### Choose A Mode
+
+| Mode | Use it when | You prepare |
+| --- | --- | --- |
+| `listen` | The Go service runs on this cloud server | Install the business binary at the absolute path used by the first token of `service.exec_start`, and make it listen on loopback |
+| `upstream` | The backend runs on another tailnet node, for example `100.64.10.20:18001` | Confirm the cloud server's Tailscale client can reach that fixed HTTP/WebSocket upstream |
+
+`listen` means local app mode: the Go service runs on the same cloud server and listens on loopback, such as `127.0.0.1:18001`. Meshify generates the app systemd service, Nginx site, certificate, hook, and renewal timer. It verifies that the business binary exists and is executable; it does not copy your binary.
+
+`upstream` means tailnet upstream mode: public Nginx proxies to a fixed HTTP/WebSocket address on another tailnet node, such as `100.64.10.20:18001`. This mode does not generate a local app service. `listen` and `upstream` are mutually exclusive; `upstream` mode automatically requires the Tailscale client. Use `upstream` only for HTTP/WebSocket services, not PostgreSQL, Redis, MySQL, or other database ports.
+
+#### Minimal App Config
+
+`listen` mode example:
+
+```yaml
+api_version: meshify/app/v1alpha1
+
+app:
+  name: "example-app"
+  domains:
+    - "abc.com"
+    - "www.abc.com"
+  certificate_email: "ops@example.com"
+  acme_challenge: "http-01"
+  listen: "127.0.0.1:18001"
+  upstream: ""
+
+service:
+  exec_start: "/opt/example-app/example-app --listen 127.0.0.1:18001"
+  working_directory: "/opt/example-app"
+  env_file: ""
+
+tailscale:
+  enabled_for_listen: false
+```
+
+Replace `abc.com` with your real app domain, and replace `/opt/example-app/example-app` with the Go binary you already uploaded to the server. Your Go program listens on `127.0.0.1:18001`; public users visit the Nginx HTTPS site, such as `https://abc.com`, and you should not expose `18001` directly to the internet.
+
+`upstream` mode example:
+
+```yaml
+app:
+  name: "tailapp"
+  domains:
+    - "tailapp.example.com"
+  certificate_email: "ops@example.com"
+  acme_challenge: "http-01"
+  listen: ""
+  upstream: "100.64.10.20:18001"
+
+service:
+  exec_start: ""
+  working_directory: ""
+  env_file: ""
+```
+
+Multiple domains belong in one `app.domains` list. They are written to the same Nginx `server_name`, the same certificate SAN set, and the same Host/SNI allowlist. The first app release does not create canonical redirects between names such as `abc.com` and `www.abc.com`; they serve the same app by default.
+
+If the app needs a systemd environment file such as `web.env`, set `service.env_file` to that absolute path. Deploy checks that it is a root-owned, root-only file and renders it as `EnvironmentFile=`. `service.env_file` is only used in `listen` mode.
+
+#### Advanced App Config
+
+For a first deployment, you can usually leave the `nginx` section alone. Revisit these fields when you need large uploads, long connections, SSE, WebSocket behavior, or static files:
+
+| Config | Default or purpose |
+| --- | --- |
+| `nginx.client_max_body_size` | Defaults to `20m` |
+| `nginx.http2` | Enabled by default and renders the modern `http2 on;` directive |
+| `nginx.access_log` / `nginx.error_log` | Optional per-app log files; `access_log` may also be `off` |
+| `proxy.read_timeout` | App proxy read timeout, default `600s` |
+| `proxy.send_timeout` | App proxy send timeout, default `600s` |
+| `proxy.connect_timeout` | Optional connect timeout |
+| `proxy.buffering` / `proxy.request_buffering` | Useful for streaming responses, SSE, or upload forwarding |
+| `nginx.static_locations` | Publishes static files such as `/static/`, `/sitemap.xml`, or `/sitemaps/` from your app release directory |
+
+`nginx.static_locations` renders before the app proxy location and supports optional `expires`, `Cache-Control`, `try_files $uri =404`, `gzip_static on`, and `access_log off`. Meshify does not copy static file contents; publish them with the same release process that installs the app binary.
+
+When `nginx.http2` is true or any static location sets `gzip_static: true`, app deploy checks `nginx -V` before writing runtime files. `http2 on;` requires Nginx `1.25.1` or newer and the `http_v2` module.
+
+#### Tailscale Logic
+
+- `upstream` mode automatically needs the Tailscale client.
+- `listen` mode uses the client only when `tailscale.enabled_for_listen` is true.
+- For a same-host app that does not need tailnet access, leave `tailscale.enabled_for_listen` false and ignore the rest of the `tailscale` section.
+- When `tailscale.login_server` is empty, Meshify reads `default.server_url` from `tailscale.meshify_config`.
+- When `tailscale.meshify_config` is empty, Meshify uses `meshify.yaml` in the current directory.
+- An empty `tailscale.hostname` omits `--hostname`, letting Tailscale use the system hostname.
+- `tailscale.auth_key_file` stores only a root-only auth key file path, not the key value.
+
+Deploy checks whether the Tailscale client is installed, running, and logged in to the expected login server. If those conditions already hold, deploy skips install, preauth key creation, and re-login. When the client is not logged in, Meshify-managed Headscale creates a short-lived preauth key; external Headscale uses `tailscale.auth_key_file` or a pre-logged-in client.
+
+During automatic login, Meshify runs `tailscale up` with `--login-server` and `--auth-key`, and always adds these policy flags:
+
+```bash
+--accept-dns=false --accept-routes=false --shields-up
+```
+
+If the machine is already logged in to a login server Meshify cannot prove matches, deploy fails explicitly and does not log out, reset state, or rejoin automatically.
+
+#### App Verify And Status
+
+`meshify app verify` is a static config/template check for the app workflow. A passing run prints `static-passed`. It validates schema, template rendering, Nginx Host/SNI guards, certificate paths, systemd planning, Tailscale requirement inference, and sensitive-value leakage. It does not read deployed host files, systemd state, certificate SANs, Nginx runtime state, or Tailscale online state. `meshify app deploy` also runs the same kind of static checks first.
+
+The main `meshify status` command reads the main deployment checkpoint, activation history, and last recoverable failure. The first app release has no separate checkpoint store, so there is no `meshify app status`.
+
+The release binary's app runtime templates only come from `deploy/templates/app/`, and `meshify app deploy` renders and installs them automatically.
+
+#### App Pre-Deploy Checklist
+
+- `app.domains` resolve to the current cloud server.
+- For app sites, only public `80/tcp` and `443/tcp` are exposed through Nginx; app ports such as `18001` are not public. If the same host also runs the main Headscale deployment, `3478/udp` is still required for STUN.
+- In `listen` mode, the business binary is installed and the first token of `service.exec_start` is an absolute executable path.
+- If `service.env_file` is set, it points to a root-owned, root-only file.
+- `nginx.static_locations` aliases point at files or directories published with the app release.
+- In `upstream` mode, the backend is a fixed `100.64.x.y:port` and is reachable from the cloud server.
+- DNS-01 `dns01.env_file` and Tailscale `tailscale.auth_key_file` are root-only files.
+
+Use `curl`, `nginx -t`, certificate inspection, and `systemctl` for deployed host-state validation. Use `tailscale status` only for `upstream` mode or a `listen` app with `tailscale.enabled_for_listen: true`. `upstream` mode has no local app service, so skip the `<app-name>.service` check and verify the fixed tailnet upstream from the cloud server instead.
 
 ### Security Boundaries
 
@@ -204,6 +389,7 @@ Clients prefer direct WireGuard paths and fall back to DERP over 443.
 - Explicit HTTP and HTTPS `default_server` catch-all blocks reject unmatched Host or SNI traffic instead of proxying it to Headscale.
 - Headscale administration stays local through the unix socket; do not expose remote gRPC or API-key management unless you intentionally add it.
 - DNS-01 provider values must stay outside `meshify.yaml`, rendered templates, deploy output, status output, and systemd units.
+- App ports should only listen on loopback or be fixed tailnet upstreams; do not expose private app ports directly to the public internet.
 
 ### Server Troubleshooting
 
@@ -238,6 +424,14 @@ Runtime failures:
 - For Headscale start failures, inspect `systemctl status headscale.service --no-pager --full` and `/etc/headscale/config.yaml`.
 - For Nginx failures, run `nginx -t` and check `/etc/nginx/sites-available/headscale.conf`.
 - If login or DERP breaks behind Nginx, confirm HTTP/1.1 Upgrade and Connection headers are still forwarded.
+
+App runtime failures:
+
+- In `listen` mode, confirm the business binary exists, is executable, and is actually listening on `app.listen`.
+- In `listen` mode, inspect `systemctl status <app-name>.service --no-pager --full`.
+- In `upstream` mode, first test whether the fixed upstream is reachable from the cloud server.
+- For app certificate or proxy issues, run `nginx -t` and inspect `/etc/nginx/sites-available/<app-name>.conf`.
+- For static file 404s, confirm the `nginx.static_locations` `alias` files were published by the app release process.
 
 Capture full `meshify deploy`, `meshify verify`, or `meshify status` output, edited `default` values, Headscale source mode, and whether the failure affects deploy, certificate issuance, Nginx, Headscale, MagicDNS, direct path selection, or DERP fallback.
 
@@ -314,12 +508,13 @@ Daily operations:
 
 Install Tailscale client >= v1.74.0 from <https://tailscale.com/download/mac>. The standalone package is the usual choice; the Mac App Store version is also supported.
 
-Graphical flow: Option-click the Tailscale menu bar icon, open Debug, choose a custom login server, enter `server_url`, then finish the key or login flow.
+Graphical flow for an already-authenticated App Store or standalone client: select the Tailscale menu bar icon, open Settings, choose Accounts, select the down arrow in the lower-left corner, enter `server_url`, then add the account. On a fresh client with no existing tailnet account, use the CLI flow.
 
 CLI flow when the installed build provides `tailscale`:
 
 ```bash
-tailscale up --login-server https://hs.example.com --auth-key <preauth-key> --accept-dns=true
+tailscale up --login-server https://hs.example.com --auth-key <preauth-key> --accept-dns=true --hostname=laptop
+tailscale set --hostname=<name>
 tailscale status
 tailscale ping peer-name.tailnet.example.com
 tailscale netcheck
@@ -340,7 +535,8 @@ Install Tailscale client >= v1.74.0 from the official Linux package source:
 curl -fsSL https://tailscale.com/install.sh | sh
 tailscale version
 systemctl status tailscaled --no-pager --full
-sudo tailscale up --login-server https://hs.example.com --auth-key <preauth-key> --accept-dns=true
+sudo tailscale up --login-server https://hs.example.com --auth-key <preauth-key> --accept-dns=true --hostname=laptop
+tailscale set --hostname=<name>
 tailscale status
 tailscale ping peer-name.tailnet.example.com
 tailscale netcheck
