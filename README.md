@@ -413,8 +413,8 @@ Package and lego failures:
 - Direct Headscale source downloads the pinned Headscale v0.28.0 `.deb` and verifies SHA-256 evidence.
 - Mirror mode requires a reachable URL and explicit SHA-256 digest.
 - Offline mode requires a local `.deb` path and explicit SHA-256 digest.
-- Offline lego mode requires `advanced.lego_source.file_path` to point at the exact pinned lego archive for `advanced.platform.arch`.
-- When existing lego v4 storage is present, Meshify runs the guarded lego v5 storage migration before issuing or renewing certificates; fresh installs run the guard but skip the migration command.
+- Offline lego mode requires `advanced.lego_source.file_path` to point at the exact pinned lego v5.0.4 archive for `advanced.platform.arch`.
+- Existing certificates created with lego v4 are migrated automatically before issuance or renewal. If migration fails, inspect the reported lego data path, fix permissions or unexpected files, and rerun deploy.
 
 Runtime failures:
 

@@ -413,8 +413,8 @@ release binary 的 app runtime 模板唯一来源是 `deploy/templates/app/`，�
 - direct 模式会下载固定的 Headscale v0.28.0 `.deb` 并校验 SHA-256。
 - mirror 模式需要可访问 URL 和明确的 SHA-256。
 - offline 模式需要本地 `.deb` 路径和明确的 SHA-256。
-- lego 离线模式要求 `advanced.lego_source.file_path` 指向匹配 `advanced.platform.arch` 的固定版本 archive。
-- 如果检测到已有 lego v4 storage，Meshify 会在签发或续期证书前执行受保护的 lego v5 storage 迁移；首次安装会运行 guard，但跳过迁移命令。
+- lego 离线模式要求 `advanced.lego_source.file_path` 指向匹配 `advanced.platform.arch` 的固定版本 lego v5.0.4 archive。
+- 已由 lego v4 创建的证书数据会在签发或续期前自动迁移。迁移失败时，按错误里提示的 lego data path 检查权限或异常文件，然后重新运行 deploy。
 
 运行时失败：
 
