@@ -30,6 +30,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func runCLI(t *testing.T, args ...string) (string, string, error) {
@@ -4093,6 +4094,60 @@ func TestDetectPackageSourceStateUsesHeadscaleComponentOfficialPackageURLs(t *te
 	legoURL := legocomponent.OfficialArchiveURL(legocomponent.Version, config.ArchAMD64)
 	if !slices.Contains(probedURLs, legoURL) || !slices.Contains(hashedURLs, legoURL) {
 		t.Fatalf("probedURLs = %#v hashedURLs = %#v, want lego URL %q", probedURLs, hashedURLs, legoURL)
+	}
+}
+
+func TestDetectPackageSourceStateUsesConfiguredPackageProbeTimeouts(t *testing.T) {
+	cfg := config.ExampleConfig()
+	cfg.Advanced.PackageProbe.ReachabilityTimeout = "45s"
+	cfg.Advanced.PackageProbe.ArtifactTimeout = "7m"
+
+	previousProbePackageURL := probePackageURLFn
+	previousHashRemoteArtifact := hashRemoteArtifactFn
+	previousLookupOfficialPackageDigest := lookupOfficialPackageDigestFn
+	t.Cleanup(func() {
+		probePackageURLFn = previousProbePackageURL
+		hashRemoteArtifactFn = previousHashRemoteArtifact
+		lookupOfficialPackageDigestFn = previousLookupOfficialPackageDigest
+	})
+
+	var probeTimeouts []time.Duration
+	var artifactTimeouts []time.Duration
+	probePackageURLFn = func(client *http.Client, rawURL string) (bool, bool, string) {
+		probeTimeouts = append(probeTimeouts, client.Timeout)
+		return true, true, rawURL + " returned 200."
+	}
+	hashRemoteArtifactFn = func(client *http.Client, rawURL string) (string, error) {
+		artifactTimeouts = append(artifactTimeouts, client.Timeout)
+		if sha, ok := testLegoArchiveHash(t, rawURL); ok {
+			return sha, nil
+		}
+		return strings.Repeat("a", 64), nil
+	}
+	lookupOfficialPackageDigestFn = func(client *http.Client, version string, arch string) (string, error) {
+		artifactTimeouts = append(artifactTimeouts, client.Timeout)
+		return strings.Repeat("a", 64), nil
+	}
+
+	state := detectPackageSourceState(cfg)
+	if !state.Reachable || !state.LegoReachable || !state.IntegrityChecked || !state.LegoIntegrityChecked {
+		t.Fatalf("package source state = %#v, want remote package and lego archive verified", state)
+	}
+	if len(probeTimeouts) == 0 {
+		t.Fatal("probeTimeouts is empty, want package URL probes")
+	}
+	for _, got := range probeTimeouts {
+		if got != 45*time.Second {
+			t.Fatalf("probe timeout = %v, want 45s; all probe timeouts = %v", got, probeTimeouts)
+		}
+	}
+	if len(artifactTimeouts) == 0 {
+		t.Fatal("artifactTimeouts is empty, want artifact checksum probes")
+	}
+	for _, got := range artifactTimeouts {
+		if got != 7*time.Minute {
+			t.Fatalf("artifact timeout = %v, want 7m; all artifact timeouts = %v", got, artifactTimeouts)
+		}
 	}
 }
 

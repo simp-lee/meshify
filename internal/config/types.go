@@ -1,9 +1,11 @@
 package config
 
 const (
-	APIVersion                  = "meshify/v1alpha1"
-	DefaultHeadscaleVersion     = "0.28.0"
-	DefaultHeadscaleMetricsPort = 19090
+	APIVersion                             = "meshify/v1alpha1"
+	DefaultHeadscaleVersion                = "0.28.0"
+	DefaultHeadscaleMetricsPort            = 19090
+	DefaultPackageProbeReachabilityTimeout = "30s"
+	DefaultPackageProbeArtifactTimeout     = "5m"
 
 	ACMEChallengeHTTP01 = "http-01"
 	ACMEChallengeDNS01  = "dns-01"
@@ -33,6 +35,7 @@ type AdvancedConfig struct {
 	HeadscaleSource HeadscaleSourceConfig `yaml:"headscale_source"`
 	Headscale       HeadscaleConfig       `yaml:"headscale"`
 	LegoSource      LegoSourceConfig      `yaml:"lego_source"`
+	PackageProbe    PackageProbeConfig    `yaml:"package_probe"`
 	Proxy           ProxyConfig           `yaml:"proxy"`
 	DNS01           DNS01Config           `yaml:"dns01"`
 	Network         NetworkConfig         `yaml:"network"`
@@ -54,6 +57,11 @@ type HeadscaleConfig struct {
 type LegoSourceConfig struct {
 	Mode     string `yaml:"mode"`
 	FilePath string `yaml:"file_path"`
+}
+
+type PackageProbeConfig struct {
+	ReachabilityTimeout string `yaml:"reachability_timeout"`
+	ArtifactTimeout     string `yaml:"artifact_timeout"`
 }
 
 type ProxyConfig struct {

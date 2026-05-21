@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -91,6 +92,7 @@ func (c Config) Validate() error {
 	validateHeadscaleSource(&errs, c.Advanced.HeadscaleSource)
 	validateHeadscale(&errs, c.Advanced.Headscale)
 	validateLegoSource(&errs, c.Advanced.LegoSource)
+	validatePackageProbe(&errs, c.Advanced.PackageProbe)
 	validateProxyURL(&errs, "advanced.proxy.http_proxy", c.Advanced.Proxy.HTTPProxy)
 	validateProxyURL(&errs, "advanced.proxy.https_proxy", c.Advanced.Proxy.HTTPSProxy)
 	validateDNS01(&errs, acmeChallenge, c.Advanced.DNS01)
@@ -199,6 +201,23 @@ func validateLegoSource(errs *validationErrors, source LegoSourceConfig) {
 		}
 	default:
 		*errs = append(*errs, "advanced.lego_source.mode must be one of: direct, offline")
+	}
+}
+
+func validatePackageProbe(errs *validationErrors, probe PackageProbeConfig) {
+	validatePositiveDuration(errs, "advanced.package_probe.reachability_timeout", probe.ReachabilityTimeout)
+	validatePositiveDuration(errs, "advanced.package_probe.artifact_timeout", probe.ArtifactTimeout)
+}
+
+func validatePositiveDuration(errs *validationErrors, field string, raw string) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		*errs = append(*errs, field+" is required")
+		return
+	}
+	duration, err := time.ParseDuration(raw)
+	if err != nil || duration <= 0 {
+		*errs = append(*errs, field+" must be a positive duration such as 30s or 5m")
 	}
 }
 

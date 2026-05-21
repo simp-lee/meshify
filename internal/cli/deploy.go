@@ -1265,8 +1265,8 @@ func detectPgrepServiceStates() ([]preflight.ServiceState, bool) {
 }
 
 func detectPackageSourceState(cfg config.Config) preflight.PackageSourceState {
-	probeClient := newDeployHTTPClient(cfg.Advanced.Proxy, 5*time.Second)
-	artifactClient := newDeployHTTPClient(cfg.Advanced.Proxy, 20*time.Second)
+	probeClient := newDeployHTTPClient(cfg.Advanced.Proxy, cfg.Advanced.PackageProbe.EffectiveReachabilityTimeout())
+	artifactClient := newDeployHTTPClient(cfg.Advanced.Proxy, cfg.Advanced.PackageProbe.EffectiveArtifactTimeout())
 	state := preflight.PackageSourceState{
 		Mode:           strings.TrimSpace(cfg.Advanced.HeadscaleSource.Mode),
 		Version:        strings.TrimSpace(cfg.Advanced.HeadscaleSource.Version),

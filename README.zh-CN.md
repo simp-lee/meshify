@@ -97,10 +97,19 @@ default:
 | `certificate_email` | ACME 注册邮箱 |
 | `acme_challenge` | `http-01` 或 `dns-01` |
 
-只有需要 DNS-01、Headscale 镜像/离线包、Headscale metrics 端口、离线 lego、代理、架构覆盖或公网 IP 覆盖时，才使用高级引导：
+只有需要 DNS-01、Headscale 镜像/离线包、Headscale metrics 端口、离线 lego、包来源探测超时覆盖、代理、架构覆盖或公网 IP 覆盖时，才使用高级引导：
 
 ```bash
 meshify init --advanced --config meshify.yaml
+```
+
+如果 GitHub release 下载可达但很慢，可以调大包来源探测超时：
+
+```yaml
+advanced:
+  package_probe:
+    reachability_timeout: "30s"
+    artifact_timeout: "5m"
 ```
 
 ### ACME

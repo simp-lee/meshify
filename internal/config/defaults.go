@@ -17,6 +17,10 @@ func New() Config {
 			LegoSource: LegoSourceConfig{
 				Mode: PackageSourceModeDirect,
 			},
+			PackageProbe: PackageProbeConfig{
+				ReachabilityTimeout: DefaultPackageProbeReachabilityTimeout,
+				ArtifactTimeout:     DefaultPackageProbeArtifactTimeout,
+			},
 			Platform: PlatformConfig{
 				Arch: ArchAMD64,
 			},

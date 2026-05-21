@@ -39,6 +39,12 @@ func TestNewAppliesDefaultsAndRequiresUserInputs(t *testing.T) {
 	if cfg.Advanced.LegoSource.Mode != PackageSourceModeDirect {
 		t.Fatalf("LegoSource.Mode = %q, want %q", cfg.Advanced.LegoSource.Mode, PackageSourceModeDirect)
 	}
+	if cfg.Advanced.PackageProbe.ReachabilityTimeout != DefaultPackageProbeReachabilityTimeout {
+		t.Fatalf("PackageProbe.ReachabilityTimeout = %q, want %q", cfg.Advanced.PackageProbe.ReachabilityTimeout, DefaultPackageProbeReachabilityTimeout)
+	}
+	if cfg.Advanced.PackageProbe.ArtifactTimeout != DefaultPackageProbeArtifactTimeout {
+		t.Fatalf("PackageProbe.ArtifactTimeout = %q, want %q", cfg.Advanced.PackageProbe.ArtifactTimeout, DefaultPackageProbeArtifactTimeout)
+	}
 	if cfg.Advanced.Platform.Arch != ArchAMD64 {
 		t.Fatalf("Platform.Arch = %q, want %q", cfg.Advanced.Platform.Arch, ArchAMD64)
 	}
@@ -90,11 +96,58 @@ default:
 	if cfg.Advanced.LegoSource.Mode != PackageSourceModeDirect {
 		t.Fatalf("LegoSource.Mode = %q, want %q", cfg.Advanced.LegoSource.Mode, PackageSourceModeDirect)
 	}
+	if cfg.Advanced.PackageProbe.ReachabilityTimeout != DefaultPackageProbeReachabilityTimeout {
+		t.Fatalf("PackageProbe.ReachabilityTimeout = %q, want %q", cfg.Advanced.PackageProbe.ReachabilityTimeout, DefaultPackageProbeReachabilityTimeout)
+	}
+	if cfg.Advanced.PackageProbe.ArtifactTimeout != DefaultPackageProbeArtifactTimeout {
+		t.Fatalf("PackageProbe.ArtifactTimeout = %q, want %q", cfg.Advanced.PackageProbe.ArtifactTimeout, DefaultPackageProbeArtifactTimeout)
+	}
 	if cfg.Advanced.Network.PublicIPv6 != "" {
 		t.Fatalf("PublicIPv6 = %q, want empty", cfg.Advanced.Network.PublicIPv6)
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestLoadBytesAppliesPackageProbeDefaultsToExistingAdvancedConfigs(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := LoadBytes([]byte(`
+default:
+  server_url: https://hs.example.com
+  base_domain: tailnet.example.com
+  certificate_email: ops@example.com
+advanced:
+  headscale_source:
+    mode: direct
+    version: 0.28.0
+  headscale:
+    metrics_port: 19090
+  lego_source:
+    mode: direct
+  proxy:
+    http_proxy: ""
+    https_proxy: ""
+    no_proxy: ""
+  dns01:
+    provider: ""
+    env_file: ""
+  network:
+    public_ipv4: ""
+    public_ipv6: ""
+  platform:
+    arch: amd64
+`))
+	if err != nil {
+		t.Fatalf("LoadBytes() error = %v", err)
+	}
+
+	if cfg.Advanced.PackageProbe.ReachabilityTimeout != DefaultPackageProbeReachabilityTimeout {
+		t.Fatalf("PackageProbe.ReachabilityTimeout = %q, want %q", cfg.Advanced.PackageProbe.ReachabilityTimeout, DefaultPackageProbeReachabilityTimeout)
+	}
+	if cfg.Advanced.PackageProbe.ArtifactTimeout != DefaultPackageProbeArtifactTimeout {
+		t.Fatalf("PackageProbe.ArtifactTimeout = %q, want %q", cfg.Advanced.PackageProbe.ArtifactTimeout, DefaultPackageProbeArtifactTimeout)
 	}
 }
 
@@ -403,6 +456,69 @@ func TestValidateLegoSourceModes(t *testing.T) {
 	}
 }
 
+func TestValidatePackageProbeTimeouts(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr string
+	}{
+		{
+			name: "missing reachability timeout",
+			mutate: func(cfg *Config) {
+				cfg.Advanced.PackageProbe.ReachabilityTimeout = ""
+			},
+			wantErr: "advanced.package_probe.reachability_timeout is required",
+		},
+		{
+			name: "invalid reachability timeout",
+			mutate: func(cfg *Config) {
+				cfg.Advanced.PackageProbe.ReachabilityTimeout = "thirty seconds"
+			},
+			wantErr: "advanced.package_probe.reachability_timeout must be a positive duration",
+		},
+		{
+			name: "zero artifact timeout",
+			mutate: func(cfg *Config) {
+				cfg.Advanced.PackageProbe.ArtifactTimeout = "0s"
+			},
+			wantErr: "advanced.package_probe.artifact_timeout must be a positive duration",
+		},
+		{
+			name: "negative artifact timeout",
+			mutate: func(cfg *Config) {
+				cfg.Advanced.PackageProbe.ArtifactTimeout = "-1s"
+			},
+			wantErr: "advanced.package_probe.artifact_timeout must be a positive duration",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := validConfig()
+			tt.mutate(&cfg)
+
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatal("Validate() error = nil, want non-nil")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Validate() error = %q, want substring %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+
+	cfg := validConfig()
+	cfg.Advanced.PackageProbe.ReachabilityTimeout = "45s"
+	cfg.Advanced.PackageProbe.ArtifactTimeout = "7m"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v, want nil for custom package probe timeouts", err)
+	}
+}
+
 func TestValidateDNS01RequiresProviderWhenEnabled(t *testing.T) {
 	t.Parallel()
 
@@ -608,6 +724,8 @@ func TestExportAndLoadFileRoundTrip(t *testing.T) {
 	want.Advanced.Proxy.HTTPProxy = "http://proxy.internal:8080"
 	want.Advanced.Proxy.NoProxy = "127.0.0.1,localhost"
 	want.Advanced.Headscale.MetricsPort = 19091
+	want.Advanced.PackageProbe.ReachabilityTimeout = "45s"
+	want.Advanced.PackageProbe.ArtifactTimeout = "7m"
 	want.Advanced.Network.PublicIPv4 = "203.0.113.10"
 	want.Advanced.Platform.Arch = ArchARM64
 

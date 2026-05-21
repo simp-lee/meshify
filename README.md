@@ -97,10 +97,19 @@ Field meanings:
 | `certificate_email` | ACME registration email |
 | `acme_challenge` | `http-01` or `dns-01` |
 
-Use advanced mode only when you need DNS-01, Headscale mirror/offline packages, Headscale metrics port changes, offline lego archives, proxies, architecture overrides, or public IP overrides:
+Use advanced mode only when you need DNS-01, Headscale mirror/offline packages, Headscale metrics port changes, offline lego archives, package probe timeout overrides, proxies, architecture overrides, or public IP overrides:
 
 ```bash
 meshify init --advanced --config meshify.yaml
+```
+
+For slow but reachable GitHub release downloads, raise the package source probe timeouts:
+
+```yaml
+advanced:
+  package_probe:
+    reachability_timeout: "30s"
+    artifact_timeout: "5m"
 ```
 
 ### ACME

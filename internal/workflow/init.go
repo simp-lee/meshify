@@ -55,7 +55,7 @@ func RunInit(prompter output.Prompter, options InitOptions) (InitResult, error) 
 	} else {
 		advanced, err := prompter.Confirm("Use advanced mode now?", output.ConfirmPrompt{
 			Default: false,
-			Help:    "Choose advanced if you need DNS-01, mirror or offline packages, offline lego archives, proxy, architecture, or public IP overrides.",
+			Help:    "Choose advanced if you need DNS-01, mirror or offline packages, offline lego archives, package probe timeouts, proxy, architecture, or public IP overrides.",
 		})
 		if err != nil {
 			return InitResult{}, err
@@ -143,10 +143,10 @@ func (result InitResult) nextSteps(configPath string) []string {
 		if result.Mode == InitModeDefault {
 			steps = append(steps,
 				"Review the generated default section and edit the advanced section only if your environment needs it.",
-				fmt.Sprintf("If you later need guided advanced answers for DNS-01, mirror or offline packages, offline lego archives, proxy, architecture, or public IP overrides, generate a separate advanced config with 'meshify init --advanced --config %s' and copy the advanced values you need into %s.", advancedConfigPath, configPath),
+				fmt.Sprintf("If you later need guided advanced answers for DNS-01, mirror or offline packages, offline lego archives, package probe timeouts, proxy, architecture, or public IP overrides, generate a separate advanced config with 'meshify init --advanced --config %s' and copy the advanced values you need into %s.", advancedConfigPath, configPath),
 			)
 		} else {
-			steps = append(steps, "Review the generated advanced section before deploy, especially Headscale source, lego source, proxy, DNS-01, architecture, and public IP overrides.")
+			steps = append(steps, "Review the generated advanced section before deploy, especially Headscale source, lego source, package probe timeouts, proxy, DNS-01, architecture, and public IP overrides.")
 			if result.Config.Default.ACMEChallenge == config.ACMEChallengeDNS01 {
 				if provider, err := tlscomponent.DNSProvider(result.Config.Advanced.DNS01.Provider); err == nil && provider.AmbientCredentialsSupported && strings.TrimSpace(result.Config.Advanced.DNS01.EnvFile) == "" {
 					steps = append(steps, "Confirm the selected lego DNS provider's ambient credentials are available to both deploy and systemd renewal.")

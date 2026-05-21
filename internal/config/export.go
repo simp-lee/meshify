@@ -59,8 +59,8 @@ default:
 
 # The advanced section is opt-in. Leave defaults and empty values unless you
 # have a real need for Headscale package mirrors/offline packages, metrics port
-# changes, lego offline archives, proxies, DNS-01, architecture overrides, or
-# public IP overrides.
+# changes, lego offline archives, package probe timeout overrides, proxies,
+# DNS-01, architecture overrides, or public IP overrides.
 advanced:
   headscale_source:
     mode: "direct" # direct | mirror | offline
@@ -80,6 +80,13 @@ advanced:
     # selected architecture; meshify verifies the built-in SHA-256 digest.
     mode: "direct" # direct | offline
     file_path: ""
+
+  package_probe:
+    # Increase these when GitHub release URLs are reachable but slow from the
+    # target host. The artifact timeout covers the full download used for
+    # SHA-256 verification.
+    reachability_timeout: "%s"
+    artifact_timeout: "%s"
 
   proxy:
     http_proxy: ""
@@ -105,7 +112,7 @@ advanced:
 
   platform:
     arch: "%s"
-`, APIVersion, DefaultHeadscaleVersion, DefaultHeadscaleMetricsPort, ArchAMD64)
+`, APIVersion, DefaultHeadscaleVersion, DefaultHeadscaleMetricsPort, DefaultPackageProbeReachabilityTimeout, DefaultPackageProbeArtifactTimeout, ArchAMD64)
 
 	return []byte(data), nil
 }
