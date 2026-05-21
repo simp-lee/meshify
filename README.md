@@ -25,24 +25,15 @@ Prepare three things before deploy:
 
 If you only want to deploy a same-host Go web service and are not creating a private network, you only need an app domain plus `80/tcp` and `443/tcp`; `3478/udp` is only for the main Headscale deployment.
 
-Download a published release binary on the target server. Replace `vX.Y.Z` with the release tag:
+Install a published release binary on the target server. Replace `vX.Y.Z` with the release tag:
 
 ```bash
 VERSION=vX.Y.Z
-ARCH="$(uname -m)"
-case "$ARCH" in
-  x86_64) ASSET=meshify_linux_amd64 ;;
-  aarch64|arm64) ASSET=meshify_linux_arm64 ;;
-  *) echo "unsupported architecture: $ARCH" >&2; exit 1 ;;
-esac
-
-curl -LO "https://github.com/simp-lee/meshify/releases/download/${VERSION}/${ASSET}"
-curl -LO "https://github.com/simp-lee/meshify/releases/download/${VERSION}/checksums.txt"
-sha256sum -c --ignore-missing checksums.txt
-chmod +x "${ASSET}"
-sudo install -m 0755 "${ASSET}" /usr/local/bin/meshify
+curl -fsSL "https://raw.githubusercontent.com/simp-lee/meshify/${VERSION}/scripts/install.sh" | sh -s -- "${VERSION}"
 meshify --help
 ```
+
+The install script detects `x86_64` and `arm64`/`aarch64`, downloads the matching GitHub release asset, verifies it against `checksums.txt`, and installs `meshify` to `/usr/local/bin/meshify`.
 
 If you are using a source checkout instead of a release binary, run `make build` and install `./meshify` to `/usr/local/bin/meshify`.
 

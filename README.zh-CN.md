@@ -25,24 +25,15 @@ Meshify 是一个用 Go 写的服务器部署工具，不是 VPN 客户端。它
 
 如果你只想部署本机 Go Web 服务，不创建私有网络，只需要 app 域名和 `80/tcp`、`443/tcp`；`3478/udp` 只用于主 Headscale 部署。
 
-在目标服务器下载 Release 二进制。把 `vX.Y.Z` 替换成对应 release tag：
+在目标服务器安装 Release 二进制。把 `vX.Y.Z` 替换成对应 release tag：
 
 ```bash
 VERSION=vX.Y.Z
-ARCH="$(uname -m)"
-case "$ARCH" in
-  x86_64) ASSET=meshify_linux_amd64 ;;
-  aarch64|arm64) ASSET=meshify_linux_arm64 ;;
-  *) echo "unsupported architecture: $ARCH" >&2; exit 1 ;;
-esac
-
-curl -LO "https://github.com/simp-lee/meshify/releases/download/${VERSION}/${ASSET}"
-curl -LO "https://github.com/simp-lee/meshify/releases/download/${VERSION}/checksums.txt"
-sha256sum -c --ignore-missing checksums.txt
-chmod +x "${ASSET}"
-sudo install -m 0755 "${ASSET}" /usr/local/bin/meshify
+curl -fsSL "https://raw.githubusercontent.com/simp-lee/meshify/${VERSION}/scripts/install.sh" | sh -s -- "${VERSION}"
 meshify --help
 ```
+
+安装脚本会自动识别 `x86_64` 和 `arm64`/`aarch64`，下载对应的 GitHub Release asset，用 `checksums.txt` 校验后，把 `meshify` 安装到 `/usr/local/bin/meshify`。
 
 如果使用源码 checkout 而不是 Release 二进制，运行 `make build` 后把 `./meshify` 安装到 `/usr/local/bin/meshify`。
 
