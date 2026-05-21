@@ -29,11 +29,11 @@ Install a published release binary on the target server. Replace `vX.Y.Z` with t
 
 ```bash
 VERSION=vX.Y.Z
-curl -fsSL "https://raw.githubusercontent.com/simp-lee/meshify/${VERSION}/scripts/install.sh" | sh -s -- "${VERSION}"
+curl -fsSL https://raw.githubusercontent.com/simp-lee/meshify/main/scripts/install.sh | sh -s -- "${VERSION}"
 meshify --help
 ```
 
-The install script detects `x86_64` and `arm64`/`aarch64`, downloads the matching GitHub release asset, verifies it against `checksums.txt`, and installs `meshify` to `/usr/local/bin/meshify`.
+The install script detects `x86_64` and `arm64`/`aarch64`, downloads the matching GitHub release asset for `VERSION`, verifies it against `checksums.txt`, and installs `meshify` to `/usr/local/bin/meshify`.
 
 If you are using a source checkout instead of a release binary, run `make build` and install `./meshify` to `/usr/local/bin/meshify`.
 

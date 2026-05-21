@@ -29,11 +29,11 @@ Meshify 是一个用 Go 写的服务器部署工具，不是 VPN 客户端。它
 
 ```bash
 VERSION=vX.Y.Z
-curl -fsSL "https://raw.githubusercontent.com/simp-lee/meshify/${VERSION}/scripts/install.sh" | sh -s -- "${VERSION}"
+curl -fsSL https://raw.githubusercontent.com/simp-lee/meshify/main/scripts/install.sh | sh -s -- "${VERSION}"
 meshify --help
 ```
 
-安装脚本会自动识别 `x86_64` 和 `arm64`/`aarch64`，下载对应的 GitHub Release asset，用 `checksums.txt` 校验后，把 `meshify` 安装到 `/usr/local/bin/meshify`。
+安装脚本会自动识别 `x86_64` 和 `arm64`/`aarch64`，下载 `VERSION` 对应的 GitHub Release asset，用 `checksums.txt` 校验后，把 `meshify` 安装到 `/usr/local/bin/meshify`。
 
 如果使用源码 checkout 而不是 Release 二进制，运行 `make build` 后把 `./meshify` 安装到 `/usr/local/bin/meshify`。
 
