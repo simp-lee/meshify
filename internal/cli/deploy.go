@@ -200,6 +200,7 @@ func runDeploy(ctx context, args []string) error {
 	if err != nil {
 		return formatCheckpointLoadFailure(formatter, "deploy", options.configPath, checkpointPath, err)
 	}
+	loadedCheckpoint := checkpoint
 
 	desiredStateDigest, err := deployDesiredStateDigest(cfg)
 	if err != nil {
@@ -208,6 +209,7 @@ func runDeploy(ctx context, args []string) error {
 	checkpoint.BeginDeploy(desiredStateDigest)
 
 	preflightInputs := collectDeployPreflightInputs(cfg)
+	preflightInputs.Managed = deployManagedServiceState(loadedCheckpoint, desiredStateDigest)
 	report := preflight.BuildReport(cfg, preflightInputs)
 	diagnostics := output.NewDiagnosticsFormatter(ctx.stdout, format)
 	if err := diagnostics.WriteReport("deploy", report); err != nil {
@@ -508,14 +510,31 @@ func runDeploy(ctx context, args []string) error {
 				Cause:        err,
 			})
 		}
-		if _, err := privilegedExecutor.Run(stdcontext.Background(), certificatePlan.Command); err != nil {
+		if cfg.Default.ACMEChallenge == config.ACMEChallengeHTTP01 {
+			routeResult, err := privilegedExecutor.Run(stdcontext.Background(), http01ChallengeRouteCommand(certificatePlan.ServerName, certificatePlan.Challenge.Webroot))
+			if err != nil {
+				return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
+					Step:      "verify HTTP-01 routing",
+					Operation: "checking that meshify-managed Nginx serves the ACME webroot for the Headscale hostname",
+					Impact:    "lego cannot complete HTTP-01 certificate issuance until Nginx serves challenge tokens for the public hostname",
+					Remediation: []string{
+						"Inspect /etc/nginx/sites-available/headscale.conf and run 'nginx -t' to confirm the ACME location is active.",
+						fmt.Sprintf("Confirm local HTTP-01 routing with: curl --noproxy '*' --resolve %s:80:127.0.0.1 http://%s/.well-known/acme-challenge/<token>", certificatePlan.ServerName, certificatePlan.ServerName),
+					},
+					RetryCommand: deployRetryCommand(options.configPath),
+					Cause:        commandErrorWithOutput(routeResult, err),
+				})
+			}
+		}
+		certResult, err := privilegedExecutor.Run(stdcontext.Background(), certificatePlan.Command)
+		if err != nil {
 			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 				Step:         "issue certificate",
 				Operation:    "running lego for the Headscale public hostname",
 				Impact:       "meshify cannot activate the HTTPS Nginx site until a fullchain certificate is available",
-				Remediation:  []string{"Fix ACME reachability, DNS-01 credentials, or rate-limit issues, then rerun deploy."},
+				Remediation:  certificateIssueRemediations(cfg.Default.ACMEChallenge, certificatePlan.ServerName),
 				RetryCommand: deployRetryCommand(options.configPath),
-				Cause:        err,
+				Cause:        commandErrorWithOutput(certResult, err),
 			})
 		}
 		if err := recordDeployCheckpoint(formatter, checkpointStore, &checkpoint, deployCheckpointCertificateIssued, options.configPath); err != nil {
@@ -775,6 +794,59 @@ func defaultDeployPreflightInputs(cfg config.Config) preflight.Inputs {
 		Services:      detectServiceStatesFn(),
 		PackageSource: detectPackageSourceStateFn(cfg),
 		ACME:          detectACMEStateFn(cfg),
+	}
+}
+
+func deployManagedServiceState(checkpoint state.Checkpoint, desiredStateDigest string) preflight.ManagedServiceState {
+	if !checkpoint.MatchesDesiredState(desiredStateDigest) {
+		return preflight.ManagedServiceState{}
+	}
+
+	return preflight.ManagedServiceState{
+		Headscale: checkpoint.HasCompleted(deployCheckpointHeadscalePackageInstalled) ||
+			checkpoint.HasCompleted(deployCheckpointRuntimeAssetsInstalled) ||
+			checkpoint.HasCompleted(deployCheckpointServicesEnabled),
+		Nginx: checkpoint.HasCompleted(deployCheckpointHostDependenciesInstalled) ||
+			checkpoint.HasCompleted(deployCheckpointTLSBootstrapReady) ||
+			checkpoint.HasCompleted(deployCheckpointNginxActivated),
+	}
+}
+
+func http01ChallengeRouteCommand(serverName string, webroot string) host.Command {
+	script := `set -eu
+server_name=$1
+webroot=$2
+token="meshify-http01-probe-$(date +%s)-$$"
+expected="meshify-http01-ok-$token"
+challenge_dir="$webroot/.well-known/acme-challenge"
+challenge_file="$challenge_dir/$token"
+mkdir -p "$challenge_dir"
+trap 'rm -f "$challenge_file"' EXIT
+printf '%s' "$expected" > "$challenge_file"
+body=$(curl -fsS --noproxy '*' --max-time 5 --resolve "$server_name:80:127.0.0.1" "http://$server_name/.well-known/acme-challenge/$token")
+if [ "$body" != "$expected" ]; then
+    echo "local HTTP-01 webroot probe returned unexpected response" >&2
+    exit 1
+fi`
+	return host.Command{
+		Name:        "sh",
+		Args:        []string{"-c", script, "meshify-http01-route-check", strings.TrimSpace(serverName), strings.TrimSpace(webroot)},
+		DisplayName: "curl",
+		DisplayArgs: []string{"--noproxy", "*", "--resolve", strings.TrimSpace(serverName) + ":80:127.0.0.1", "http://" + strings.TrimSpace(serverName) + "/.well-known/acme-challenge/<token>"},
+	}
+}
+
+func certificateIssueRemediations(acmeChallenge string, serverName string) []string {
+	switch strings.TrimSpace(acmeChallenge) {
+	case config.ACMEChallengeHTTP01:
+		return []string{
+			"Fix public ACME HTTP-01 reachability or rate-limit issues, then rerun deploy.",
+			fmt.Sprintf("For HTTP-01, confirm public port 80 reaches this host and %s is not behind a CDN or proxy that blocks /.well-known/acme-challenge/.", strings.TrimSpace(serverName)),
+		}
+	case config.ACMEChallengeDNS01:
+		return []string{"Fix DNS-01 provider credentials, DNS propagation, or ACME rate-limit issues, then rerun deploy."}
+	default:
+		return []string{"Fix ACME reachability, credentials, or rate-limit issues, then rerun deploy."}
 	}
 }
 
@@ -2315,6 +2387,39 @@ func systemdUnavailableMessage(message string) bool {
 	}
 	return strings.Contains(text, "system has not been booted with systemd") ||
 		strings.Contains(text, "failed to connect to bus: no such file or directory")
+}
+
+func commandErrorWithOutput(result host.Result, err error) error {
+	if err == nil {
+		return nil
+	}
+
+	line := firstCommandOutputLine(result)
+	var commandErr *host.CommandError
+	if line == "" && errors.As(err, &commandErr) {
+		line = firstCommandOutputLine(commandErr.Result)
+	}
+	if line == "" {
+		return err
+	}
+	return fmt.Errorf("%w; output: %s", err, line)
+}
+
+func firstCommandOutputLine(result host.Result) string {
+	for _, output := range []string{result.Stderr, result.Stdout} {
+		scanner := bufio.NewScanner(strings.NewReader(output))
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if line == "" {
+				continue
+			}
+			if len(line) > 500 {
+				line = line[:500] + "..."
+			}
+			return line
+		}
+	}
+	return ""
 }
 
 func probeURL(client *http.Client, rawURL string, method string) (int, string, error) {

@@ -216,6 +216,30 @@ func TestCheckPortAvailabilityForConfigRequiresLocalProbeSet(t *testing.T) {
 	}
 }
 
+func TestCheckPortAvailabilityForConfigAllowsManagedResumeListeners(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.ExampleConfig()
+	result := CheckPortAvailabilityForConfigWithManagedServices(cfg, []PortBinding{
+		{Port: 80, Protocol: "tcp", InUse: true, Process: "nginx"},
+		{Port: 443, Protocol: "tcp", InUse: true, Process: "nginx"},
+		{Port: 3478, Protocol: "udp", InUse: true, Process: "headscale"},
+		{Port: 8080, Protocol: "tcp", InUse: true, Process: "headscale"},
+		{Port: config.DefaultHeadscaleMetricsPort, Protocol: "tcp", InUse: true, Process: "headscale"},
+		{Port: 50443, Protocol: "tcp", InUse: true, Process: "headscale"},
+	}, ManagedServiceState{Headscale: true, Nginx: true})
+
+	if result.Status != StatusPass {
+		t.Fatalf("CheckPortAvailabilityForConfigWithManagedServices() status = %q, want %q", result.Status, StatusPass)
+	}
+	if !strings.Contains(strings.Join(result.Findings, "\n"), "meshify-managed headscale") {
+		t.Fatalf("findings = %q, want managed Headscale detail", strings.Join(result.Findings, " | "))
+	}
+	if !strings.Contains(strings.Join(result.Findings, "\n"), "meshify-managed nginx") {
+		t.Fatalf("findings = %q, want managed Nginx detail", strings.Join(result.Findings, " | "))
+	}
+}
+
 func TestCheckServiceConflictsRequiresInspection(t *testing.T) {
 	t.Parallel()
 
@@ -226,6 +250,35 @@ func TestCheckServiceConflictsRequiresInspection(t *testing.T) {
 	}
 	if len(result.Remediations) == 0 {
 		t.Fatal("CheckServiceConflicts() remediations = empty, want inspection guidance")
+	}
+}
+
+func TestCheckServiceConflictsAllowsManagedResumeServices(t *testing.T) {
+	t.Parallel()
+
+	result := CheckServiceConflictsWithManagedServices([]ServiceState{
+		{Name: "headscale", Active: true, Detail: "running"},
+		{Name: "nginx", Active: true, Detail: "running"},
+	}, ManagedServiceState{Headscale: true, Nginx: true})
+
+	if result.Status != StatusPass {
+		t.Fatalf("CheckServiceConflictsWithManagedServices() status = %q, want %q", result.Status, StatusPass)
+	}
+	if !strings.Contains(strings.Join(result.Findings, "\n"), "meshify-managed service") {
+		t.Fatalf("findings = %q, want managed service detail", strings.Join(result.Findings, " | "))
+	}
+}
+
+func TestCheckServiceConflictsBlocksFreshHeadscaleService(t *testing.T) {
+	t.Parallel()
+
+	result := CheckServiceConflicts([]ServiceState{{Name: "headscale", Active: true, Detail: "running"}})
+
+	if result.Status != StatusFail {
+		t.Fatalf("CheckServiceConflicts() status = %q, want %q", result.Status, StatusFail)
+	}
+	if !strings.Contains(result.Summary, "Existing Headscale") {
+		t.Fatalf("summary = %q, want fresh Headscale conflict", result.Summary)
 	}
 }
 

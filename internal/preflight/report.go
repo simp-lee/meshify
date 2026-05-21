@@ -54,6 +54,7 @@ type Inputs struct {
 	Ports         []PortBinding
 	Firewall      FirewallState
 	Services      []ServiceState
+	Managed       ManagedServiceState
 	ACME          ACMEState
 	PackageSource PackageSourceState
 }
@@ -119,9 +120,9 @@ func BuildReport(cfg config.Config, inputs Inputs) Report {
 			CheckPlatform(inputs.Platform),
 			CheckHostCapabilities(inputs.Capabilities),
 			CheckServerDNS(dns),
-			CheckPortAvailabilityForConfig(cfg, inputs.Ports),
+			CheckPortAvailabilityForConfigWithManagedServices(cfg, inputs.Ports, inputs.Managed),
 			CheckFirewall(inputs.Firewall),
-			CheckServiceConflicts(inputs.Services),
+			CheckServiceConflictsWithManagedServices(inputs.Services, inputs.Managed),
 			CheckPackageSource(packageSource),
 			CheckACMEPrerequisites(acme),
 		},

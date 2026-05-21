@@ -45,6 +45,11 @@ type ServiceState struct {
 	Detail string `json:"detail,omitempty"`
 }
 
+type ManagedServiceState struct {
+	Headscale bool `json:"headscale,omitempty"`
+	Nginx     bool `json:"nginx,omitempty"`
+}
+
 var requiredPublicServicePorts = []PortRequirement{
 	{Port: 80, Protocol: "tcp", Purpose: "Nginx HTTP and ACME HTTP-01", Reviewable: true},
 	{Port: 443, Protocol: "tcp", Purpose: "Nginx HTTPS and DERP", Reviewable: true},
@@ -167,14 +172,18 @@ func CheckServerDNS(probe DNSProbe) CheckResult {
 }
 
 func CheckPortAvailability(bindings []PortBinding) CheckResult {
-	return checkPortAvailability(bindings, requiredPublicServicePorts)
+	return checkPortAvailability(bindings, requiredPublicServicePorts, ManagedServiceState{})
 }
 
 func CheckPortAvailabilityForConfig(cfg config.Config, bindings []PortBinding) CheckResult {
-	return checkPortAvailability(bindings, requiredPortRequirements(cfg))
+	return CheckPortAvailabilityForConfigWithManagedServices(cfg, bindings, ManagedServiceState{})
 }
 
-func checkPortAvailability(bindings []PortBinding, requirements []PortRequirement) CheckResult {
+func CheckPortAvailabilityForConfigWithManagedServices(cfg config.Config, bindings []PortBinding, managed ManagedServiceState) CheckResult {
+	return checkPortAvailability(bindings, requiredPortRequirements(cfg), managed)
+}
+
+func checkPortAvailability(bindings []PortBinding, requirements []PortRequirement, managed ManagedServiceState) CheckResult {
 	requiredList := formatRequiredPortList(requirements)
 	if len(bindings) == 0 {
 		return newCheckResult(
@@ -205,6 +214,7 @@ func checkPortAvailability(bindings []PortBinding, requirements []PortRequiremen
 	blocking := []string{}
 	review := []string{}
 	available := []string{}
+	managedActive := []string{}
 	for _, required := range requirements {
 		binding, ok := provided[portRequirementKey(required)]
 		label := portRequirementLabel(required)
@@ -217,6 +227,10 @@ func checkPortAvailability(bindings []PortBinding, requirements []PortRequiremen
 			process := strings.TrimSpace(binding.Process)
 			if process == "" {
 				process = "another process"
+			}
+			if isManagedPortBinding(required, binding, process, managed) {
+				managedActive = append(managedActive, fmt.Sprintf("%s is already in use by meshify-managed %s from the current deploy context.", label, process))
+				continue
 			}
 			if required.Reviewable && isReviewableHTTPPortBinding(binding, process) {
 				review = append(review, fmt.Sprintf("%s is already in use by %s and needs a coexistence review.", label, process))
@@ -231,6 +245,7 @@ func checkPortAvailability(bindings []PortBinding, requirements []PortRequiremen
 	if len(blocking) > 0 {
 		findings := append([]string{}, blocking...)
 		findings = append(findings, review...)
+		findings = append(findings, managedActive...)
 		findings = append(findings, missing...)
 		return newCheckResult(
 			"ports",
@@ -245,6 +260,7 @@ func checkPortAvailability(bindings []PortBinding, requirements []PortRequiremen
 
 	if len(missing) > 0 {
 		findings := append([]string{}, review...)
+		findings = append(findings, managedActive...)
 		findings = append(findings, available...)
 		findings = append(findings, missing...)
 		return newCheckResult(
@@ -260,6 +276,7 @@ func checkPortAvailability(bindings []PortBinding, requirements []PortRequiremen
 
 	if len(review) > 0 {
 		findings := append([]string{}, review...)
+		findings = append(findings, managedActive...)
 		findings = append(findings, available...)
 		return newCheckResult(
 			"ports",
@@ -277,8 +294,8 @@ func checkPortAvailability(bindings []PortBinding, requirements []PortRequiremen
 		"Port occupancy",
 		StatusPass,
 		SeverityInfo,
-		"Required service ports are available.",
-		available,
+		portAvailabilityPassSummary(managedActive),
+		append(managedActive, available...),
 		nil,
 	)
 }
@@ -361,6 +378,10 @@ func CheckFirewall(state FirewallState) CheckResult {
 }
 
 func CheckServiceConflicts(services []ServiceState) CheckResult {
+	return CheckServiceConflictsWithManagedServices(services, ManagedServiceState{})
+}
+
+func CheckServiceConflictsWithManagedServices(services []ServiceState, managed ManagedServiceState) CheckResult {
 	if services == nil {
 		return newCheckResult(
 			"services",
@@ -387,6 +408,7 @@ func CheckServiceConflicts(services []ServiceState) CheckResult {
 	blockingWeb := []string{}
 	review := []string{}
 	findings := []string{}
+	managedActive := false
 	for _, service := range activeServices {
 		name := strings.ToLower(strings.TrimSpace(service.Name))
 		label := strings.TrimSpace(service.Name)
@@ -396,6 +418,11 @@ func CheckServiceConflicts(services []ServiceState) CheckResult {
 		line := label
 		if detail := strings.TrimSpace(service.Detail); detail != "" {
 			line = fmt.Sprintf("%s (%s)", label, detail)
+		}
+		if isManagedServiceName(name, managed) {
+			managedActive = true
+			findings = append(findings, fmt.Sprintf("Active meshify-managed service detected: %s.", line))
+			continue
 		}
 		findings = append(findings, fmt.Sprintf("Active service detected: %s.", line))
 		if name == "headscale" {
@@ -444,7 +471,7 @@ func CheckServiceConflicts(services []ServiceState) CheckResult {
 		)
 	}
 
-	return newCheckResult("services", "Local service conflicts", StatusPass, SeverityInfo, "No blocking local service conflicts were reported.", findings, nil)
+	return newCheckResult("services", "Local service conflicts", StatusPass, SeverityInfo, serviceConflictsPassSummary(managedActive), findings, nil)
 }
 
 func BuildManualChecklists(cfg config.Config) []ManualChecklist {
@@ -511,6 +538,20 @@ func portRequirementLabel(requirement PortRequirement) string {
 	return label
 }
 
+func portAvailabilityPassSummary(managedActive []string) string {
+	if len(managedActive) > 0 {
+		return "Required service ports are available or already held by meshify-managed services."
+	}
+	return "Required service ports are available."
+}
+
+func serviceConflictsPassSummary(managedActive bool) string {
+	if managedActive {
+		return "No blocking local service conflicts were reported; meshify-managed services are active."
+	}
+	return "No blocking local service conflicts were reported."
+}
+
 func humanJoin(values []string) string {
 	values = compactStrings(values)
 	switch len(values) {
@@ -557,6 +598,48 @@ func isReviewableHTTPPortBinding(binding PortBinding, process string) bool {
 	default:
 		return false
 	}
+}
+
+func isManagedPortBinding(required PortRequirement, binding PortBinding, process string, managed ManagedServiceState) bool {
+	name := normalizedServiceName(process)
+	protocol := strings.ToLower(strings.TrimSpace(binding.Protocol))
+	switch {
+	case managed.Nginx && name == "nginx":
+		return protocol == "tcp" && bindingMatchesRequirement(binding, required) && strings.Contains(required.Purpose, "Nginx")
+	case managed.Headscale && name == "headscale":
+		return bindingMatchesRequirement(binding, required) && strings.Contains(required.Purpose, "Headscale")
+	default:
+		return false
+	}
+}
+
+func bindingMatchesRequirement(binding PortBinding, required PortRequirement) bool {
+	bindingProtocol := strings.ToLower(strings.TrimSpace(binding.Protocol))
+	if bindingProtocol == "" {
+		bindingProtocol = "tcp"
+	}
+	requiredProtocol := strings.ToLower(strings.TrimSpace(required.Protocol))
+	if requiredProtocol == "" {
+		requiredProtocol = "tcp"
+	}
+	return binding.Port == required.Port && bindingProtocol == requiredProtocol
+}
+
+func isManagedServiceName(name string, managed ManagedServiceState) bool {
+	switch normalizedServiceName(name) {
+	case "headscale":
+		return managed.Headscale
+	case "nginx":
+		return managed.Nginx
+	default:
+		return false
+	}
+}
+
+func normalizedServiceName(name string) string {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	normalized = strings.TrimSuffix(normalized, ".service")
+	return normalized
 }
 
 func publicRoutableIPs(values []string) []string {

@@ -4434,6 +4434,22 @@ func TestExecute_DeployResumesFromRecordedCheckpoint(t *testing.T) {
 	}
 
 	stubPassingDeployPreflight(t)
+	detectPortBindingsFn = func(config.Config) []preflight.PortBinding {
+		return []preflight.PortBinding{
+			{Port: 80, Protocol: "tcp", InUse: true, Process: "nginx"},
+			{Port: 443, Protocol: "tcp", InUse: true, Process: "nginx"},
+			{Port: 8080, Protocol: "tcp", InUse: true, Process: "headscale"},
+			{Port: config.DefaultHeadscaleMetricsPort, Protocol: "tcp", InUse: true, Process: "headscale"},
+			{Port: 50443, Protocol: "tcp", InUse: true, Process: "headscale"},
+			{Port: 3478, Protocol: "udp", InUse: true, Process: "headscale"},
+		}
+	}
+	detectServiceStatesFn = func() []preflight.ServiceState {
+		return []preflight.ServiceState{
+			{Name: "headscale", Active: true, Detail: "running"},
+			{Name: "nginx", Active: true, Detail: "running"},
+		}
+	}
 
 	checkpointPath := filepath.Join(baseDir, "state", "checkpoint.json")
 	if err := state.NewStore(checkpointPath).Save(state.Checkpoint{
@@ -4553,6 +4569,176 @@ func TestExecute_DeployResumesFromRecordedCheckpoint(t *testing.T) {
 	}
 	if checkpoint.LastFailure != nil {
 		t.Fatalf("LastFailure = %#v, want nil", checkpoint.LastFailure)
+	}
+}
+
+func TestDeployManagedServiceStateRequiresMatchingDesiredState(t *testing.T) {
+	matching := deployManagedServiceState(state.Checkpoint{
+		DesiredStateDigest: "digest-a",
+		CompletedCheckpoints: []string{
+			deployCheckpointHostDependenciesInstalled,
+			deployCheckpointHeadscalePackageInstalled,
+		},
+	}, "digest-a")
+	if !matching.Nginx || !matching.Headscale {
+		t.Fatalf("matching managed state = %#v, want Nginx and Headscale managed", matching)
+	}
+
+	stale := deployManagedServiceState(state.Checkpoint{
+		DesiredStateDigest: "digest-a",
+		CompletedCheckpoints: []string{
+			deployCheckpointHostDependenciesInstalled,
+			deployCheckpointHeadscalePackageInstalled,
+		},
+	}, "digest-b")
+	if stale.Nginx || stale.Headscale {
+		t.Fatalf("stale managed state = %#v, want no managed services", stale)
+	}
+}
+
+func TestHTTP01ChallengeRouteCommandTargetsLocalNginxWithHostHeader(t *testing.T) {
+	command := http01ChallengeRouteCommand("hs.example.com", "/var/lib/meshify/acme-challenges")
+
+	if command.Name != "sh" {
+		t.Fatalf("command.Name = %q, want sh", command.Name)
+	}
+	args := strings.Join(command.Args, " ")
+	for _, want := range []string{
+		"meshify-http01-route-check",
+		"/var/lib/meshify/acme-challenges",
+		"--noproxy '*'",
+		"--resolve \"$server_name:80:127.0.0.1\"",
+	} {
+		if !strings.Contains(args, want) {
+			t.Fatalf("command args = %q, want %q", args, want)
+		}
+	}
+	if display := command.String(); !strings.Contains(display, "--resolve hs.example.com:80:127.0.0.1") || !strings.Contains(display, "/.well-known/acme-challenge/<token>") {
+		t.Fatalf("display command = %q, want local HTTP-01 probe", display)
+	}
+}
+
+func TestCertificateIssueRemediationsAreChallengeSpecific(t *testing.T) {
+	http01 := strings.Join(certificateIssueRemediations(config.ACMEChallengeHTTP01, "hs.example.com"), "\n")
+	if !strings.Contains(http01, "For HTTP-01") || !strings.Contains(http01, "hs.example.com") {
+		t.Fatalf("HTTP-01 remediations = %q, want HTTP-01 public-port guidance", http01)
+	}
+	if strings.Contains(http01, "DNS-01") {
+		t.Fatalf("HTTP-01 remediations = %q, do not want DNS-01 guidance", http01)
+	}
+
+	dns01 := strings.Join(certificateIssueRemediations(config.ACMEChallengeDNS01, "hs.example.com"), "\n")
+	if strings.Contains(dns01, "For HTTP-01") {
+		t.Fatalf("DNS-01 remediations = %q, do not want HTTP-01 guidance", dns01)
+	}
+	if !strings.Contains(dns01, "DNS-01 provider credentials") {
+		t.Fatalf("DNS-01 remediations = %q, want generic ACME guidance", dns01)
+	}
+}
+
+func TestCommandErrorWithOutputIncludesFirstOutputLine(t *testing.T) {
+	result := host.Result{
+		Command:  host.Command{Name: "/opt/meshify/bin/lego", Args: []string{"run"}},
+		ExitCode: 1,
+		Stderr:   "could not obtain certificates: connection refused\nverbose details",
+	}
+	err := commandErrorWithOutput(result, &host.CommandError{Result: result, Err: errors.New("exit status 1")})
+
+	message := err.Error()
+	if !strings.Contains(message, "output: could not obtain certificates: connection refused") {
+		t.Fatalf("error = %q, want first output line", message)
+	}
+	if strings.Contains(message, "verbose details") {
+		t.Fatalf("error = %q, do not want multiline command output", message)
+	}
+}
+
+func TestExecute_DeployCertificateFailureIncludesLegoOutput(t *testing.T) {
+	baseDir := t.TempDir()
+	configPath := filepath.Join(baseDir, "meshify.yaml")
+	if err := config.WriteExampleFile(configPath); err != nil {
+		t.Fatalf("WriteExampleFile() error = %v", err)
+	}
+	cfg, err := config.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	desiredStateDigest, err := deployDesiredStateDigest(cfg)
+	if err != nil {
+		t.Fatalf("deployDesiredStateDigest() error = %v", err)
+	}
+
+	stubPassingDeployPreflight(t)
+
+	checkpointPath := filepath.Join(baseDir, "state", "checkpoint.json")
+	if err := state.NewStore(checkpointPath).Save(state.Checkpoint{
+		DesiredStateDigest: desiredStateDigest,
+		CurrentCheckpoint:  deployCheckpointLegoCommandReady,
+		CompletedCheckpoints: []string{
+			deployCheckpointPackageManagerReady,
+			deployCheckpointPackageArchitectureConfirmed,
+			deployCheckpointHostDependenciesInstalled,
+			deployCheckpointLegoInstalled,
+			deployCheckpointHeadscalePackageInstalled,
+			deployCheckpointRuntimeAssetsInstalled,
+			deployCheckpointTLSBootstrapReady,
+			deployCheckpointNginxActivated,
+			deployCheckpointLegoCommandReady,
+		},
+	}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	previousCheckpointPath := checkpointPathForConfigFn
+	previousStore := checkpointStoreForConfigFn
+	previousExecutor := newHostExecutorFn
+	runner := &scriptedHostRunner{}
+	t.Cleanup(func() {
+		checkpointPathForConfigFn = previousCheckpointPath
+		checkpointStoreForConfigFn = previousStore
+		newHostExecutorFn = previousExecutor
+	})
+	checkpointPathForConfigFn = func(string) string {
+		return checkpointPath
+	}
+	checkpointStoreForConfigFn = func(string) state.Store {
+		return state.NewStore(checkpointPath)
+	}
+	runner.run = func(command host.Command) (host.Result, error) {
+		actual := unwrapMaybeSudoHostCommand(command)
+		if actual.Name == "sh" && len(actual.Args) >= 3 {
+			switch actual.Args[2] {
+			case "meshify-lego-v5-migration-gate", "meshify-http01-route-check":
+				return host.Result{Command: command}, nil
+			}
+		}
+		if actual.Name == legocomponent.BinaryPath {
+			result := host.Result{
+				Command:  command,
+				ExitCode: 1,
+				Stderr:   "could not obtain certificates: acme: error: connection refused\nfull lego trace",
+			}
+			return result, &host.CommandError{Result: result, Err: errors.New("exit status 1")}
+		}
+		t.Fatalf("unexpected host command %q", command.String())
+		return host.Result{}, nil
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+
+	stdout, stderr, err := runCLI(t, "deploy", "--config", configPath)
+	if err == nil {
+		t.Fatal("Execute() error = nil, want certificate failure")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	if !strings.Contains(stdout, "output: could not obtain certificates: acme: error: connection refused") {
+		t.Fatalf("stdout = %q, want lego output detail", stdout)
+	}
+	if strings.Contains(stdout, "full lego trace") {
+		t.Fatalf("stdout = %q, do not want multiline lego trace", stdout)
 	}
 }
 
