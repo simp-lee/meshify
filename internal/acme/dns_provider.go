@@ -131,6 +131,27 @@ var supportedDNSProviders = []DNSProviderInfo{
 			"GOOGLE_APPLICATION_CREDENTIALS_FILE",
 		},
 	},
+	{
+		Name:            "tencentcloud",
+		LegoCode:        "tencentcloud",
+		Alias:           []string{"tencentcloud", "tencent-cloud"},
+		EnvFileRequired: true,
+		RequiredEnvSets: [][]string{
+			{"TENCENTCLOUD_SECRET_ID_FILE", "TENCENTCLOUD_SECRET_KEY_FILE"},
+		},
+		OptionalEnvVars: []string{
+			"TENCENTCLOUD_HTTP_TIMEOUT",
+			"TENCENTCLOUD_POLLING_INTERVAL",
+			"TENCENTCLOUD_PROPAGATION_TIMEOUT",
+			"TENCENTCLOUD_REGION",
+			"TENCENTCLOUD_TTL",
+		},
+		RawSecretEnvVars: []string{
+			"TENCENTCLOUD_SECRET_ID",
+			"TENCENTCLOUD_SECRET_KEY",
+			"TENCENTCLOUD_SESSION_TOKEN",
+		},
+	},
 }
 
 func SupportedDNSProviders() []DNSProviderInfo {

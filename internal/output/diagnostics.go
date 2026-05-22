@@ -94,7 +94,7 @@ func writePreflightHuman(writer io.Writer, envelope diagnosticsEnvelope) error {
 		if _, err := fmt.Fprintln(writer); err != nil {
 			return err
 		}
-		if _, err := fmt.Fprintln(writer, "Manual checklist:"); err != nil {
+		if _, err := fmt.Fprintln(writer, "Manual checklist (not automatically verified):"); err != nil {
 			return err
 		}
 		for _, checklist := range envelope.ManualChecklists {

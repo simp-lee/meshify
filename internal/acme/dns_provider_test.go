@@ -9,12 +9,14 @@ func TestDNSProviderCanonicalizesLegoCodes(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]string{
-		"cloudflare":   "cloudflare",
-		"route53":      "route53",
-		"digitalocean": "digitalocean",
-		"google":       "gcloud",
-		"gcloud":       "gcloud",
-		"  GCLOUD  ":   "gcloud",
+		"cloudflare":    "cloudflare",
+		"route53":       "route53",
+		"digitalocean":  "digitalocean",
+		"google":        "gcloud",
+		"gcloud":        "gcloud",
+		"  GCLOUD  ":    "gcloud",
+		"tencentcloud":  "tencentcloud",
+		"Tencent Cloud": "tencentcloud",
 	}
 
 	for provider, want := range tests {
@@ -101,6 +103,47 @@ func TestValidateDNSProviderEnvironment(t *testing.T) {
 			name: "digitalocean token",
 			prov: "digitalocean",
 			env:  map[string]string{"DO_AUTH_TOKEN_FILE": "/run/secrets/do-token"},
+		},
+		{
+			name: "tencentcloud secret files",
+			prov: "tencentcloud",
+			env: map[string]string{
+				"TENCENTCLOUD_SECRET_ID_FILE":  "/run/secrets/tencent-secret-id",
+				"TENCENTCLOUD_SECRET_KEY_FILE": "/run/secrets/tencent-secret-key",
+			},
+		},
+		{
+			name: "tencentcloud secret files with optional region",
+			prov: "Tencent Cloud",
+			env: map[string]string{
+				"TENCENTCLOUD_SECRET_ID_FILE":  "/run/secrets/tencent-secret-id",
+				"TENCENTCLOUD_SECRET_KEY_FILE": "/run/secrets/tencent-secret-key",
+				"TENCENTCLOUD_REGION":          "ap-guangzhou",
+			},
+		},
+		{
+			name:    "tencentcloud missing secret key",
+			prov:    "tencentcloud",
+			env:     map[string]string{"TENCENTCLOUD_SECRET_ID_FILE": "/run/secrets/tencent-secret-id"},
+			wantErr: "env_file for DNS provider tencentcloud must contain one of",
+		},
+		{
+			name: "tencentcloud raw secret id rejected for systemd renewal",
+			prov: "tencentcloud",
+			env: map[string]string{
+				"TENCENTCLOUD_SECRET_ID":       "secret-id",
+				"TENCENTCLOUD_SECRET_KEY_FILE": "/run/secrets/tencent-secret-key",
+			},
+			wantErr: "TENCENTCLOUD_SECRET_ID must not be set directly",
+		},
+		{
+			name: "tencentcloud lowercase secret id name",
+			prov: "tencentcloud",
+			env: map[string]string{
+				"tencentcloud_secret_id_file":  "/run/secrets/tencent-secret-id",
+				"TENCENTCLOUD_SECRET_KEY_FILE": "/run/secrets/tencent-secret-key",
+			},
+			wantErr: "must use exact uppercase lego variable name TENCENTCLOUD_SECRET_ID_FILE",
 		},
 		{
 			name: "route53 shared credentials",
@@ -228,6 +271,7 @@ func TestSupportedDNSProviderEnvFileVarsIncludesOfficialFileRefs(t *testing.T) {
 		"digitalocean": {"DO_AUTH_TOKEN_FILE"},
 		"gcloud":       {"GCE_SERVICE_ACCOUNT_FILE", "GCE_IMPERSONATE_SERVICE_ACCOUNT_FILE"},
 		"route53":      {"AWS_CONFIG_FILE", "AWS_HOSTED_ZONE_ID_FILE", "AWS_SHARED_CREDENTIALS_FILE"},
+		"tencentcloud": {"TENCENTCLOUD_SECRET_ID_FILE", "TENCENTCLOUD_SECRET_KEY_FILE", "TENCENTCLOUD_SESSION_TOKEN_FILE"},
 	}
 	for provider, wants := range tests {
 		t.Run(provider, func(t *testing.T) {

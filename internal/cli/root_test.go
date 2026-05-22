@@ -2850,6 +2850,58 @@ func TestDetectDNSCredentialStateRequiresOfficialProviderCredentials(t *testing.
 		}
 	})
 
+	t.Run("tencentcloud env_file is validated with secret file references", func(t *testing.T) {
+		dir := t.TempDir()
+		secretIDFile := filepath.Join(dir, "tencent-secret-id")
+		secretKeyFile := filepath.Join(dir, "tencent-secret-key")
+		if err := os.WriteFile(secretIDFile, []byte("secret-id\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+		if err := os.WriteFile(secretKeyFile, []byte("secret-key\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+		envFile := filepath.Join(dir, "tencentcloud.env")
+		content := "TENCENTCLOUD_SECRET_ID_FILE=" + secretIDFile + "\nTENCENTCLOUD_SECRET_KEY_FILE=" + secretKeyFile + "\nTENCENTCLOUD_REGION=ap-guangzhou\n"
+		if err := os.WriteFile(envFile, []byte(content), 0o600); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+		withRootOwnedStatForPaths(t, secretIDFile, secretKeyFile, envFile)
+
+		checked, ready, detail := detectDNSCredentialState(config.DNS01Config{Provider: "tencentcloud", EnvFile: envFile})
+		if !checked {
+			t.Fatal("checked = false, want true")
+		}
+		if !ready {
+			t.Fatalf("ready = false, want true; detail = %q", detail)
+		}
+		if !strings.Contains(detail, "lego env_file") || !strings.Contains(detail, envFile) {
+			t.Fatalf("detail = %q, want env_file detail", detail)
+		}
+	})
+
+	t.Run("tencentcloud raw secret in env_file is not ready", func(t *testing.T) {
+		secretKeyFile := filepath.Join(t.TempDir(), "tencent-secret-key")
+		if err := os.WriteFile(secretKeyFile, []byte("secret-key\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+		envFile := filepath.Join(t.TempDir(), "tencentcloud.env")
+		if err := os.WriteFile(envFile, []byte("TENCENTCLOUD_SECRET_ID=secret-id\nTENCENTCLOUD_SECRET_KEY_FILE="+secretKeyFile+"\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+		withRootOwnedStatForPaths(t, secretKeyFile, envFile)
+
+		checked, ready, detail := detectDNSCredentialState(config.DNS01Config{Provider: "tencentcloud", EnvFile: envFile})
+		if !checked {
+			t.Fatal("checked = false, want true")
+		}
+		if ready {
+			t.Fatal("ready = true, want false for raw Tencent Cloud secret in systemd env_file")
+		}
+		if !strings.Contains(detail, "TENCENTCLOUD_SECRET_ID must not be set directly") {
+			t.Fatalf("detail = %q, want raw Tencent Cloud secret rejection", detail)
+		}
+	})
+
 	t.Run("cloudflare env_file with shell export syntax is not ready", func(t *testing.T) {
 		envFile := filepath.Join(t.TempDir(), "cloudflare.env")
 		if err := os.WriteFile(envFile, []byte("export CLOUDFLARE_DNS_API_TOKEN=token-value\n"), 0o600); err != nil {
@@ -4705,6 +4757,30 @@ func TestCommandErrorWithOutputIncludesFirstOutputLine(t *testing.T) {
 	}
 	if strings.Contains(message, "verbose details") {
 		t.Fatalf("error = %q, do not want multiline command output", message)
+	}
+}
+
+func TestCommandErrorWithOutputPrefersDiagnosticLine(t *testing.T) {
+	result := host.Result{
+		Command:  host.Command{Name: "/opt/meshify/bin/lego", Args: []string{"run"}},
+		ExitCode: 1,
+		Stdout: strings.Join([]string{
+			"2026-05-21T22:47:59+08:00 INFO Private key saved. filepath=/var/lib/meshify/lego/accounts/acme-v02.api.letsencrypt.org/ops@example.com/ops@example.com.key",
+			"2026-05-21T22:48:00+08:00 INFO Could not find the solver. domain=hs.example.com type=tls-alpn-01 solvers=http-01",
+			"2026-05-21T22:48:01+08:00 ERR Could not obtain certificates error=\"one or more domains had a problem\"",
+		}, "\n"),
+	}
+	err := commandErrorWithOutput(result, &host.CommandError{Result: result, Err: errors.New("exit status 1")})
+
+	message := err.Error()
+	if !strings.Contains(message, "ERR Could not obtain certificates") {
+		t.Fatalf("error = %q, want diagnostic lego output line", message)
+	}
+	if strings.Contains(message, "Private key saved") {
+		t.Fatalf("error = %q, do not want earlier non-diagnostic lego output", message)
+	}
+	if strings.Contains(message, "Could not find the solver") {
+		t.Fatalf("error = %q, do not want normal lego solver-selection info", message)
 	}
 }
 

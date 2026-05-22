@@ -463,6 +463,15 @@ func TestValidateDNS01Rules(t *testing.T) {
 		t.Fatalf("Validate() error = %v", err)
 	}
 
+	tencentcloud := validListenConfig()
+	tencentcloud.App.ACMEChallenge = ACMEChallengeDNS01
+	tencentcloud.DNS01.Provider = "tencentcloud"
+	expectValidationError(t, tencentcloud, "dns01.env_file is required for DNS-01 renewal with lego DNS provider tencentcloud")
+	tencentcloud.DNS01.EnvFile = "/etc/meshify/dns/tencentcloud.env"
+	if err := tencentcloud.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
 	badPath := valid
 	badPath.DNS01.EnvFile = "relative.env"
 	expectValidationError(t, badPath, "dns01.env_file must be an absolute path")

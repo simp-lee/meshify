@@ -173,6 +173,8 @@ func TestCanonicalDNSProviderUsesLegoProviderCodes(t *testing.T) {
 		"digitalocean":   "digitalocean",
 		"google":         "gcloud",
 		"gcloud":         "gcloud",
+		"tencentcloud":   "tencentcloud",
+		"Tencent Cloud":  "tencentcloud",
 		"  cloudflare  ": "cloudflare",
 	}
 	for provider, want := range tests {

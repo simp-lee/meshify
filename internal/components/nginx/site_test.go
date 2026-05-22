@@ -135,6 +135,29 @@ func TestValidateRenderedSiteRejectsDefaultCatchAllProxy(t *testing.T) {
 	}
 }
 
+func TestValidateRenderedSiteRejectsDefaultCatchAllMissingACMERoute(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	site, err := NewSiteConfig(cfg)
+	if err != nil {
+		t.Fatalf("NewSiteConfig() error = %v", err)
+	}
+	content := strings.Replace(string(renderNginxSite(t, cfg)),
+		"    location /.well-known/acme-challenge/ {\n        root /var/lib/meshify/acme-challenges;\n    }\n\n",
+		"",
+		1,
+	)
+
+	err = ValidateRenderedSite(site, []byte(content))
+	if err == nil {
+		t.Fatal("ValidateRenderedSite() error = nil, want failure")
+	}
+	if !strings.Contains(err.Error(), "HTTP default_server catch-all must serve the ACME challenge webroot") {
+		t.Fatalf("error = %q, want default ACME route failure", err.Error())
+	}
+}
+
 func TestValidateRenderedSiteRejectsMissingHostSNIGuards(t *testing.T) {
 	t.Parallel()
 

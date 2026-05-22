@@ -121,9 +121,37 @@ default:
   acme_challenge: "http-01"
 ```
 
-Use DNS-01 only when public port 80 is unreliable or policy requires DNS validation. DNS-01 uses lego provider codes `cloudflare`, `route53`, `digitalocean`, and `gcloud`; `google` is accepted as a `gcloud` alias.
+Use DNS-01 only when public port 80 is unreliable or policy requires DNS validation. DNS-01 uses lego provider codes `cloudflare`, `route53`, `digitalocean`, `gcloud`, and `tencentcloud`; `google` is accepted as a `gcloud` alias.
 
-Keep raw DNS values out of `meshify.yaml`. Cloudflare and DigitalOcean require a root-only `advanced.dns01.env_file`. Route53 and gcloud may use lego's ambient credential chain when deploy and systemd renewal run with the same host identity. Raw DNS tokens or keys live in separate root-only files referenced by lego `_FILE` variables.
+Keep raw DNS values out of `meshify.yaml`. Cloudflare, DigitalOcean, and Tencent Cloud require a root-only `advanced.dns01.env_file`. Route53 and gcloud may use lego's ambient credential chain when deploy and systemd renewal run with the same host identity. Raw DNS tokens or keys live in separate root-only files referenced by lego `_FILE` variables.
+
+For Tencent Cloud DNS / DNSPod, create Tencent Cloud API credentials with permission to manage DNSPod records, store the SecretId and SecretKey in root-only files, and reference those files from the lego env file:
+
+```bash
+sudo install -d -m 0700 /etc/meshify/dns01
+printf '%s' '<Tencent Cloud SecretId>' | sudo tee /etc/meshify/dns01/tencentcloud-secret-id >/dev/null
+printf '%s' '<Tencent Cloud SecretKey>' | sudo tee /etc/meshify/dns01/tencentcloud-secret-key >/dev/null
+sudo chmod 0600 /etc/meshify/dns01/tencentcloud-secret-id /etc/meshify/dns01/tencentcloud-secret-key
+
+sudo tee /etc/meshify/dns01/tencentcloud.env >/dev/null <<'EOF'
+TENCENTCLOUD_SECRET_ID_FILE=/etc/meshify/dns01/tencentcloud-secret-id
+TENCENTCLOUD_SECRET_KEY_FILE=/etc/meshify/dns01/tencentcloud-secret-key
+TENCENTCLOUD_PROPAGATION_TIMEOUT=180
+EOF
+sudo chmod 0600 /etc/meshify/dns01/tencentcloud.env
+```
+
+Then set DNS-01 in `meshify.yaml`:
+
+```yaml
+default:
+  acme_challenge: "dns-01"
+
+advanced:
+  dns01:
+    provider: "tencentcloud"
+    env_file: "/etc/meshify/dns01/tencentcloud.env"
+```
 
 ### Deploy
 

@@ -54,6 +54,9 @@ nginx:
 
 dns01:
   provider: ""
+  # Supported lego providers: cloudflare, route53, digitalocean, gcloud,
+  # tencentcloud. "google" is accepted as an alias for gcloud.
+  # Cloudflare, DigitalOcean, and Tencent Cloud require a root-only env_file.
   env_file: ""
 
 tailscale:

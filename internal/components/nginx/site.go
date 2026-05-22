@@ -104,6 +104,9 @@ func validateServerNameIsolation(errs *[]string, site SiteConfig, text string) {
 		case hasHTTPDefault:
 			httpDefaultIPv4 = httpDefaultIPv4 || strings.Contains(block, "listen 80 default_server")
 			httpDefaultIPv6 = httpDefaultIPv6 || strings.Contains(block, "listen [::]:80 default_server")
+			if !strings.Contains(block, "location /.well-known/acme-challenge/") || !strings.Contains(block, "root "+site.Webroot+";") {
+				*errs = append(*errs, "meshify HTTP default_server catch-all must serve the ACME challenge webroot")
+			}
 			if !strings.Contains(block, "return 444;") {
 				*errs = append(*errs, "meshify HTTP default_server catch-all must close unmatched requests with 444")
 			}

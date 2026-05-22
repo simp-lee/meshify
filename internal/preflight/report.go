@@ -182,7 +182,7 @@ func (report Report) Summary() string {
 	case report.WarningCount() > 0:
 		return fmt.Sprintf("needs review for %s", pluralize(report.WarningCount(), "warning", "warnings"))
 	default:
-		return "all checks passed"
+		return "automatic checks passed"
 	}
 }
 

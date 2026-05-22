@@ -52,7 +52,7 @@ func TestDiagnosticsFormatterWritesHumanSummary(t *testing.T) {
 		"meshify preflight: blocked by 1 failed check",
 		"[FAIL] Supported platform",
 		"Remediation:",
-		"Manual checklist:",
+		"Manual checklist (not automatically verified):",
 		"3478/udp",
 	} {
 		if !strings.Contains(output, want) {
@@ -105,7 +105,7 @@ func TestDiagnosticsFormatterUsesCommandHeading(t *testing.T) {
 				t.Fatalf("WriteReport() error = %v", err)
 			}
 
-			want := "meshify " + command + ": all checks passed"
+			want := "meshify " + command + ": automatic checks passed"
 			if !strings.Contains(buffer.String(), want) {
 				t.Fatalf("WriteReport() output = %q, want substring %q", buffer.String(), want)
 			}

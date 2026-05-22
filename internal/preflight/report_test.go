@@ -57,8 +57,8 @@ func TestBuildReportDoesNotBlockOnAdvisoryManualChecklist(t *testing.T) {
 	if report.OverallStatus() != StatusPass {
 		t.Fatalf("BuildReport() overall status = %q, want %q", report.OverallStatus(), StatusPass)
 	}
-	if report.Summary() != "all checks passed" {
-		t.Fatalf("BuildReport() summary = %q, want %q", report.Summary(), "all checks passed")
+	if report.Summary() != "automatic checks passed" {
+		t.Fatalf("BuildReport() summary = %q, want %q", report.Summary(), "automatic checks passed")
 	}
 }
 

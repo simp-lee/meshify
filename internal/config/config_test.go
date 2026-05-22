@@ -608,6 +608,20 @@ func TestValidateDNS01RequiresProviderWhenEnabled(t *testing.T) {
 		t.Fatalf("Validate() error = %v, want nil after provider env file set", err)
 	}
 
+	cfg.Advanced.DNS01.Provider = "tencentcloud"
+	cfg.Advanced.DNS01.EnvFile = ""
+	err = cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() error = nil, want env file failure for tencentcloud")
+	}
+	if !strings.Contains(err.Error(), "advanced.dns01.env_file is required for DNS-01 renewal with lego DNS provider tencentcloud") {
+		t.Fatalf("Validate() error = %q, want tencentcloud env file failure", err.Error())
+	}
+	cfg.Advanced.DNS01.EnvFile = "/etc/meshify/tencentcloud.env"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v, want nil for tencentcloud env file", err)
+	}
+
 	cfg.Advanced.DNS01.Provider = "route53"
 	cfg.Advanced.DNS01.EnvFile = ""
 	if err := cfg.Validate(); err != nil {

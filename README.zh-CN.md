@@ -121,9 +121,37 @@ default:
   acme_challenge: "http-01"
 ```
 
-只有公网 80 不可靠或组织策略要求 DNS 验证时才使用 DNS-01。DNS-01 使用 lego provider code `cloudflare`、`route53`、`digitalocean`、`gcloud`，其中 `google` 可作为 `gcloud` 别名。
+只有公网 80 不可靠或组织策略要求 DNS 验证时才使用 DNS-01。DNS-01 使用 lego provider code `cloudflare`、`route53`、`digitalocean`、`gcloud`、`tencentcloud`，其中 `google` 可作为 `gcloud` 别名。
 
-不要把 DNS API 值写进 `meshify.yaml`。Cloudflare 和 DigitalOcean 需要 root-only 的 `advanced.dns01.env_file`；Route53 和 gcloud 可以在部署和 systemd 续期使用同一主机身份时走 lego 的环境凭据链。原始 DNS token 或 key 放在单独的 root-only 文件中，并通过 lego `_FILE` 变量引用。
+不要把 DNS API 值写进 `meshify.yaml`。Cloudflare、DigitalOcean 和腾讯云需要 root-only 的 `advanced.dns01.env_file`；Route53 和 gcloud 可以在部署和 systemd 续期使用同一主机身份时走 lego 的环境凭据链。原始 DNS token 或 key 放在单独的 root-only 文件中，并通过 lego `_FILE` 变量引用。
+
+腾讯云 DNS / DNSPod 示例：先在腾讯云或 DNSPod 里创建能管理 DNSPod 解析记录的 API 密钥，然后把 SecretId 和 SecretKey 放进 root-only 文件，再由 lego env 文件引用这些文件：
+
+```bash
+sudo install -d -m 0700 /etc/meshify/dns01
+printf '%s' '<腾讯云 SecretId>' | sudo tee /etc/meshify/dns01/tencentcloud-secret-id >/dev/null
+printf '%s' '<腾讯云 SecretKey>' | sudo tee /etc/meshify/dns01/tencentcloud-secret-key >/dev/null
+sudo chmod 0600 /etc/meshify/dns01/tencentcloud-secret-id /etc/meshify/dns01/tencentcloud-secret-key
+
+sudo tee /etc/meshify/dns01/tencentcloud.env >/dev/null <<'EOF'
+TENCENTCLOUD_SECRET_ID_FILE=/etc/meshify/dns01/tencentcloud-secret-id
+TENCENTCLOUD_SECRET_KEY_FILE=/etc/meshify/dns01/tencentcloud-secret-key
+TENCENTCLOUD_PROPAGATION_TIMEOUT=180
+EOF
+sudo chmod 0600 /etc/meshify/dns01/tencentcloud.env
+```
+
+然后在 `meshify.yaml` 中启用 DNS-01：
+
+```yaml
+default:
+  acme_challenge: "dns-01"
+
+advanced:
+  dns01:
+    provider: "tencentcloud"
+    env_file: "/etc/meshify/dns01/tencentcloud.env"
+```
 
 ### 部署
 

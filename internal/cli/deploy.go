@@ -842,6 +842,8 @@ func certificateIssueRemediations(acmeChallenge string, serverName string) []str
 		return []string{
 			"Fix public ACME HTTP-01 reachability or rate-limit issues, then rerun deploy.",
 			fmt.Sprintf("For HTTP-01, confirm public port 80 reaches this host and %s is not behind a CDN or proxy that blocks /.well-known/acme-challenge/.", strings.TrimSpace(serverName)),
+			fmt.Sprintf("On the cloud server, confirm the meshify Nginx route with: curl --noproxy '*' --resolve %s:80:127.0.0.1 http://%s/.well-known/acme-challenge/<token>", strings.TrimSpace(serverName), strings.TrimSpace(serverName)),
+			fmt.Sprintf("From an external network, confirm http://%s/.well-known/acme-challenge/<token> reaches this server while the challenge file exists, or switch default.acme_challenge to dns-01 when public port 80 cannot be opened reliably.", strings.TrimSpace(serverName)),
 		}
 	case config.ACMEChallengeDNS01:
 		return []string{"Fix DNS-01 provider credentials, DNS propagation, or ACME rate-limit issues, then rerun deploy."}
@@ -2406,20 +2408,86 @@ func commandErrorWithOutput(result host.Result, err error) error {
 }
 
 func firstCommandOutputLine(result host.Result) string {
+	if line := firstDiagnosticCommandOutputLine(result); line != "" {
+		return line
+	}
+
 	for _, output := range []string{result.Stderr, result.Stdout} {
-		scanner := bufio.NewScanner(strings.NewReader(output))
-		for scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
-			if line == "" {
-				continue
-			}
-			if len(line) > 500 {
-				line = line[:500] + "..."
-			}
+		for _, line := range commandOutputLines(output) {
 			return line
 		}
 	}
 	return ""
+}
+
+func firstDiagnosticCommandOutputLine(result host.Result) string {
+	for _, output := range []string{result.Stderr, result.Stdout} {
+		for _, line := range commandOutputLines(output) {
+			if commandOutputLineLooksDiagnostic(line) {
+				return line
+			}
+		}
+	}
+	return ""
+}
+
+func commandOutputLines(output string) []string {
+	lines := []string{}
+	scanner := bufio.NewScanner(strings.NewReader(output))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		if len(line) > 500 {
+			line = line[:500] + "..."
+		}
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+func commandOutputLineLooksDiagnostic(line string) bool {
+	text := strings.ToLower(strings.TrimSpace(line))
+	if text == "" {
+		return false
+	}
+	if strings.Contains(text, "could not find") && strings.Contains(text, "solver") {
+		return false
+	}
+	if strings.HasPrefix(text, "error") || strings.HasPrefix(text, "err ") {
+		return true
+	}
+
+	diagnosticMarkers := []string{
+		" error",
+		"error ",
+		"error:",
+		"error=",
+		" err ",
+		"failed",
+		"failure",
+		"could not",
+		"unable",
+		"refused",
+		"timed out",
+		"timeout",
+		"unauthorized",
+		"forbidden",
+		"invalid",
+		"rate limit",
+		"too many",
+		"denied",
+		"problem",
+		"no such host",
+		"connection reset",
+	}
+	for _, marker := range diagnosticMarkers {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func probeURL(client *http.Client, rawURL string, method string) (int, string, error) {

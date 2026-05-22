@@ -95,14 +95,16 @@ advanced:
 
   dns01:
     provider: ""
-    # Supported lego providers: cloudflare, route53, digitalocean, gcloud.
+    # Supported lego providers: cloudflare, route53, digitalocean, gcloud,
+    # tencentcloud.
     # "google" is accepted as an alias for gcloud.
-    # Cloudflare and DigitalOcean require an absolute path to a root-only env
-    # file. Route53 and gcloud may use lego's ambient credential chain when
-    # deploy and systemd renewal run with the same host identity; their env_file
-    # may carry plain provider settings such as AWS_HOSTED_ZONE_ID,
-    # AWS_PROFILE, GCE_PROJECT, or GCE_ZONE_ID. Put sensitive DNS values in
-    # separate root-only files and reference them with provider _FILE variables.
+    # Cloudflare, DigitalOcean, and Tencent Cloud require an absolute path to a
+    # root-only env file. Route53 and gcloud may use lego's ambient credential
+    # chain when deploy and systemd renewal run with the same host identity;
+    # their env_file may carry plain provider settings such as
+    # AWS_HOSTED_ZONE_ID, AWS_PROFILE, GCE_PROJECT, or GCE_ZONE_ID. Put
+    # sensitive DNS values in separate root-only files and reference them with
+    # provider _FILE variables.
     env_file: ""
 
   network:
