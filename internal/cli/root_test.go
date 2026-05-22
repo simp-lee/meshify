@@ -4703,6 +4703,77 @@ func TestDeployManagedServiceStateRequiresMatchingDesiredState(t *testing.T) {
 	}
 }
 
+func TestDetectDeployManagedServiceStateFromHostRecognizesRuntimeFiles(t *testing.T) {
+	previousReadFile := readDeployManagedHostFileFn
+	t.Cleanup(func() {
+		readDeployManagedHostFileFn = previousReadFile
+	})
+
+	readDeployManagedHostFileFn = func(path string) ([]byte, error) {
+		switch path {
+		case headscale.ConfigPath:
+			return []byte(`server_url: "https://old.example.com"
+listen_addr: "127.0.0.1:8080"
+metrics_listen_addr: "127.0.0.1:19090"
+grpc_listen_addr: "127.0.0.1:50443"
+grpc_allow_insecure: false
+derp:
+  server:
+    enabled: true
+    region_id: 999
+    region_code: "meshify"
+    region_name: "Meshify Embedded DERP"
+    verify_clients: true
+    stun_listen_addr: "0.0.0.0:3478"
+    private_key_path: "/var/lib/headscale/derp_server_private.key"
+    automatically_add_embedded_derp_region: true
+  urls: []
+  paths: []
+  auto_update_enabled: false
+disable_check_updates: true
+policy:
+  mode: file
+  path: "/etc/headscale/policy.hujson"
+dns:
+  magic_dns: true
+  base_domain: "old.example.com"
+  override_local_dns: true
+unix_socket: "/var/run/headscale/headscale.sock"
+unix_socket_permission: "0770"
+logtail:
+  enabled: false
+`), nil
+		case "/etc/nginx/sites-available/headscale.conf":
+			return []byte(`map $http_host $meshify_host_header_valid {
+    default 0;
+}
+map $ssl_server_name $meshify_sni_valid {
+    default 0;
+}
+upstream headscale_upstream {
+    server 127.0.0.1:8080;
+}
+server {
+    location /.well-known/acme-challenge/ {
+        root /var/lib/meshify/acme-challenges;
+    }
+    ssl_certificate /etc/meshify/tls/old.example.com/fullchain.pem;
+    location / {
+        proxy_pass http://headscale_upstream;
+    }
+}
+`), nil
+		default:
+			return nil, fs.ErrNotExist
+		}
+	}
+
+	managed := detectDeployManagedServiceStateFromHost()
+	if !managed.Headscale || !managed.Nginx {
+		t.Fatalf("managed state = %#v, want Headscale and Nginx detected from host files", managed)
+	}
+}
+
 func TestHTTP01ChallengeRouteCommandTargetsLocalNginxWithHostHeader(t *testing.T) {
 	command := http01ChallengeRouteCommand("hs.example.com", "/var/lib/meshify/acme-challenges")
 

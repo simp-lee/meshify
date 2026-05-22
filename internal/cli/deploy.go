@@ -99,6 +99,7 @@ var (
 	stageRuntimeFilesFn           = render.StageRuntime
 	statDNSCredentialsFileFn      = os.Stat
 	readDNSCredentialsFileFn      = os.ReadFile
+	readDeployManagedHostFileFn   = os.ReadFile
 	newDeployFileInstallerFn      = func(executor host.Executor, privilege host.PrivilegeStrategy) stagedFileInstaller {
 		if privilege.RequiresSudo() {
 			return host.NewFileInstaller(host.NewCommandFileSystem(executor), "")
@@ -210,6 +211,7 @@ func runDeploy(ctx context, args []string) error {
 
 	preflightInputs := collectDeployPreflightInputs(cfg)
 	preflightInputs.Managed = deployManagedServiceState(loadedCheckpoint, desiredStateDigest)
+	preflightInputs.Managed = mergeManagedServiceState(preflightInputs.Managed, detectDeployManagedServiceStateFromHost())
 	report := preflight.BuildReport(cfg, preflightInputs)
 	diagnostics := output.NewDiagnosticsFormatter(ctx.stdout, format)
 	if err := diagnostics.WriteReport("deploy", report); err != nil {
@@ -809,6 +811,70 @@ func deployManagedServiceState(checkpoint state.Checkpoint, desiredStateDigest s
 		Nginx: checkpoint.HasCompleted(deployCheckpointHostDependenciesInstalled) ||
 			checkpoint.HasCompleted(deployCheckpointTLSBootstrapReady) ||
 			checkpoint.HasCompleted(deployCheckpointNginxActivated),
+	}
+}
+
+func detectDeployManagedServiceStateFromHost() preflight.ManagedServiceState {
+	return preflight.ManagedServiceState{
+		Headscale: deployHostFileLooksManaged(headscale.ConfigPath, deployedHeadscaleConfigLooksManaged),
+		Nginx:     deployHostFileLooksManaged(nginx.SiteAvailablePath, deployedNginxSiteLooksManaged),
+	}
+}
+
+func deployHostFileLooksManaged(path string, validator func([]byte) bool) bool {
+	content, err := readDeployManagedHostFileFn(path)
+	if err != nil {
+		return false
+	}
+	return validator(content)
+}
+
+func deployedHeadscaleConfigLooksManaged(content []byte) bool {
+	runtimeConfig, err := headscale.ParseRuntimeConfig(content)
+	if err != nil {
+		return false
+	}
+
+	return strings.TrimSpace(runtimeConfig.ListenAddr) == headscale.ListenAddress &&
+		strings.TrimSpace(runtimeConfig.GRPCListenAddr) == headscale.GRPCListenAddress &&
+		!runtimeConfig.GRPCAllowInsecure &&
+		runtimeConfig.DERP.Server.Enabled &&
+		runtimeConfig.DERP.Server.VerifyClients &&
+		runtimeConfig.DERP.Server.AutomaticallyAddEmbeddedDERPRegion &&
+		strings.TrimSpace(runtimeConfig.DERP.Server.RegionCode) == "meshify" &&
+		strings.TrimSpace(runtimeConfig.DERP.Server.RegionName) == "Meshify Embedded DERP" &&
+		strings.TrimSpace(runtimeConfig.DERP.Server.STUNListenAddr) == headscale.STUNListenAddress &&
+		len(runtimeConfig.DERP.URLs) == 0 &&
+		len(runtimeConfig.DERP.Paths) == 0 &&
+		!runtimeConfig.DERP.AutoUpdateEnabled &&
+		strings.TrimSpace(runtimeConfig.Policy.Mode) == "file" &&
+		strings.TrimSpace(runtimeConfig.Policy.Path) == headscale.PolicyPath &&
+		strings.TrimSpace(runtimeConfig.UnixSocket) == headscale.UnixSocketPath &&
+		strings.TrimSpace(runtimeConfig.UnixSocketPermission) == headscale.UnixSocketPermission
+}
+
+func deployedNginxSiteLooksManaged(content []byte) bool {
+	text := string(content)
+	for _, marker := range []string{
+		"map $http_host $meshify_host_header_valid",
+		"map $ssl_server_name $meshify_sni_valid",
+		"upstream headscale_upstream",
+		"server 127.0.0.1:8080;",
+		"root /var/lib/meshify/acme-challenges;",
+		"ssl_certificate /etc/meshify/tls/",
+		"proxy_pass http://headscale_upstream;",
+	} {
+		if !strings.Contains(text, marker) {
+			return false
+		}
+	}
+	return true
+}
+
+func mergeManagedServiceState(left preflight.ManagedServiceState, right preflight.ManagedServiceState) preflight.ManagedServiceState {
+	return preflight.ManagedServiceState{
+		Headscale: left.Headscale || right.Headscale,
+		Nginx:     left.Nginx || right.Nginx,
 	}
 }
 
