@@ -21,7 +21,7 @@ func NewDeployPlan(cfg config.Config) (DeployPlan, error) {
 	steps := []DeployStep{
 		{Key: "preflight", Description: "Run blocking host and network preflight checks before system writes."},
 		{Key: "install-host-dependencies", Description: "Install Nginx and artifact helper packages through the host package manager."},
-		{Key: "install-lego", Description: "Install the pinned lego v5.0.4 binary after archive SHA-256 verification."},
+		{Key: "install-lego", Description: "Install the pinned lego v5.1.0 binary after archive SHA-256 verification."},
 		{Key: "install-headscale-package", Description: "Install the verified Headscale v0.28.0 .deb using the official systemd unit."},
 		{Key: "render-runtime-assets", Description: "Render Headscale, Nginx, lego hook, and renewal timer runtime assets from deploy/."},
 		{Key: "install-runtime-assets", Description: "Write Headscale config, policy, Nginx site, lego hook, and renewal timer units to host paths."},

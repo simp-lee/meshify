@@ -57,7 +57,7 @@ meshify status --config meshify.yaml
 | --- | --- |
 | 服务器系统 | Debian、Ubuntu，或具备 apt/dpkg/systemd 的 Debian 系发行版 |
 | 控制面 | Headscale v0.28.0 只监听本机，由 Nginx 对外代理 |
-| TLS 自动化 | HTTP-01 或 DNS-01，使用 Meshify 管理的固定版本 lego v5.0.4 |
+| TLS 自动化 | HTTP-01 或 DNS-01，使用 Meshify 管理的固定版本 lego v5.1.0 |
 | 中继 | Headscale 内置 DERP/STUN，监听 `3478/udp`；不接入官方 DERP 列表 |
 | 客户端 | Windows, macOS, Debian/Ubuntu Linux |
 | 客户端基线 | Tailscale client >= v1.74.0 |
@@ -449,7 +449,7 @@ release binary 的 app runtime 模板唯一来源是 `deploy/templates/app/`，�
 - direct 模式会下载固定的 Headscale v0.28.0 `.deb` 并校验 SHA-256。
 - mirror 模式需要可访问 URL 和明确的 SHA-256。
 - offline 模式需要本地 `.deb` 路径和明确的 SHA-256。
-- lego 离线模式要求 `advanced.lego_source.file_path` 指向匹配 `advanced.platform.arch` 的固定版本 lego v5.0.4 archive。
+- lego 离线模式要求 `advanced.lego_source.file_path` 指向匹配 `advanced.platform.arch` 的固定版本 lego v5.1.0 archive。
 - 已由 lego v4 创建的证书数据会在签发或续期前自动迁移。迁移失败时，按错误里提示的 lego data path 检查权限或异常文件，然后重新运行 deploy。
 
 运行时失败：

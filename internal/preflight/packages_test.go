@@ -46,7 +46,7 @@ func TestCheckPackageSourceModes(t *testing.T) {
 			status: StatusPass,
 			wantFindings: []string{
 				"Pinned lego archive source mode: direct.",
-				"Pinned lego archive URL: https://github.com/go-acme/lego/releases/download/v5.0.4/lego_v5.0.4_linux_amd64.tar.gz.",
+				"Pinned lego archive URL: https://github.com/go-acme/lego/releases/download/v5.1.0/lego_v5.1.0_linux_amd64.tar.gz.",
 			},
 		},
 		{
@@ -118,8 +118,8 @@ func TestCheckPackageSourceModes(t *testing.T) {
 				Reachable:           true,
 				IntegrityChecked:    true,
 				ActualSHA256:        "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-				LegoVersion:         "v5.0.4",
-				LegoURL:             "https://github.com/go-acme/lego/releases/download/v5.0.4/lego_v5.0.4_linux_amd64.tar.gz",
+				LegoVersion:         "v5.1.0",
+				LegoURL:             "https://github.com/go-acme/lego/releases/download/v5.1.0/lego_v5.1.0_linux_amd64.tar.gz",
 				LegoExpectedSHA256:  "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
 			},
 			status: StatusFail,
@@ -135,8 +135,8 @@ func TestCheckPackageSourceModes(t *testing.T) {
 				IntegrityChecked:     true,
 				ActualSHA256:         "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
 				LegoMode:             "offline",
-				LegoVersion:          "v5.0.4",
-				LegoFilePath:         "/srv/packages/lego_v5.0.4_linux_amd64.tar.gz",
+				LegoVersion:          "v5.1.0",
+				LegoFilePath:         "/srv/packages/lego_v5.1.0_linux_amd64.tar.gz",
 				LegoFileExists:       true,
 				LegoExpectedSHA256:   "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
 				LegoIntegrityChecked: true,
@@ -145,7 +145,7 @@ func TestCheckPackageSourceModes(t *testing.T) {
 			status: StatusPass,
 			wantFindings: []string{
 				"Pinned lego archive source mode: offline.",
-				"Offline lego archive path: /srv/packages/lego_v5.0.4_linux_amd64.tar.gz.",
+				"Offline lego archive path: /srv/packages/lego_v5.1.0_linux_amd64.tar.gz.",
 			},
 		},
 		{
@@ -159,8 +159,8 @@ func TestCheckPackageSourceModes(t *testing.T) {
 				IntegrityChecked:    true,
 				ActualSHA256:        "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
 				LegoMode:            "offline",
-				LegoVersion:         "v5.0.4",
-				LegoFilePath:        "/srv/packages/lego_v5.0.4_linux_amd64.tar.gz",
+				LegoVersion:         "v5.1.0",
+				LegoFilePath:        "/srv/packages/lego_v5.1.0_linux_amd64.tar.gz",
 				LegoExpectedSHA256:  "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
 			},
 			status: StatusFail,
@@ -176,8 +176,8 @@ func TestCheckPackageSourceModes(t *testing.T) {
 				IntegrityChecked:     true,
 				ActualSHA256:         "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
 				LegoMode:             "offline",
-				LegoVersion:          "v5.0.4",
-				LegoFilePath:         "/srv/packages/lego_v5.0.4_linux_amd64.tar.gz",
+				LegoVersion:          "v5.1.0",
+				LegoFilePath:         "/srv/packages/lego_v5.1.0_linux_amd64.tar.gz",
 				LegoFileExists:       true,
 				LegoExpectedSHA256:   "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
 				LegoIntegrityChecked: true,
@@ -210,8 +210,8 @@ func TestCheckPackageSourceModes(t *testing.T) {
 
 func withVerifiedLegoSource(state PackageSourceState) PackageSourceState {
 	state.LegoMode = "direct"
-	state.LegoVersion = "v5.0.4"
-	state.LegoURL = "https://github.com/go-acme/lego/releases/download/v5.0.4/lego_v5.0.4_linux_amd64.tar.gz"
+	state.LegoVersion = "v5.1.0"
+	state.LegoURL = "https://github.com/go-acme/lego/releases/download/v5.1.0/lego_v5.1.0_linux_amd64.tar.gz"
 	state.LegoExpectedSHA256 = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 	state.LegoReachabilityChecked = true
 	state.LegoReachable = true

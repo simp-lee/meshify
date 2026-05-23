@@ -57,7 +57,7 @@ The default workflow above deploys a private Tailscale/Headscale network. If you
 | --- | --- |
 | Server OS | Debian, Ubuntu, or a Debian-family distribution with apt/dpkg/systemd |
 | Control plane | Headscale v0.28.0 on loopback behind Nginx |
-| TLS automation | HTTP-01 or DNS-01 with a meshify-managed pinned lego v5.0.4 binary |
+| TLS automation | HTTP-01 or DNS-01 with a meshify-managed pinned lego v5.1.0 binary |
 | Relay | Embedded Headscale DERP and STUN on `3478/udp`; no official DERP fallback |
 | Clients | Windows, macOS, Debian/Ubuntu Linux |
 | Client baseline | Tailscale client >= v1.74.0 |
@@ -449,7 +449,7 @@ Package and lego failures:
 - Direct Headscale source downloads the pinned Headscale v0.28.0 `.deb` and verifies SHA-256 evidence.
 - Mirror mode requires a reachable URL and explicit SHA-256 digest.
 - Offline mode requires a local `.deb` path and explicit SHA-256 digest.
-- Offline lego mode requires `advanced.lego_source.file_path` to point at the exact pinned lego v5.0.4 archive for `advanced.platform.arch`.
+- Offline lego mode requires `advanced.lego_source.file_path` to point at the exact pinned lego v5.1.0 archive for `advanced.platform.arch`.
 - Existing certificates created with lego v4 are migrated automatically before issuance or renewal. If migration fails, inspect the reported lego data path, fix permissions or unexpected files, and rerun deploy.
 
 Runtime failures:

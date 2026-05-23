@@ -4205,7 +4205,7 @@ func TestDetectPackageSourceStateUsesConfiguredPackageProbeTimeouts(t *testing.T
 
 func TestDetectPackageSourceStateUsesOfflineLegoArchiveWithoutRemoteProbe(t *testing.T) {
 	cfg := config.ExampleConfig()
-	archivePath := filepath.Join(t.TempDir(), "lego_v5.0.4_linux_amd64.tar.gz")
+	archivePath := filepath.Join(t.TempDir(), "lego_v5.1.0_linux_amd64.tar.gz")
 	if err := os.WriteFile(archivePath, []byte("not the real archive"), 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}

@@ -328,7 +328,7 @@ func runDeploy(ctx context, args []string) error {
 		if err != nil {
 			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 				Step:         "plan lego install",
-				Operation:    "selecting the pinned lego v5.0.4 Linux archive source and SHA-256 digest",
+				Operation:    "selecting the pinned lego v5.1.0 Linux archive source and SHA-256 digest",
 				Impact:       "meshify cannot continue certificate automation until the lego release artifact is fully pinned",
 				Remediation:  []string{"Use advanced.platform.arch amd64 or arm64, fix advanced.lego_source settings, then rerun deploy."},
 				RetryCommand: deployRetryCommand(options.configPath),
@@ -338,7 +338,7 @@ func runDeploy(ctx context, args []string) error {
 		if _, err := newLegoInstallerFn(privilegedExecutor).Install(stdcontext.Background(), installPlan); err != nil {
 			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 				Step:         "install lego binary",
-				Operation:    "verifying and installing the pinned lego v5.0.4 archive to /opt/meshify/bin/lego",
+				Operation:    "verifying and installing the pinned lego v5.1.0 archive to /opt/meshify/bin/lego",
 				Impact:       "meshify cannot continue ACME automation until the pinned lego binary is installed",
 				Remediation:  []string{"Fix GitHub release reachability, proxy settings, advanced.lego_source.file_path, archive permissions, or digest mismatches, then rerun deploy."},
 				RetryCommand: deployRetryCommand(options.configPath),
