@@ -105,6 +105,16 @@ advanced:
     # AWS_HOSTED_ZONE_ID, AWS_PROFILE, GCE_PROJECT, or GCE_ZONE_ID. Put
     # sensitive DNS values in separate root-only files and reference them with
     # provider _FILE variables.
+    #
+    # Tencent Cloud DNSPod / EdgeOne baseline env_file tuning:
+    # Keep provider credential _FILE variables in the env_file, then add:
+    # TENCENTCLOUD_PROPAGATION_TIMEOUT=900
+    # TENCENTCLOUD_POLLING_INTERVAL=10
+    # TENCENTCLOUD_TTL=600
+    # TENCENTCLOUD_HTTP_TIMEOUT=60
+    # LEGO_DNS_RESOLVERS=119.29.29.29:53
+    # LEGO_DNS_TIMEOUT=30
+    # LEGO_DNS_PROPAGATION_WAIT=10m
     env_file: ""
 
   network:

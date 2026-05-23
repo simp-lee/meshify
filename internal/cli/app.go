@@ -353,10 +353,11 @@ func runAppDeploy(ctx context, args []string) error {
 	if err := rejectPositionalArgs("app deploy", flagSet); err != nil {
 		return err
 	}
-	formatter, err := options.formatter(ctx.stdout)
+	format, err := output.ParseFormat(options.formatValue)
 	if err != nil {
 		return err
 	}
+	formatter := output.NewFormatter(ctx.stdout, format)
 	cfg, response, ok := loadAppConfigForResponse(options.configPath, "app deploy")
 	if !ok {
 		return writeAppFailureResponse(formatter, response)
@@ -547,7 +548,14 @@ func runAppDeploy(ctx context, args []string) error {
 	if _, err := privilegedExecutor.Run(stdcontext.Background(), legocomponent.MigrationGateCommand(names.LegoDataPath)); err != nil {
 		return appDeployFailureWithEffects(formatter, "迁移 app lego v5 storage 失败", err, effects)
 	}
-	if _, err := privilegedExecutor.Run(stdcontext.Background(), certPlan.Command); err != nil {
+	if _, err := runHostCommandWithProgress(
+		stdcontext.Background(),
+		privilegedExecutor,
+		certPlan.Command,
+		ctx.stdout,
+		format,
+		dns01CertificateProgress("app deploy", cfg.App.ACMEChallenge == appconfig.ACMEChallengeDNS01),
+	); err != nil {
 		return appDeployFailureWithEffects(formatter, "申请 app TLS 证书失败", err, effects)
 	}
 	effects.AddPaths(names.LegoDataPath, names.FullchainPath, names.PrivateKeyPath)

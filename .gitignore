@@ -31,6 +31,7 @@ coverage.*
 /.idea/
 *.swp
 *.swo
+test_run.sh
 
 # OS metadata
 .DS_Store

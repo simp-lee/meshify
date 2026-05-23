@@ -528,7 +528,14 @@ func runDeploy(ctx context, args []string) error {
 				})
 			}
 		}
-		certResult, err := privilegedExecutor.Run(stdcontext.Background(), certificatePlan.Command)
+		certResult, err := runHostCommandWithProgress(
+			stdcontext.Background(),
+			privilegedExecutor,
+			certificatePlan.Command,
+			ctx.stdout,
+			format,
+			dns01CertificateProgress("deploy", cfg.Default.ACMEChallenge == config.ACMEChallengeDNS01),
+		)
 		if err != nil {
 			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 				Step:         "issue certificate",

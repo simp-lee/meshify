@@ -136,10 +136,18 @@ sudo chmod 0600 /etc/meshify/dns01/tencentcloud-secret-id /etc/meshify/dns01/ten
 sudo tee /etc/meshify/dns01/tencentcloud.env >/dev/null <<'EOF'
 TENCENTCLOUD_SECRET_ID_FILE=/etc/meshify/dns01/tencentcloud-secret-id
 TENCENTCLOUD_SECRET_KEY_FILE=/etc/meshify/dns01/tencentcloud-secret-key
-TENCENTCLOUD_PROPAGATION_TIMEOUT=180
+TENCENTCLOUD_PROPAGATION_TIMEOUT=900
+TENCENTCLOUD_POLLING_INTERVAL=10
+TENCENTCLOUD_TTL=600
+TENCENTCLOUD_HTTP_TIMEOUT=60
+LEGO_DNS_RESOLVERS=119.29.29.29:53
+LEGO_DNS_TIMEOUT=30
+LEGO_DNS_PROPAGATION_WAIT=10m
 EOF
 sudo chmod 0600 /etc/meshify/dns01/tencentcloud.env
 ```
+
+The `LEGO_DNS_*` values pin lego's DNS zone lookup to DNSPod's public resolver and use a fixed DNS propagation wait. They are recommended when the domain uses Tencent Cloud EdgeOne / DNSPod hosted access, where some recursive resolvers may expose EdgeOne CNAME behavior during SOA or NS lookup.
 
 Then set DNS-01 in `meshify.yaml`:
 
