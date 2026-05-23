@@ -51,6 +51,7 @@ nginx:
   #   - path: "/sitemap.xml"
   #     match: "exact" # prefix | exact
   #     alias: "/opt/example-app/web/static/sitemap.xml"
+  #     default_type: "application/xml"
 
 dns01:
   provider: ""

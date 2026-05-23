@@ -44,9 +44,10 @@ func TestStageRuntimeRendersListenModeAssets(t *testing.T) {
 			AccessLog:    &staticAccessLog,
 		},
 		{
-			Path:  "/sitemap.xml",
-			Match: "exact",
-			Alias: "/opt/example-app/web/static/sitemap.xml",
+			Path:        "/sitemap.xml",
+			Match:       "exact",
+			Alias:       "/opt/example-app/web/static/sitemap.xml",
+			DefaultType: "application/xml",
 		},
 		{
 			Path:  "/sitemaps/",
@@ -101,6 +102,7 @@ func TestStageRuntimeRendersListenModeAssets(t *testing.T) {
 		"gzip_static on;",
 		"access_log off;",
 		"location = /sitemap.xml {\n        alias /opt/example-app/web/static/sitemap.xml;",
+		"default_type application/xml;",
 		"location /sitemaps/ {\n        alias /opt/example-app/web/static/sitemaps/;",
 		"proxy_connect_timeout 30s;",
 		"proxy_read_timeout 600s;",

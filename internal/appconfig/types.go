@@ -63,6 +63,7 @@ type NginxStaticLocationConfig struct {
 	Path         string `yaml:"path"`
 	Match        string `yaml:"match"`
 	Alias        string `yaml:"alias"`
+	DefaultType  string `yaml:"default_type"`
 	Expires      string `yaml:"expires"`
 	CacheControl string `yaml:"cache_control"`
 	TryFiles     bool   `yaml:"try_files"`

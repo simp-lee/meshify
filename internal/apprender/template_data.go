@@ -52,6 +52,7 @@ type StaticLocationTemplateData struct {
 	Exact        bool
 	Path         string
 	Alias        string
+	DefaultType  string
 	Expires      string
 	CacheControl string
 	TryFiles     bool
@@ -139,6 +140,7 @@ func staticLocationTemplateData(locations []appconfig.NginxStaticLocationConfig)
 			Exact:        location.Match == "exact",
 			Path:         location.Path,
 			Alias:        location.Alias,
+			DefaultType:  location.DefaultType,
 			Expires:      location.Expires,
 			CacheControl: location.CacheControl,
 			TryFiles:     location.TryFiles,

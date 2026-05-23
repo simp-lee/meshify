@@ -327,6 +327,9 @@ func validateStaticLocations(errs *[]string, httpsBlock string, locations []appc
 		}
 		mustAppearBefore(errs, httpsBlock, header, "location / {\n        proxy_pass", "static location "+location.Path+" before proxy location")
 		mustContain(errs, block, "alias "+location.Alias+";", "static location "+location.Path+" alias")
+		if location.DefaultType != "" {
+			mustContain(errs, block, "default_type "+location.DefaultType+";", "static location "+location.Path+" default_type")
+		}
 		if location.Expires != "" {
 			mustContain(errs, block, "expires "+location.Expires+";", "static location "+location.Path+" expires")
 		}

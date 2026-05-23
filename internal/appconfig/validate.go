@@ -16,6 +16,7 @@ import (
 type validationErrors []string
 
 var nginxExpiresValuePattern = regexp.MustCompile(`^(?:off|epoch|max|[+-]?[0-9]+(?:ms|s|m|h|d|w|M|y)?)$`)
+var nginxDefaultTypeValuePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]*/[A-Za-z0-9][A-Za-z0-9._+-]*$`)
 var nginxSizeValuePattern = regexp.MustCompile(`^[0-9]+(?:[kKmMgG])?$`)
 var nginxTimeValuePattern = regexp.MustCompile(`^[0-9]+(?:ms|s|m|h|d|w|M|y)?$`)
 var systemdSafeEmailPattern = regexp.MustCompile(`^[A-Za-z0-9._+-]+@[A-Za-z0-9.-]+$`)
@@ -47,6 +48,7 @@ func (c *Config) normalize() {
 		c.Nginx.StaticLocations[i].Path = strings.TrimSpace(c.Nginx.StaticLocations[i].Path)
 		c.Nginx.StaticLocations[i].Match = strings.TrimSpace(c.Nginx.StaticLocations[i].Match)
 		c.Nginx.StaticLocations[i].Alias = strings.TrimSpace(c.Nginx.StaticLocations[i].Alias)
+		c.Nginx.StaticLocations[i].DefaultType = strings.TrimSpace(c.Nginx.StaticLocations[i].DefaultType)
 		c.Nginx.StaticLocations[i].Expires = strings.TrimSpace(c.Nginx.StaticLocations[i].Expires)
 		c.Nginx.StaticLocations[i].CacheControl = strings.TrimSpace(c.Nginx.StaticLocations[i].CacheControl)
 	}
@@ -281,6 +283,9 @@ func validateNginx(errs *validationErrors, cfg NginxConfig) {
 		}
 		if location.Expires != "" && !nginxExpiresValuePattern.MatchString(location.Expires) {
 			*errs = append(*errs, field+".expires must be off, epoch, max, or a simple nginx time such as 30d")
+		}
+		if location.DefaultType != "" && !nginxDefaultTypeValuePattern.MatchString(location.DefaultType) {
+			*errs = append(*errs, field+".default_type must be a simple MIME type such as application/xml")
 		}
 		if location.CacheControl != "" {
 			validateNginxQuotedValue(errs, field+".cache_control", location.CacheControl)

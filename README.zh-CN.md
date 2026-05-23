@@ -374,7 +374,7 @@ service:
 | `proxy.buffering` / `proxy.request_buffering` | 适合流式响应、SSE 或上传转发场景 |
 | `nginx.static_locations` | 从业务发布目录暴露 `/static/`、`/sitemap.xml`、`/sitemaps/` 等静态文件 |
 
-`nginx.static_locations` 会渲染在 app 反代 location 之前，支持可选 `expires`、`Cache-Control`、`try_files $uri =404`、`gzip_static on` 和 `access_log off`。Meshify 不复制静态文件内容；静态文件应由业务发布流程和业务二进制一起放到对应 release 路径。
+`nginx.static_locations` 会渲染在 app 反代 location 之前，支持可选 `default_type`、`expires`、`Cache-Control`、`try_files $uri =404`、`gzip_static on` 和 `access_log off`。Meshify 不复制静态文件内容；静态文件应由业务发布流程和业务二进制一起放到对应 release 路径。
 
 `nginx.http2` 为 true 或任一静态 location 设置 `gzip_static: true` 时，app deploy 会在写入 runtime 文件前检查 `nginx -V`；`http2 on;` 要求 Nginx 至少为 `1.25.1` 且包含 `http_v2` 模块。
 

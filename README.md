@@ -374,7 +374,7 @@ For a first deployment, you can usually leave the `nginx` section alone. Revisit
 | `proxy.buffering` / `proxy.request_buffering` | Useful for streaming responses, SSE, or upload forwarding |
 | `nginx.static_locations` | Publishes static files such as `/static/`, `/sitemap.xml`, or `/sitemaps/` from your app release directory |
 
-`nginx.static_locations` renders before the app proxy location and supports optional `expires`, `Cache-Control`, `try_files $uri =404`, `gzip_static on`, and `access_log off`. Meshify does not copy static file contents; publish them with the same release process that installs the app binary.
+`nginx.static_locations` renders before the app proxy location and supports optional `default_type`, `expires`, `Cache-Control`, `try_files $uri =404`, `gzip_static on`, and `access_log off`. Meshify does not copy static file contents; publish them with the same release process that installs the app binary.
 
 When `nginx.http2` is true or any static location sets `gzip_static: true`, app deploy checks `nginx -V` before writing runtime files. `http2 on;` requires Nginx `1.25.1` or newer and the `http_v2` module.
 

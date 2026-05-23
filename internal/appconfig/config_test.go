@@ -100,6 +100,7 @@ nginx:
     - path: /sitemap.xml
       match: exact
       alias: /opt/example-app/web/static/sitemap.xml
+      default_type: application/xml
 `))
 	if err != nil {
 		t.Fatalf("LoadBytes() error = %v", err)
@@ -158,6 +159,9 @@ nginx:
 	}
 	if got := cfg.Nginx.StaticLocations[1].Match; got != "exact" {
 		t.Fatalf("nginx.static_locations[1].match = %q, want exact", got)
+	}
+	if got := cfg.Nginx.StaticLocations[1].DefaultType; got != "application/xml" {
+		t.Fatalf("nginx.static_locations[1].default_type = %q, want application/xml", got)
 	}
 }
 
@@ -494,9 +498,10 @@ func TestValidateNginxStaticLocationRules(t *testing.T) {
 			AccessLog:    &staticAccessLog,
 		},
 		{
-			Path:  "/sitemap.xml",
-			Match: "exact",
-			Alias: "/opt/example-app/web/static/sitemap.xml",
+			Path:        "/sitemap.xml",
+			Match:       "exact",
+			Alias:       "/opt/example-app/web/static/sitemap.xml",
+			DefaultType: "application/xml",
 		},
 	}
 	valid.Nginx.ClientMaxBodySize = "100m"
@@ -550,6 +555,10 @@ func TestValidateNginxStaticLocationRules(t *testing.T) {
 	badExpires := validListenConfig()
 	badExpires.Nginx.StaticLocations = []NginxStaticLocationConfig{{Path: "/static/", Alias: "/opt/example-app/web/static/", Expires: "30 days"}}
 	expectValidationError(t, badExpires, "nginx.static_locations[0].expires must be off, epoch, max, or a simple nginx time")
+
+	badDefaultType := validListenConfig()
+	badDefaultType.Nginx.StaticLocations = []NginxStaticLocationConfig{{Path: "/sitemap.xml", Match: "exact", Alias: "/opt/example-app/web/static/sitemap.xml", DefaultType: "application/xml;\nreturn 200"}}
+	expectValidationError(t, badDefaultType, "nginx.static_locations[0].default_type must be a simple MIME type")
 
 	duplicatePath := validListenConfig()
 	duplicatePath.Nginx.StaticLocations = []NginxStaticLocationConfig{

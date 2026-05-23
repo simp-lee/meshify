@@ -96,6 +96,9 @@ server {
 {{ range .StaticLocations }}
     location {{ if .Exact }}= {{ end }}{{ .Path }} {
         alias {{ .Alias }};
+{{- if .DefaultType }}
+        default_type {{ .DefaultType }};
+{{- end }}
 {{- if .Expires }}
         expires {{ .Expires }};
 {{- end }}
