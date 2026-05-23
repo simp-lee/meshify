@@ -142,12 +142,12 @@ TENCENTCLOUD_TTL=600
 TENCENTCLOUD_HTTP_TIMEOUT=60
 LEGO_DNS_RESOLVERS=119.29.29.29:53
 LEGO_DNS_TIMEOUT=30
-LEGO_DNS_PROPAGATION_WAIT=10m
+LEGO_DNS_PROPAGATION_DISABLE_ANS=true
 EOF
 sudo chmod 0600 /etc/meshify/dns01/tencentcloud.env
 ```
 
-The `LEGO_DNS_*` values pin lego's DNS zone lookup to DNSPod's public resolver and use a fixed DNS propagation wait. They are recommended when the domain uses Tencent Cloud EdgeOne / DNSPod hosted access, where some recursive resolvers may expose EdgeOne CNAME behavior during SOA or NS lookup.
+The `LEGO_DNS_*` values pin lego's DNS zone lookup to DNSPod's public resolver, keep recursive TXT polling active, and skip the authoritative nameserver propagation check that can fail under Tencent Cloud EdgeOne / DNSPod hosted access. With `TENCENTCLOUD_POLLING_INTERVAL=10`, lego checks every 10 seconds and continues as soon as the TXT record is visible to the configured recursive resolver.
 
 Then set DNS-01 in `meshify.yaml`:
 

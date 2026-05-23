@@ -142,12 +142,12 @@ TENCENTCLOUD_TTL=600
 TENCENTCLOUD_HTTP_TIMEOUT=60
 LEGO_DNS_RESOLVERS=119.29.29.29:53
 LEGO_DNS_TIMEOUT=30
-LEGO_DNS_PROPAGATION_WAIT=10m
+LEGO_DNS_PROPAGATION_DISABLE_ANS=true
 EOF
 sudo chmod 0600 /etc/meshify/dns01/tencentcloud.env
 ```
 
-其中 `LEGO_DNS_*` 会把 lego 的 DNS zone 判断固定到 DNSPod 公共解析器，并使用固定 DNS 传播等待。域名开启腾讯云 EdgeOne / DNSPod 托管接入时，部分递归解析器可能在 SOA 或 NS 查询中暴露 EdgeOne CNAME 行为，建议保留这些值。
+其中 `LEGO_DNS_*` 会把 lego 的 DNS zone 判断固定到 DNSPod 公共解析器，保留递归解析器 TXT 轮询，并跳过在腾讯云 EdgeOne / DNSPod 托管接入下容易失败的权威 nameserver 传播检查。配合 `TENCENTCLOUD_POLLING_INTERVAL=10`，lego 会每 10 秒检查一次，TXT 记录对指定递归解析器可见后就继续申请证书。
 
 然后在 `meshify.yaml` 中启用 DNS-01：
 

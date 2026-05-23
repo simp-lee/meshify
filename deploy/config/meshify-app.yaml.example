@@ -59,14 +59,17 @@ dns01:
   # Cloudflare, DigitalOcean, and Tencent Cloud require a root-only env_file.
   #
   # Tencent Cloud DNSPod / EdgeOne baseline env_file tuning:
-  # Keep provider credential _FILE variables in the env_file, then add:
+  # Keep provider credential _FILE variables in the env_file, then add the
+  # recursive polling baseline below. It keeps lego polling every 10 seconds
+  # while skipping the authoritative NS propagation check that can fail with
+  # EdgeOne / DNSPod hosted access.
   # TENCENTCLOUD_PROPAGATION_TIMEOUT=900
   # TENCENTCLOUD_POLLING_INTERVAL=10
   # TENCENTCLOUD_TTL=600
   # TENCENTCLOUD_HTTP_TIMEOUT=60
   # LEGO_DNS_RESOLVERS=119.29.29.29:53
   # LEGO_DNS_TIMEOUT=30
-  # LEGO_DNS_PROPAGATION_WAIT=10m
+  # LEGO_DNS_PROPAGATION_DISABLE_ANS=true
   env_file: ""
 
 tailscale:
