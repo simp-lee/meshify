@@ -4,6 +4,7 @@ import (
 	"meshify/internal/acme"
 	"meshify/internal/appconfig"
 	"meshify/internal/components/appsvc"
+	"strconv"
 	"strings"
 )
 
@@ -27,6 +28,7 @@ type TemplateData struct {
 	ClientMaxBodySize string
 	AccessLog         string
 	ErrorLog          string
+	GoAccess          GoAccessTemplateData
 	Proxy             ProxyTemplateData
 	StaticLocations   []StaticLocationTemplateData
 	WebrootPath       string
@@ -36,6 +38,42 @@ type TemplateData struct {
 	PrivateKeyPath    string
 	TLSMarkerPath     string
 	HookPath          string
+}
+
+type GoAccessTemplateData struct {
+	Enabled                    bool
+	BinaryPath                 string
+	Language                   string
+	LogFormat                  string
+	EnhancedLogFormat          bool
+	CombinedLogFormat          bool
+	NginxLogFormatName         string
+	CanonicalAccessLogPath     string
+	ManagedCanonicalAccessLog  bool
+	DashboardPath              string
+	WebSocketPath              string
+	WebSocketHost              string
+	WebSocketPort              int
+	WebSocketListen            string
+	WebSocketUpstream          string
+	AuthBasicUserFile          string
+	AuthCIDRAllowlist          []string
+	ConfigPath                 string
+	ReportDir                  string
+	ReportPath                 string
+	DBPath                     string
+	ServiceUnit                string
+	SystemUser                 string
+	SystemGroup                string
+	DashboardURL               string
+	WSURL                      string
+	Origin                     string
+	HTMLReportTitle            string
+	Lang                       string
+	LCMessages                 string
+	LCCType                    string
+	LCTime                     string
+	GoAccessLogFormatDirective string
 }
 
 type ProxyTemplateData struct {
@@ -98,8 +136,9 @@ func NewTemplateData(cfg appconfig.Config) (TemplateData, error) {
 		ServiceEnvFile:    cfg.Service.EnvFile,
 		HTTP2:             cfg.Nginx.HTTP2Enabled(),
 		ClientMaxBodySize: cfg.Nginx.EffectiveClientMaxBodySize(),
-		AccessLog:         cfg.Nginx.AccessLog,
+		AccessLog:         nginxAccessLogPath(cfg),
 		ErrorLog:          cfg.Nginx.ErrorLog,
+		GoAccess:          goAccessTemplateData(cfg, names),
 		Proxy:             proxyTemplateData(cfg.Nginx.Proxy),
 		StaticLocations:   staticLocationTemplateData(cfg.Nginx.StaticLocations),
 		WebrootPath:       names.WebrootPath,
@@ -110,6 +149,74 @@ func NewTemplateData(cfg appconfig.Config) (TemplateData, error) {
 		TLSMarkerPath:     names.TLSMarkerPath,
 		HookPath:          names.HookPath,
 	}, nil
+}
+
+func nginxAccessLogPath(cfg appconfig.Config) string {
+	if cfg.Nginx.GoAccess.Enabled {
+		return appsvc.GoAccessCanonicalAccessLogPath(cfg)
+	}
+	return cfg.Nginx.AccessLog
+}
+
+func goAccessTemplateData(cfg appconfig.Config, names appsvc.Names) GoAccessTemplateData {
+	goaccess := cfg.Nginx.GoAccess
+	if !goaccess.Enabled {
+		return GoAccessTemplateData{}
+	}
+	logFormat := goaccess.EffectiveLogFormat()
+	webSocketUpstream := names.GoAccessWebSocketHost
+	if strings.Contains(webSocketUpstream, ":") {
+		webSocketUpstream = "[" + webSocketUpstream + "]"
+	}
+	webSocketUpstream += ":" + strconv.Itoa(names.GoAccessWebSocketPort)
+
+	data := GoAccessTemplateData{
+		Enabled:                   true,
+		BinaryPath:                appsvc.GoAccessBinaryPath,
+		Language:                  goaccess.EffectiveLanguage(),
+		LogFormat:                 logFormat,
+		EnhancedLogFormat:         logFormat == appconfig.NginxGoAccessLogFormatEnhanced,
+		CombinedLogFormat:         logFormat == appconfig.NginxGoAccessLogFormatCombined,
+		NginxLogFormatName:        names.GoAccessNginxLogFormatName,
+		CanonicalAccessLogPath:    names.GoAccessCanonicalAccessLogPath,
+		ManagedCanonicalAccessLog: appsvc.GoAccessManagesCanonicalAccessLog(cfg),
+		DashboardPath:             cfg.NginxGoAccessDashboardPath(),
+		WebSocketPath:             cfg.NginxGoAccessWebSocketPath(),
+		WebSocketHost:             names.GoAccessWebSocketHost,
+		WebSocketPort:             names.GoAccessWebSocketPort,
+		WebSocketListen:           names.GoAccessWebSocketListen,
+		WebSocketUpstream:         webSocketUpstream,
+		AuthBasicUserFile:         goaccess.AuthBasicUserFile,
+		AuthCIDRAllowlist:         append([]string(nil), goaccess.AuthCIDRAllowlist...),
+		ConfigPath:                names.GoAccessConfigPath,
+		ReportDir:                 names.GoAccessReportDir,
+		ReportPath:                names.GoAccessReportPath,
+		DBPath:                    names.GoAccessDBPath,
+		ServiceUnit:               names.GoAccessServiceUnit,
+		SystemUser:                names.GoAccessSystemUser,
+		SystemGroup:               names.GoAccessSystemGroup,
+		DashboardURL:              "https://" + cfg.PrimaryDomain() + cfg.NginxGoAccessDashboardPath(),
+		WSURL:                     "wss://" + cfg.PrimaryDomain() + cfg.NginxGoAccessWebSocketPath(),
+		Origin:                    "https://" + cfg.PrimaryDomain(),
+		HTMLReportTitle:           "Meshify-GoAccess-" + names.AppName,
+	}
+	if data.EnhancedLogFormat {
+		data.GoAccessLogFormatDirective = `%h %^ %^ [%x] "%r" %s %b "%R" "%u" "%v" %T "%^" "%^"`
+	} else {
+		data.GoAccessLogFormatDirective = "COMBINED"
+	}
+	if data.Language == appconfig.NginxGoAccessLanguageSimplifiedChinese {
+		data.Lang = "zh_CN.UTF-8"
+		data.LCMessages = "zh_CN.UTF-8"
+		data.LCCType = "zh_CN.UTF-8"
+		data.LCTime = "C.UTF-8"
+	} else {
+		data.Lang = "C.UTF-8"
+		data.LCMessages = "C.UTF-8"
+		data.LCCType = "C.UTF-8"
+		data.LCTime = "C.UTF-8"
+	}
+	return data
 }
 
 func proxyTemplateData(proxy appconfig.NginxProxyConfig) ProxyTemplateData {

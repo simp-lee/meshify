@@ -6,6 +6,10 @@ import (
 )
 
 func EnsureSystemUserCommands(names Names) []host.Command {
+	return []host.Command{ensureSystemUserCommand(names.SystemUser, names.VarLibDir, "meshify-app-user", "ensure-app-user")}
+}
+
+func ensureSystemUserCommand(name string, home string, arg0 string, displayName string) host.Command {
 	script := `set -eu
 name=$1
 home=$2
@@ -51,15 +55,19 @@ fi
 
 groupadd --system "$name"
 useradd --system --gid "$name" --home-dir "$home" --shell "$shell" "$name"`
-	return []host.Command{{
+	return host.Command{
 		Name:        "sh",
-		Args:        []string{"-c", script, "meshify-app-user", names.SystemUser, names.VarLibDir},
-		DisplayName: "ensure-app-user",
-		DisplayArgs: []string{names.SystemUser},
-	}}
+		Args:        []string{"-c", script, arg0, strings.TrimSpace(name), strings.TrimSpace(home)},
+		DisplayName: displayName,
+		DisplayArgs: []string{strings.TrimSpace(name)},
+	}
 }
 
 func GuardSystemUserCommand(names Names) host.Command {
+	return guardSystemUserCommand(names.SystemUser, names.VarLibDir, "meshify-app-user-guard", "guard-app-user")
+}
+
+func guardSystemUserCommand(name string, home string, arg0 string, displayName string) host.Command {
 	script := `set -eu
 name=$1
 home=$2
@@ -104,18 +112,32 @@ if [ "$user_uid" -eq 0 ] || [ "$user_uid" -ge 1000 ] || [ "$group_gid" -eq 0 ] |
 fi`
 	return host.Command{
 		Name:        "sh",
-		Args:        []string{"-c", script, "meshify-app-user-guard", names.SystemUser, names.VarLibDir},
-		DisplayName: "guard-app-user",
-		DisplayArgs: []string{names.SystemUser},
+		Args:        []string{"-c", script, arg0, strings.TrimSpace(name), strings.TrimSpace(home)},
+		DisplayName: displayName,
+		DisplayArgs: []string{strings.TrimSpace(name)},
 	}
 }
 
 func GuardRootDirectoriesCommand(names Names) host.Command {
+	return guardRootDirectoriesCommand(names, "")
+}
+
+func GuardRootDirectoriesWithGoAccessAuthBootstrapCommand(names Names, authFile string) host.Command {
+	return guardRootDirectoriesCommand(names, strings.TrimSpace(authFile))
+}
+
+func guardRootDirectoriesCommand(names Names, bootstrapFile string) host.Command {
 	script := `set -eu
 app_name=$1
-shift
-pairs=$*
+var_lib_dir=$2
+var_lib_marker=$3
+etc_dir=$4
+etc_marker=$5
+hook_dir=$6
+hook_marker=$7
+bootstrap_file=$8
 expected_marker="Meshify-managed: app.name=$app_name"
+suggested_auth_file="$etc_dir/goaccess.htpasswd"
 
 fail() {
     echo "$1" >&2
@@ -125,7 +147,8 @@ fail() {
 refuse_writable() {
     target=$1
     label=$2
-    if find "$target" -maxdepth 0 \( -perm -020 -o -perm -002 \) -print -quit | grep -q .; then
+    writable=$(find "$target" -maxdepth 0 \( -perm -020 -o -perm -002 \) -print -quit) || fail "failed to inspect $label $target permissions"
+    if [ -n "$writable" ]; then
         fail "$label $target must not be writable by group or others"
     fi
 }
@@ -139,10 +162,45 @@ require_root_owned() {
     fi
 }
 
-while [ "$#" -gt 0 ]; do
+write_marker() {
     dir=$1
     marker=$2
-    shift 2
+    tmp=$(mktemp "$dir/.meshify-managed.XXXXXX")
+    trap 'rm -f "$tmp"' EXIT INT TERM
+    printf '%s\n' "$expected_marker" > "$tmp"
+    chmod 0644 "$tmp"
+    mv "$tmp" "$marker"
+    trap - EXIT INT TERM
+}
+
+validate_bootstrap_file() {
+    dir=$1
+    file=$2
+    name=$(basename "$file")
+
+    if [ "$file" != "$suggested_auth_file" ]; then
+        fail "GoAccess auth bootstrap file $file must be $suggested_auth_file"
+    fi
+    if [ "$(dirname "$file")" != "$dir" ]; then
+        fail "GoAccess auth bootstrap file $file is not directly under $dir"
+    fi
+    if [ -L "$file" ]; then
+        fail "GoAccess auth bootstrap file $file must not be a symlink"
+    fi
+    if [ ! -f "$file" ]; then
+        fail "GoAccess auth bootstrap file $file must be a regular file"
+    fi
+    require_root_owned "$file" "GoAccess auth bootstrap file"
+    refuse_writable "$file" "GoAccess auth bootstrap file"
+    extra=$(find "$dir" -mindepth 1 -maxdepth 1 ! -name "$name" ! -name ".meshify-managed" -print -quit) || fail "failed to inspect GoAccess auth bootstrap directory $dir"
+    if [ -n "$extra" ]; then
+        fail "$dir exists without $expected_marker and contains files other than the expected GoAccess auth bootstrap file"
+    fi
+}
+
+check_existing_root() {
+    dir=$1
+    marker=$2
 
     if [ -L "$dir" ]; then
         fail "$dir is a symlink; refusing to use it as a Meshify app root"
@@ -151,7 +209,7 @@ while [ "$#" -gt 0 ]; do
         fail "$dir exists and is not a directory; refusing to use it as a Meshify app root"
     fi
     if [ ! -d "$dir" ]; then
-        continue
+        return
     fi
     require_root_owned "$dir" "app root directory"
     refuse_writable "$dir" "app root directory"
@@ -159,6 +217,11 @@ while [ "$#" -gt 0 ]; do
         fail "$marker is a symlink; refusing to trust app root ownership"
     fi
     if [ ! -e "$marker" ]; then
+        if [ -n "$bootstrap_file" ] && [ "$dir" = "$(dirname "$bootstrap_file")" ]; then
+            validate_bootstrap_file "$dir" "$bootstrap_file"
+            write_marker "$dir" "$marker"
+            return
+        fi
         fail "$dir exists without $marker; refusing to write into a non-Meshify app root"
     fi
     if [ ! -f "$marker" ]; then
@@ -170,30 +233,32 @@ while [ "$#" -gt 0 ]; do
     if [ "$actual_marker" != "$expected_marker" ]; then
         fail "$dir is managed by a different Meshify app; refusing to write into it"
     fi
-done
+}
 
-set -- $pairs
-while [ "$#" -gt 0 ]; do
+create_missing_root() {
     dir=$1
     marker=$2
-    shift 2
 
     if [ -d "$dir" ]; then
-        continue
+        return
     fi
     install -d -m 0755 "$dir"
-    tmp=$(mktemp "$dir/.meshify-managed.XXXXXX")
-    trap 'rm -f "$tmp"' EXIT INT TERM
-    printf '%s\n' "$expected_marker" > "$tmp"
-    chmod 0644 "$tmp"
-    mv "$tmp" "$marker"
-    trap - EXIT INT TERM
-done`
+    write_marker "$dir" "$marker"
+}
+
+check_existing_root "$var_lib_dir" "$var_lib_marker"
+check_existing_root "$etc_dir" "$etc_marker"
+check_existing_root "$hook_dir" "$hook_marker"
+
+create_missing_root "$var_lib_dir" "$var_lib_marker"
+create_missing_root "$etc_dir" "$etc_marker"
+create_missing_root "$hook_dir" "$hook_marker"`
 	args := []string{
 		"-c", script, "meshify-app-root-dirs", names.AppName,
 		names.VarLibDir, names.VarLibMarkerPath,
 		names.EtcDir, names.EtcMarkerPath,
 		names.HookDir, names.HookDirMarkerPath,
+		strings.TrimSpace(bootstrapFile),
 	}
 	return host.Command{
 		Name:        "sh",

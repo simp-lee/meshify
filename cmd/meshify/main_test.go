@@ -48,7 +48,7 @@ func TestRun_HelpOutput(t *testing.T) {
 				"meshify init",
 				"meshify deploy",
 				"meshify verify",
-				"app      管理附加 app 部署。",
+				"app      Manage additional app deployments.",
 			} {
 				if !strings.Contains(stdout, want) {
 					t.Fatalf("stdout = %q, want substring %q", stdout, want)

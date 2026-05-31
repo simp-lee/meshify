@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -89,9 +90,107 @@ func TestFileInstallerReportsModeOnlyChanges(t *testing.T) {
 	if !result.Changed || result.ContentChanged || !result.ModeChanged {
 		t.Fatalf("result = %#v, want mode-only change", result)
 	}
+	info, err := os.Stat(filepath.Join(rootDir, "etc", "nginx", "sites-available", "headscale.conf"))
+	if err != nil {
+		t.Fatalf("Stat() error = %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("mode = %v, want 0600", got)
+	}
 }
 
-func TestFileInstallerReplacesExistingFileWithRestrictiveModeBeforePostWriteChmod(t *testing.T) {
+func TestFileInstallerRejectsSymlinkTargetBeforeReadOrWrite(t *testing.T) {
+	t.Parallel()
+
+	rootDir := t.TempDir()
+	target := filepath.Join(rootDir, "safe-target")
+	if err := os.WriteFile(target, []byte("server_url: https://hs.example.com\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(target) error = %v", err)
+	}
+	link := filepath.Join(rootDir, "etc", "headscale", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("Symlink() error = %v", err)
+	}
+
+	installer := NewFileInstaller(nil, rootDir)
+	staged := render.StagedFile{
+		SourcePath: "templates/etc/headscale/config.yaml.tmpl",
+		HostPath:   "/etc/headscale/config.yaml",
+		Mode:       0o644,
+		Content:    []byte("server_url: https://hs.example.com\n"),
+	}
+	if _, err := installer.InstallOne(staged); err == nil || !strings.Contains(err.Error(), "is a symlink") {
+		t.Fatalf("InstallOne() error = %v, want symlink refusal", err)
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatalf("Stat(target) error = %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("target mode = %v, want unchanged 0600", got)
+	}
+	if linkInfo, err := os.Lstat(link); err != nil || linkInfo.Mode()&fs.ModeSymlink == 0 {
+		t.Fatalf("Lstat(link) = %#v, %v; want retained symlink", linkInfo, err)
+	}
+}
+
+func TestFileInstallerRejectsNonRegularTargetsBeforeRead(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		create func(t *testing.T, path string)
+	}{
+		{
+			name: "directory",
+			create: func(t *testing.T, path string) {
+				t.Helper()
+				if err := os.Mkdir(path, 0o755); err != nil {
+					t.Fatalf("Mkdir(target) error = %v", err)
+				}
+			},
+		},
+		{
+			name: "fifo",
+			create: func(t *testing.T, path string) {
+				t.Helper()
+				if err := syscall.Mkfifo(path, 0o600); err != nil {
+					t.Fatalf("Mkfifo(target) error = %v", err)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			rootDir := t.TempDir()
+			target := filepath.Join(rootDir, "etc", "headscale", "config.yaml")
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				t.Fatalf("MkdirAll() error = %v", err)
+			}
+			tt.create(t, target)
+
+			installer := NewFileInstaller(nil, rootDir)
+			staged := render.StagedFile{
+				SourcePath: "templates/etc/headscale/config.yaml.tmpl",
+				HostPath:   "/etc/headscale/config.yaml",
+				Mode:       0o600,
+				Content:    []byte("server_url: https://hs.example.com\n"),
+			}
+			if _, err := installer.InstallOne(staged); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+				t.Fatalf("InstallOne() error = %v, want non-regular refusal", err)
+			}
+		})
+	}
+}
+
+func TestFileInstallerReplacesExistingFileWithRequestedModeWithoutPostWriteChmod(t *testing.T) {
 	t.Parallel()
 
 	rootDir := t.TempDir()
@@ -103,7 +202,7 @@ func TestFileInstallerReplacesExistingFileWithRestrictiveModeBeforePostWriteChmo
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	installer := NewFileInstaller(chmodFailFileSystem{chmodErr: errors.New("post-write chmod failed")}, rootDir)
+	installer := NewFileInstaller(nil, rootDir)
 	staged := render.StagedFile{
 		SourcePath: "templates/etc/headscale/config.yaml.tmpl",
 		HostPath:   "/etc/headscale/config.yaml",
@@ -112,8 +211,8 @@ func TestFileInstallerReplacesExistingFileWithRestrictiveModeBeforePostWriteChmo
 	}
 
 	_, err := installer.InstallOne(staged)
-	if err == nil {
-		t.Fatal("InstallOne() error = nil, want post-write chmod failure")
+	if err != nil {
+		t.Fatalf("InstallOne() error = %v", err)
 	}
 
 	content, readErr := os.ReadFile(target)
@@ -128,7 +227,7 @@ func TestFileInstallerReplacesExistingFileWithRestrictiveModeBeforePostWriteChmo
 		t.Fatalf("Stat() error = %v", statErr)
 	}
 	if got := info.Mode().Perm(); got != 0o600 {
-		t.Fatalf("mode after failed post-write chmod = %v, want %v", got, 0o600)
+		t.Fatalf("mode after replace = %v, want %v", got, 0o600)
 	}
 }
 
@@ -168,6 +267,66 @@ func TestCommandFileSystemWriteFileUsesRestrictiveAtomicReplace(t *testing.T) {
 	}
 }
 
+func TestCommandFileSystemStatParsesLocaleIndependentModeBits(t *testing.T) {
+	t.Parallel()
+
+	regularRunner := &captureRunner{result: Result{Stdout: "81a4 123 1700000000\n"}}
+	fileSystem := NewCommandFileSystem(NewExecutor(regularRunner, nil))
+	regularInfo, err := fileSystem.Stat("/etc/headscale/config.yaml")
+	if err != nil {
+		t.Fatalf("Stat(regular) error = %v", err)
+	}
+	if !regularInfo.Mode().IsRegular() || regularInfo.Mode().Perm() != 0o644 {
+		t.Fatalf("regular mode = %v, want regular 0644", regularInfo.Mode())
+	}
+	if len(regularRunner.commands) != 1 || !slices.Contains(regularRunner.commands[0].Args, "-L") {
+		t.Fatalf("regular stat command = %#v, want dereference flag", regularRunner.commands)
+	}
+	if regularInfo.Size() != 123 || regularInfo.ModTime().Unix() != 1700000000 {
+		t.Fatalf("regular size/mtime = %d/%d, want 123/1700000000", regularInfo.Size(), regularInfo.ModTime().Unix())
+	}
+
+	symlinkRunner := &captureRunner{result: Result{Stdout: "a1ff 7 1700000001\n"}}
+	fileSystem = NewCommandFileSystem(NewExecutor(symlinkRunner, nil))
+	symlinkInfo, err := fileSystem.Lstat("/etc/headscale/config.yaml")
+	if err != nil {
+		t.Fatalf("Lstat(symlink) error = %v", err)
+	}
+	if symlinkInfo.Mode()&fs.ModeSymlink == 0 {
+		t.Fatalf("symlink mode = %v, want symlink", symlinkInfo.Mode())
+	}
+	if len(symlinkRunner.commands) != 1 || slices.Contains(symlinkRunner.commands[0].Args, "-L") {
+		t.Fatalf("symlink stat command = %#v, want no dereference flag", symlinkRunner.commands)
+	}
+	if symlinkInfo.Size() != 7 || symlinkInfo.ModTime().Unix() != 1700000001 {
+		t.Fatalf("symlink size/mtime = %d/%d, want 7/1700000001", symlinkInfo.Size(), symlinkInfo.ModTime().Unix())
+	}
+
+	directoryRunner := &captureRunner{result: Result{Stdout: "41ed 4096 1700000002\n"}}
+	fileSystem = NewCommandFileSystem(NewExecutor(directoryRunner, nil))
+	directoryInfo, err := fileSystem.Lstat("/etc/headscale")
+	if err != nil {
+		t.Fatalf("Lstat(directory) error = %v", err)
+	}
+	if !directoryInfo.IsDir() || directoryInfo.Mode().Perm() != 0o755 {
+		t.Fatalf("directory mode = %v IsDir = %v, want directory 0755", directoryInfo.Mode(), directoryInfo.IsDir())
+	}
+	if directoryInfo.Size() != 4096 || directoryInfo.ModTime().Unix() != 1700000002 {
+		t.Fatalf("directory size/mtime = %d/%d, want 4096/1700000002", directoryInfo.Size(), directoryInfo.ModTime().Unix())
+	}
+
+	specialRunner := &captureRunner{result: Result{Stdout: "8fed 0 1700000003\n"}}
+	fileSystem = NewCommandFileSystem(NewExecutor(specialRunner, nil))
+	specialInfo, err := fileSystem.Stat("/usr/local/bin/app")
+	if err != nil {
+		t.Fatalf("Stat(special) error = %v", err)
+	}
+	wantSpecial := fs.FileMode(0o755) | fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky
+	if got := specialInfo.Mode(); got != wantSpecial {
+		t.Fatalf("special mode = %v, want %v", got, wantSpecial)
+	}
+}
+
 func TestCollectModifiedPathsAndActivationsUseChangedFilesOnly(t *testing.T) {
 	t.Parallel()
 
@@ -190,17 +349,25 @@ func TestCollectModifiedPathsAndActivationsUseChangedFilesOnly(t *testing.T) {
 	}
 }
 
-func TestFileInstallerInstallPreservesFailingResultForCheckpointTracking(t *testing.T) {
+func TestFileInstallerInstallPreservesModeOnlyWriteFailureResultForCheckpointTracking(t *testing.T) {
 	t.Parallel()
 
 	rootDir := t.TempDir()
-	installer := NewFileInstaller(chmodFailFileSystem{chmodErr: errors.New("chmod failed after write")}, rootDir)
+	target := filepath.Join(rootDir, "etc", "headscale", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	content := []byte("server_url: https://hs.example.com\n")
+	if err := os.WriteFile(target, content, 0o644); err != nil {
+		t.Fatalf("WriteFile(target) error = %v", err)
+	}
+	installer := NewFileInstaller(writeFailFileSystem{writeErr: errors.New("mode-only write failed")}, rootDir)
 	staged := render.StagedFile{
 		SourcePath:  "templates/etc/headscale/config.yaml.tmpl",
 		HostPath:    "/etc/headscale/config.yaml",
 		Mode:        0o600,
 		Activations: []assets.Activation{assets.ActivationRestartHeadscale},
-		Content:     []byte("server_url: https://hs.example.com\n"),
+		Content:     content,
 	}
 
 	results, err := installer.Install([]render.StagedFile{staged})
@@ -210,20 +377,19 @@ func TestFileInstallerInstallPreservesFailingResultForCheckpointTracking(t *test
 	if len(results) != 1 {
 		t.Fatalf("len(results) = %d, want 1", len(results))
 	}
-	if got := results[0]; got.HostPath != staged.HostPath || !got.Changed || !got.Created || !got.ContentChanged || !got.ModeChanged {
-		t.Fatalf("results[0] = %#v, want failing changed result preserved", got)
+	if got := results[0]; got.HostPath != staged.HostPath || got.Changed || got.Created || got.ContentChanged || !got.ModeChanged {
+		t.Fatalf("results[0] = %#v, want failing mode-only result without recorded mutation", got)
 	}
 
 	paths := CollectModifiedPaths(results)
-	if len(paths) != 1 || paths[0] != staged.HostPath {
-		t.Fatalf("CollectModifiedPaths() = %v, want [%q]", paths, staged.HostPath)
+	if len(paths) != 0 {
+		t.Fatalf("CollectModifiedPaths() = %v, want none", paths)
 	}
 	activations := CollectActivations(results)
-	if len(activations) != 1 || activations[0] != assets.ActivationRestartHeadscale {
-		t.Fatalf("CollectActivations() = %v, want [%q]", activations, assets.ActivationRestartHeadscale)
+	if len(activations) != 0 {
+		t.Fatalf("CollectActivations() = %v, want none", activations)
 	}
 
-	target := filepath.Join(rootDir, "etc", "headscale", "config.yaml")
 	content, readErr := os.ReadFile(target)
 	if readErr != nil {
 		t.Fatalf("ReadFile() error = %v", readErr)
@@ -270,15 +436,6 @@ func TestFileInstallerInstallDoesNotReportModifiedPathWhenWriteFails(t *testing.
 	if _, statErr := os.Stat(target); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("os.Stat() error = %v, want %v", statErr, os.ErrNotExist)
 	}
-}
-
-type chmodFailFileSystem struct {
-	OSFileSystem
-	chmodErr error
-}
-
-func (fileSystem chmodFailFileSystem) Chmod(name string, mode fs.FileMode) error {
-	return fileSystem.chmodErr
 }
 
 type writeFailFileSystem struct {

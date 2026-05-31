@@ -121,8 +121,9 @@ var requiredFirewallPorts = []string{"80/tcp", "443/tcp", "3478/udp"}
 var knownConflictServices = []string{"headscale", "nginx", "apache2", "caddy", "traefik"}
 
 var (
-	ufwStatusColumnSeparator = regexp.MustCompile(`[[:space:]]{2,}`)
-	dnsEnvFileKeyPattern     = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	ufwStatusColumnSeparator  = regexp.MustCompile(`[[:space:]]{2,}`)
+	dnsEnvFileKeyPattern      = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	socketProcessTuplePattern = regexp.MustCompile(`\("([^"]*)",pid=([0-9]+)[^)]*\)`)
 )
 
 var ufwApplicationProfilePorts = map[string][]string{
@@ -1030,8 +1031,8 @@ func detectPortBindings(cfg config.Config) []preflight.PortBinding {
 		metricsPort = config.DefaultHeadscaleMetricsPort
 	}
 	tcpPorts := []int{80, 443, 8080, metricsPort, 50443}
-	tcpBindings, tcpDetected := detectSSBindings("tcp", uniqueInts(tcpPorts))
-	udpBindings, udpDetected := detectSSBindings("udp", []int{3478})
+	tcpBindings, tcpDetected := detectSSBindingList("tcp", uniqueInts(tcpPorts))
+	udpBindings, udpDetected := detectSSBindingList("udp", []int{3478})
 	if !tcpDetected && !udpDetected {
 		return nil
 	}
@@ -1051,16 +1052,30 @@ func detectPortBindings(cfg config.Config) []preflight.PortBinding {
 			if !tcpDetected {
 				continue
 			}
-			if binding, ok := tcpBindings[requiredBinding.Port]; ok {
+			matched := false
+			for _, binding := range tcpBindings {
+				if binding.Port != requiredBinding.Port || !strings.EqualFold(binding.Protocol, requiredBinding.Protocol) {
+					continue
+				}
 				bindings = append(bindings, binding)
+				matched = true
+			}
+			if matched {
 				continue
 			}
 		case "udp":
 			if !udpDetected {
 				continue
 			}
-			if binding, ok := udpBindings[requiredBinding.Port]; ok {
+			matched := false
+			for _, binding := range udpBindings {
+				if binding.Port != requiredBinding.Port || !strings.EqualFold(binding.Protocol, requiredBinding.Protocol) {
+					continue
+				}
 				bindings = append(bindings, binding)
+				matched = true
+			}
+			if matched {
 				continue
 			}
 		}
@@ -1087,6 +1102,14 @@ func uniqueInts(values []int) []int {
 }
 
 func detectSSBindings(protocol string, ports []int) (map[int]preflight.PortBinding, bool) {
+	bindings, detected := detectSSBindingList(protocol, ports)
+	if !detected {
+		return nil, false
+	}
+	return selectSSPortBindings(bindings), true
+}
+
+func detectSSBindingList(protocol string, ports []int) ([]preflight.PortBinding, bool) {
 	if _, err := exec.LookPath("ss"); err != nil {
 		return nil, false
 	}
@@ -1105,16 +1128,24 @@ func detectSSBindings(protocol string, ports []int) (map[int]preflight.PortBindi
 	if err != nil && len(raw) == 0 {
 		return nil, false
 	}
-	return parseSSBindings(string(raw), protocol, ports)
+	return parseSSBindingList(string(raw), protocol, ports)
 }
 
 func parseSSBindings(raw string, protocol string, ports []int) (map[int]preflight.PortBinding, bool) {
+	bindings, detected := parseSSBindingList(raw, protocol, ports)
+	if !detected {
+		return nil, false
+	}
+	return selectSSPortBindings(bindings), true
+}
+
+func parseSSBindingList(raw string, protocol string, ports []int) ([]preflight.PortBinding, bool) {
 	portSet := make(map[int]struct{}, len(ports))
 	for _, port := range ports {
 		portSet[port] = struct{}{}
 	}
 
-	bindings := make(map[int]preflight.PortBinding, len(ports))
+	bindings := make([]preflight.PortBinding, 0, len(ports))
 	if strings.TrimSpace(raw) == "" {
 		return bindings, true
 	}
@@ -1127,7 +1158,7 @@ func parseSSBindings(raw string, protocol string, ports []int) (map[int]prefligh
 		if len(fields) < 4 {
 			continue
 		}
-		port, ok := parseSocketPort(fields[3])
+		localAddress, port, ok := parseSocketEndpoint(fields[3])
 		if !ok {
 			continue
 		}
@@ -1136,14 +1167,90 @@ func parseSSBindings(raw string, protocol string, ports []int) (map[int]prefligh
 			continue
 		}
 
-		binding := preflight.PortBinding{Port: port, Protocol: protocol, InUse: true, Process: parseSocketProcessName(line)}
-		if existing, ok := bindings[port]; ok && existing.Process != "" {
+		processes := parseSocketProcesses(line)
+		if len(processes) == 0 {
+			bindings = append(bindings, preflight.PortBinding{Port: port, Protocol: protocol, InUse: true, LocalAddress: localAddress})
 			continue
 		}
-		bindings[port] = binding
+		for _, process := range processes {
+			bindings = append(bindings, preflight.PortBinding{Port: port, Protocol: protocol, InUse: true, LocalAddress: localAddress, Process: process.name, PID: process.pid})
+		}
 	}
 
-	return bindings, parsedAny
+	return compactSSBindingList(bindings), parsedAny
+}
+
+func selectSSPortBindings(bindingList []preflight.PortBinding) map[int]preflight.PortBinding {
+	bindings := make(map[int]preflight.PortBinding, len(bindingList))
+	for _, binding := range bindingList {
+		if existing, ok := bindings[binding.Port]; ok && (existing.Process != "" || binding.Process == "") {
+			continue
+		}
+		bindings[binding.Port] = binding
+	}
+	return bindings
+}
+
+type ssBindingSocketKey struct {
+	protocol     string
+	localAddress string
+	port         int
+}
+
+type socketProcess struct {
+	name string
+	pid  int
+}
+
+func compactSSBindingList(bindings []preflight.PortBinding) []preflight.PortBinding {
+	keyOrder := make([]ssBindingSocketKey, 0, len(bindings))
+	grouped := make(map[ssBindingSocketKey][]preflight.PortBinding, len(bindings))
+	for _, binding := range bindings {
+		key := ssBindingSocketKey{
+			protocol:     strings.ToLower(strings.TrimSpace(binding.Protocol)),
+			localAddress: strings.TrimSpace(binding.LocalAddress),
+			port:         binding.Port,
+		}
+		if _, ok := grouped[key]; !ok {
+			keyOrder = append(keyOrder, key)
+		}
+		grouped[key] = append(grouped[key], binding)
+	}
+
+	compact := make([]preflight.PortBinding, 0, len(bindings))
+	for _, key := range keyOrder {
+		group := grouped[key]
+		detailed := make([]preflight.PortBinding, 0, len(group))
+		for _, binding := range group {
+			if !ssBindingHasProcessDetails(binding) {
+				continue
+			}
+			duplicate := false
+			for _, existing := range detailed {
+				if ssBindingProcessDetailsEqual(existing, binding) {
+					duplicate = true
+					break
+				}
+			}
+			if !duplicate {
+				detailed = append(detailed, binding)
+			}
+		}
+		if len(detailed) > 0 {
+			compact = append(compact, detailed...)
+			continue
+		}
+		compact = append(compact, group[0])
+	}
+	return compact
+}
+
+func ssBindingHasProcessDetails(binding preflight.PortBinding) bool {
+	return strings.TrimSpace(binding.Process) != "" || binding.PID != 0
+}
+
+func ssBindingProcessDetailsEqual(left preflight.PortBinding, right preflight.PortBinding) bool {
+	return strings.TrimSpace(left.Process) == strings.TrimSpace(right.Process) && left.PID == right.PID
 }
 
 func detectFirewallState() preflight.FirewallState {
@@ -1464,29 +1571,53 @@ func detectACMEState(cfg config.Config) preflight.ACMEState {
 }
 
 func parseSocketPort(endpoint string) (int, bool) {
-	lastColon := strings.LastIndex(strings.TrimSpace(endpoint), ":")
-	if lastColon == -1 {
-		return 0, false
-	}
-	port, err := strconv.Atoi(endpoint[lastColon+1:])
-	if err != nil {
-		return 0, false
-	}
-	return port, true
+	_, port, ok := parseSocketEndpoint(endpoint)
+	return port, ok
 }
 
-func parseSocketProcessName(line string) string {
-	marker := "users:((\""
-	index := strings.Index(line, marker)
-	if index == -1 {
-		return ""
+func parseSocketEndpoint(endpoint string) (string, int, bool) {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return "", 0, false
 	}
-	remainder := line[index+len(marker):]
-	end := strings.Index(remainder, "\"")
-	if end == -1 {
-		return ""
+	host := ""
+	portString := ""
+	if strings.HasPrefix(endpoint, "[") {
+		closeBracket := strings.LastIndex(endpoint, "]:")
+		if closeBracket == -1 {
+			return "", 0, false
+		}
+		host = endpoint[1:closeBracket]
+		portString = endpoint[closeBracket+2:]
+	} else {
+		lastColon := strings.LastIndex(endpoint, ":")
+		if lastColon == -1 {
+			return "", 0, false
+		}
+		host = endpoint[:lastColon]
+		portString = endpoint[lastColon+1:]
 	}
-	return strings.TrimSpace(remainder[:end])
+	if strings.TrimSpace(host) == "" {
+		return "", 0, false
+	}
+	port, err := strconv.Atoi(portString)
+	if err != nil {
+		return "", 0, false
+	}
+	return strings.TrimSpace(host), port, true
+}
+
+func parseSocketProcesses(line string) []socketProcess {
+	matches := socketProcessTuplePattern.FindAllStringSubmatch(line, -1)
+	processes := make([]socketProcess, 0, len(matches))
+	for _, match := range matches {
+		pid, err := strconv.Atoi(match[2])
+		if err != nil {
+			continue
+		}
+		processes = append(processes, socketProcess{name: strings.TrimSpace(match[1]), pid: pid})
+	}
+	return processes
 }
 
 func parseUFWAllowedPorts(output string) []string {
@@ -2069,6 +2200,14 @@ func nonEmptyEnvironmentByKey() map[string]string {
 }
 
 func fileOwnerUID(info os.FileInfo) (uint64, bool) {
+	return fileSysUintField(info, "Uid", "UID")
+}
+
+func fileOwnerGID(info os.FileInfo) (uint64, bool) {
+	return fileSysUintField(info, "Gid", "GID")
+}
+
+func fileSysUintField(info os.FileInfo, fieldNames ...string) (uint64, bool) {
 	sys := reflect.ValueOf(info.Sys())
 	if !sys.IsValid() {
 		return 0, false
@@ -2082,18 +2221,21 @@ func fileOwnerUID(info os.FileInfo) (uint64, bool) {
 	if sys.Kind() != reflect.Struct {
 		return 0, false
 	}
-	uid := sys.FieldByName("Uid")
-	if !uid.IsValid() {
-		uid = sys.FieldByName("UID")
+	var field reflect.Value
+	for _, fieldName := range fieldNames {
+		field = sys.FieldByName(fieldName)
+		if field.IsValid() {
+			break
+		}
 	}
-	if !uid.IsValid() {
+	if !field.IsValid() {
 		return 0, false
 	}
-	switch uid.Kind() {
+	switch field.Kind() {
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-		return uid.Uint(), true
+		return field.Uint(), true
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		value := uid.Int()
+		value := field.Int()
 		if value < 0 {
 			return 0, false
 		}

@@ -17,17 +17,20 @@ type DNSProbe struct {
 }
 
 type PortBinding struct {
-	Port     int    `json:"port"`
-	Protocol string `json:"protocol"`
-	InUse    bool   `json:"in_use"`
-	Process  string `json:"process,omitempty"`
+	Port         int    `json:"port"`
+	Protocol     string `json:"protocol"`
+	InUse        bool   `json:"in_use"`
+	LocalAddress string `json:"local_address,omitempty"`
+	Process      string `json:"process,omitempty"`
+	PID          int    `json:"pid,omitempty"`
 }
 
 type PortRequirement struct {
-	Port       int
-	Protocol   string
-	Purpose    string
-	Reviewable bool
+	Port        int
+	Protocol    string
+	BindAddress string
+	Purpose     string
+	Reviewable  bool
 }
 
 type FirewallState struct {
@@ -205,9 +208,10 @@ func checkPortAvailability(bindings []PortBinding, requirements []PortRequiremen
 		return sorted[i].Port < sorted[j].Port
 	})
 
-	provided := make(map[string]PortBinding, len(sorted))
+	provided := make(map[string][]PortBinding, len(sorted))
 	for _, binding := range sorted {
-		provided[portLabel(binding)] = binding
+		key := portLabel(binding)
+		provided[key] = append(provided[key], binding)
 	}
 
 	missing := []string{}
@@ -216,14 +220,23 @@ func checkPortAvailability(bindings []PortBinding, requirements []PortRequiremen
 	available := []string{}
 	managedActive := []string{}
 	for _, required := range requirements {
-		binding, ok := provided[portRequirementKey(required)]
+		bindings := provided[portRequirementKey(required)]
 		label := portRequirementLabel(required)
-		if !ok {
+		if len(bindings) == 0 {
 			missing = append(missing, fmt.Sprintf("Missing occupancy probe for %s.", label))
 			continue
 		}
 
-		if binding.InUse {
+		overlaps := false
+		for _, binding := range bindings {
+			if !bindingOverlapsRequirement(binding, required) {
+				continue
+			}
+			overlaps = true
+			if !binding.InUse {
+				available = append(available, fmt.Sprintf("%s is available.", label))
+				continue
+			}
 			process := strings.TrimSpace(binding.Process)
 			if process == "" {
 				process = "another process"
@@ -237,9 +250,10 @@ func checkPortAvailability(bindings []PortBinding, requirements []PortRequiremen
 				continue
 			}
 			blocking = append(blocking, fmt.Sprintf("%s is already in use by %s.", label, process))
-			continue
 		}
-		available = append(available, fmt.Sprintf("%s is available.", label))
+		if !overlaps {
+			available = append(available, fmt.Sprintf("%s is available.", label))
+		}
 	}
 
 	if len(blocking) > 0 {
@@ -308,9 +322,9 @@ func requiredPortRequirements(cfg config.Config) []PortRequirement {
 
 	requirements := append([]PortRequirement(nil), requiredPublicServicePorts...)
 	requirements = append(requirements,
-		PortRequirement{Port: 8080, Protocol: "tcp", Purpose: "Headscale control-plane loopback listener"},
-		PortRequirement{Port: metricsPort, Protocol: "tcp", Purpose: "Headscale metrics loopback listener"},
-		PortRequirement{Port: 50443, Protocol: "tcp", Purpose: "Headscale gRPC loopback listener"},
+		PortRequirement{Port: 8080, Protocol: "tcp", BindAddress: "127.0.0.1", Purpose: "Headscale control-plane loopback listener"},
+		PortRequirement{Port: metricsPort, Protocol: "tcp", BindAddress: "127.0.0.1", Purpose: "Headscale metrics loopback listener"},
+		PortRequirement{Port: 50443, Protocol: "tcp", BindAddress: "127.0.0.1", Purpose: "Headscale gRPC loopback listener"},
 	)
 	return uniquePortRequirements(requirements)
 }
@@ -623,6 +637,98 @@ func bindingMatchesRequirement(binding PortBinding, required PortRequirement) bo
 		requiredProtocol = "tcp"
 	}
 	return binding.Port == required.Port && bindingProtocol == requiredProtocol
+}
+
+func bindingOverlapsRequirement(binding PortBinding, required PortRequirement) bool {
+	if !bindingMatchesRequirement(binding, required) {
+		return false
+	}
+	return socketBindHostsOverlap(binding.LocalAddress, required.BindAddress)
+}
+
+func socketBindHostsOverlap(left string, right string) bool {
+	left = normalizeSocketBindHost(left)
+	right = normalizeSocketBindHost(right)
+	if left == "" || right == "" {
+		return true
+	}
+	if left == "*" || right == "*" {
+		return true
+	}
+	if socketBindHostIsWildcard(left) {
+		return socketBindWildcardOverlapsHost(left, right)
+	}
+	if socketBindHostIsWildcard(right) {
+		return socketBindWildcardOverlapsHost(right, left)
+	}
+	if left == right {
+		return true
+	}
+	if left == "localhost" {
+		return socketBindHostIsLoopback(right)
+	}
+	if right == "localhost" {
+		return socketBindHostIsLoopback(left)
+	}
+	leftIP, leftOK := parseSocketBindIP(left)
+	rightIP, rightOK := parseSocketBindIP(right)
+	return leftOK && rightOK && leftIP.Compare(rightIP) == 0
+}
+
+func socketBindWildcardOverlapsHost(wildcard string, host string) bool {
+	switch wildcard {
+	case "0.0.0.0":
+		return socketBindHostIsIPv4(host) || host == "localhost"
+	case "::":
+		return true
+	default:
+		return true
+	}
+}
+
+func socketBindHostIsIPv4(host string) bool {
+	ip, ok := parseSocketBindIP(host)
+	return ok && ip.Is4()
+}
+
+func socketBindHostIsIPv6(host string) bool {
+	ip, ok := parseSocketBindIP(host)
+	return ok && ip.Is6()
+}
+
+func normalizeSocketBindHost(host string) string {
+	host = strings.ToLower(strings.TrimSpace(host))
+	host = strings.TrimPrefix(host, "[")
+	host = strings.TrimSuffix(host, "]")
+	if zoneIndex := strings.Index(host, "%"); zoneIndex >= 0 {
+		host = host[:zoneIndex]
+	}
+	return host
+}
+
+func socketBindHostIsWildcard(host string) bool {
+	switch host {
+	case "*", "0.0.0.0", "::":
+		return true
+	default:
+		return false
+	}
+}
+
+func socketBindHostIsLoopback(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip, ok := parseSocketBindIP(host)
+	return ok && ip.IsLoopback()
+}
+
+func parseSocketBindIP(host string) (netip.Addr, bool) {
+	ip, err := netip.ParseAddr(host)
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	return ip.Unmap(), true
 }
 
 func isManagedServiceName(name string, managed ManagedServiceState) bool {

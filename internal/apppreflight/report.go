@@ -27,6 +27,9 @@ type Inputs struct {
 	Permissions                 preflight.PermissionState
 	DNS                         map[string]preflight.DNSProbe
 	Ports                       []preflight.PortBinding
+	AppListenChecked            bool
+	AppListenReady              bool
+	AppListenDetail             string
 	ServiceBinaryOK             bool
 	ServiceBinaryPath           string
 	ServiceEnvFile              string
@@ -41,6 +44,18 @@ type Inputs struct {
 	DNSCredentialsChecked       bool
 	DNSCredentialsReady         bool
 	DNSCredentialsDetail        string
+	GoAccessAuthFileChecked     bool
+	GoAccessAuthFileReady       bool
+	GoAccessAuthFileDetail      string
+	GoAccessPortChecked         bool
+	GoAccessPortReady           bool
+	GoAccessPortDetail          string
+	GoAccessLocaleChecked       bool
+	GoAccessLocaleReady         bool
+	GoAccessLocaleDetail        string
+	GoAccessLogFileChecked      bool
+	GoAccessLogFileReady        bool
+	GoAccessLogFileDetail       string
 }
 
 type Report struct {
@@ -54,9 +69,9 @@ func BuildReport(cfg appconfig.Config, inputs Inputs) Report {
 	}
 
 	if inputs.Permissions.IsRoot {
-		add("permissions", StatusPass, "当前命令具备 root 权限")
+		add("permissions", StatusPass, "Current command has root privileges")
 	} else {
-		add("permissions", StatusFail, "app deploy 需要当前进程具备 root 权限", "使用 sudo meshify app deploy 重新执行。")
+		add("permissions", StatusFail, "app deploy requires root privileges", "Rerun with sudo meshify app deploy.")
 	}
 
 	for _, domain := range cfg.App.Domains {
@@ -70,50 +85,53 @@ func BuildReport(cfg appconfig.Config, inputs Inputs) Report {
 	if cfg.App.ACMEChallenge == appconfig.ACMEChallengeDNS01 {
 		switch {
 		case !inputs.DNSCredentialsChecked:
-			add("dns01-credentials", StatusFail, "DNS-01 provider env_file 未完成自动校验", "准备 root-only 的 dns01.env_file，或确认该 provider 支持当前主机身份的环境凭据。")
+			add("dns01-credentials", StatusFail, "DNS-01 provider env_file was not validated automatically", "Prepare a root-only dns01.env_file, or confirm this provider supports environment credentials from the current host identity.")
 		case !inputs.DNSCredentialsReady:
 			detail := strings.TrimSpace(inputs.DNSCredentialsDetail)
 			if detail == "" {
-				detail = "DNS-01 provider env_file 不可用"
+				detail = "DNS-01 provider env_file is unavailable"
 			} else {
-				detail = "DNS-01 provider env_file 校验失败: " + detail
+				detail = "DNS-01 provider env_file validation failed: " + detail
 			}
-			add("dns01-credentials", StatusFail, detail, "修复 dns01.env_file 的权限、内容或引用的凭据文件后重新执行。")
+			add("dns01-credentials", StatusFail, detail, "Fix dns01.env_file permissions, content, or referenced credential files, then rerun.")
 		default:
 			detail := strings.TrimSpace(inputs.DNSCredentialsDetail)
 			if detail == "" {
-				detail = "DNS-01 provider env_file 已通过校验"
+				detail = "DNS-01 provider env_file passed validation"
 			}
 			add("dns01-credentials", StatusPass, detail)
 		}
 	}
 
 	if cfg.Mode() == appconfig.ModeListen {
+		if inputs.AppListenChecked {
+			addAppListenCheck(&checks, inputs.AppListenReady, inputs.AppListenDetail)
+		}
 		if inputs.ServiceBinaryOK {
-			add("service-binary", StatusPass, "业务二进制存在且可执行")
+			add("service-binary", StatusPass, "Service binary exists and is executable")
 		} else {
 			path := inputs.ServiceBinaryPath
 			if path == "" {
 				path = cfg.ServiceBinary()
 			}
-			add("service-binary", StatusFail, "业务二进制不存在或不可执行: "+path, "先把业务二进制放到 service.exec_start 的绝对路径，并授予执行权限。")
+			add("service-binary", StatusFail, "Service binary does not exist or is not executable: "+path, "Place the service binary at the absolute path from service.exec_start and make it executable.")
 		}
 		if strings.TrimSpace(inputs.ServiceEnvFile) != "" {
 			switch {
 			case !inputs.ServiceEnvFileChecked:
-				add("service-env-file", StatusFail, "service.env_file 未完成自动校验", "确认 service.env_file 存在、root-owned 且权限为 0600。")
+				add("service-env-file", StatusFail, "service.env_file was not validated automatically", "Confirm service.env_file exists, is root-owned, and has mode 0600.")
 			case !inputs.ServiceEnvFileReady:
 				detail := strings.TrimSpace(inputs.ServiceEnvFileDetail)
 				if detail == "" {
-					detail = "service.env_file 不可用"
+					detail = "service.env_file is unavailable"
 				} else {
-					detail = "service.env_file 校验失败: " + detail
+					detail = "service.env_file validation failed: " + detail
 				}
-				add("service-env-file", StatusFail, detail, "修复 service.env_file 的路径、属主或权限后重新执行。")
+				add("service-env-file", StatusFail, detail, "Fix service.env_file path, owner, or permissions, then rerun.")
 			default:
 				detail := strings.TrimSpace(inputs.ServiceEnvFileDetail)
 				if detail == "" {
-					detail = "service.env_file 已通过 root-only 校验"
+					detail = "service.env_file passed root-only validation"
 				}
 				add("service-env-file", StatusPass, detail)
 			}
@@ -121,54 +139,108 @@ func BuildReport(cfg appconfig.Config, inputs Inputs) Report {
 	}
 
 	if inputs.TailscaleRequired {
-		add("tailscale", StatusPass, "当前 app 需要 tailnet，deploy 将自动检查 Tailscale client")
+		add("tailscale", StatusPass, "This app requires the tailnet; deploy will check the Tailscale client automatically")
 	} else {
-		add("tailscale", StatusPass, "当前 app 不需要 tailnet，跳过 Tailscale client 前置条件")
+		add("tailscale", StatusPass, "This app does not require the tailnet; Tailscale client prerequisites are skipped")
 	}
 	if strings.TrimSpace(inputs.TailscaleAuthKeyFile) != "" {
 		switch {
 		case !inputs.TailscaleAuthKeyFileChecked:
-			add("tailscale-auth-key-file", StatusFail, "tailscale.auth_key_file 未完成自动校验", "确认 tailscale.auth_key_file 存在、root-owned、root-only，且只包含一个 preauth key。")
+			add("tailscale-auth-key-file", StatusFail, "tailscale.auth_key_file was not validated automatically", "Confirm tailscale.auth_key_file exists, is root-owned, root-only, and contains exactly one preauth key.")
 		case !inputs.TailscaleAuthKeyFileReady:
 			detail := strings.TrimSpace(inputs.TailscaleAuthKeyFileDetail)
 			if detail == "" {
-				detail = "tailscale.auth_key_file 不可用"
+				detail = "tailscale.auth_key_file is unavailable"
 			} else {
-				detail = "tailscale.auth_key_file 校验失败: " + detail
+				detail = "tailscale.auth_key_file validation failed: " + detail
 			}
-			add("tailscale-auth-key-file", StatusFail, detail, "修复 tailscale.auth_key_file 的路径、属主、权限、父目录或 token 内容后重新执行。")
+			add("tailscale-auth-key-file", StatusFail, detail, "Fix tailscale.auth_key_file path, owner, permissions, parent directories, or token content, then rerun.")
 		default:
 			detail := strings.TrimSpace(inputs.TailscaleAuthKeyFileDetail)
 			if detail == "" {
-				detail = "tailscale.auth_key_file 已通过 root-only 校验"
+				detail = "tailscale.auth_key_file passed root-only validation"
 			}
 			add("tailscale-auth-key-file", StatusPass, detail)
+		}
+	}
+
+	if cfg.Nginx.GoAccess.Enabled {
+		addGoAccessCheck(&checks, "goaccess-auth-file", inputs.GoAccessAuthFileChecked, inputs.GoAccessAuthFileReady, inputs.GoAccessAuthFileDetail, "nginx.goaccess.auth_basic_user_file was not validated automatically", "Fix the htpasswd file path, owner, permissions, content, or parent-directory safety, then rerun.")
+		addGoAccessCheck(&checks, "goaccess-port", inputs.GoAccessPortChecked, inputs.GoAccessPortReady, inputs.GoAccessPortDetail, "GoAccess WebSocket port was not validated automatically", "Free the conflicting port, or set nginx.goaccess.websocket_listen to an available loopback IP:port.")
+		addGoAccessCheck(&checks, "goaccess-locale", inputs.GoAccessLocaleChecked, inputs.GoAccessLocaleReady, inputs.GoAccessLocaleDetail, "GoAccess locale was not validated automatically", "Install the UTF-8 locale required by the selected language, or set nginx.goaccess.language to en.")
+		if strings.TrimSpace(cfg.Nginx.AccessLog) != "" && !cfg.NginxGoAccessManagesCanonicalAccessLog() {
+			addGoAccessCheck(&checks, "goaccess-log-file", inputs.GoAccessLogFileChecked, inputs.GoAccessLogFileReady, inputs.GoAccessLogFileDetail, "GoAccess canonical access log was not validated automatically", "Prepare explicit nginx.access_log: the file must already exist, be a regular non-symlink file, and not be writable by group/others; parent directories must be root-owned and not writable by group/others. Deploy creates or confirms the GoAccess runtime user before checking that user can read the file and enter parent directories.")
 		}
 	}
 
 	return Report{Checks: checks}
 }
 
+func addAppListenCheck(checks *[]Check, ready bool, detail string) {
+	summary := strings.TrimSpace(detail)
+	if ready {
+		if summary == "" {
+			summary = "app.listen port passed validation"
+		}
+		*checks = append(*checks, Check{ID: "app-listen", Status: StatusPass, Summary: summary})
+		return
+	}
+	if summary == "" {
+		summary = "app.listen port validation failed"
+	}
+	*checks = append(*checks, Check{
+		ID:      "app-listen",
+		Status:  StatusFail,
+		Summary: summary,
+		Remediations: []string{
+			"Free the conflicting app.listen address, or stop the unmanaged service before rerunning sudo meshify app deploy.",
+		},
+	})
+}
+
+func addGoAccessCheck(checks *[]Check, id string, checked bool, ready bool, detail string, uncheckedSummary string, remediation string) {
+	status := StatusPass
+	summary := strings.TrimSpace(detail)
+	remediations := []string{}
+	switch {
+	case !checked:
+		status = StatusFail
+		summary = uncheckedSummary
+		remediations = append(remediations, remediation)
+	case !ready:
+		status = StatusFail
+		if summary == "" {
+			summary = id + " validation failed"
+		}
+		remediations = append(remediations, remediation)
+	default:
+		if summary == "" {
+			summary = id + " passed validation"
+		}
+	}
+	*checks = append(*checks, Check{ID: id, Status: status, Summary: summary, Remediations: compact(remediations)})
+}
+
 func evaluateDNSProbe(cfg appconfig.Config, domain string, probe preflight.DNSProbe, ok bool) (Status, string, string) {
 	if !ok || strings.TrimSpace(probe.LookupError) != "" || len(probe.ResolvedIPs) == 0 {
 		if cfg.App.ACMEChallenge == appconfig.ACMEChallengeDNS01 {
-			return StatusWarn, fmt.Sprintf("%s 的 DNS 解析未确认；DNS-01 模式不因此阻断部署", domain), "确认 dns01.provider/env_file 覆盖该域名，并在切流前把 app 域名解析到当前云服务器。"
+			return StatusWarn, fmt.Sprintf("%s DNS resolution is unconfirmed; DNS-01 mode does not block deploy for this", domain), "Confirm dns01.provider/env_file covers this domain, and point the app domain to this cloud server before traffic cutover."
 		}
-		return StatusFail, fmt.Sprintf("%s 的 DNS 解析未确认", domain), "修正 app.domains 的公开 DNS 后重新执行。"
+		return StatusFail, fmt.Sprintf("%s DNS resolution is unconfirmed", domain), "Fix public DNS for app.domains, then rerun."
 	}
 	public := publicRoutableIPs(probe.ResolvedIPs)
 	if len(public) == 0 {
 		if cfg.App.ACMEChallenge == appconfig.ACMEChallengeDNS01 {
-			return StatusWarn, fmt.Sprintf("%s 未解析到公网可路由地址: %s；DNS-01 模式不因此阻断部署", domain, strings.Join(probe.ResolvedIPs, ", ")), "确认 DNS-01 provider/env_file 覆盖该域名，并在切流前将 app 域名解析到当前云服务器。"
+			return StatusWarn, fmt.Sprintf("%s did not resolve to a public routable address: %s; DNS-01 mode does not block deploy for this", domain, strings.Join(probe.ResolvedIPs, ", ")), "Confirm DNS-01 provider/env_file covers this domain, and point the app domain to this cloud server before traffic cutover."
 		}
-		return StatusFail, fmt.Sprintf("%s 未解析到公网可路由地址: %s", domain, strings.Join(probe.ResolvedIPs, ", ")), "将 app 域名解析到当前云服务器的公网 A 或 AAAA 地址。"
+		return StatusFail, fmt.Sprintf("%s did not resolve to a public routable address: %s", domain, strings.Join(probe.ResolvedIPs, ", ")), "Point the app domain to this cloud server's public A or AAAA address."
 	}
 	hasExpectedAddress := strings.TrimSpace(probe.ExpectedIPv4) != "" || strings.TrimSpace(probe.ExpectedIPv6) != ""
 	if !hasExpectedAddress {
 		if cfg.App.ACMEChallenge == appconfig.ACMEChallengeHTTP01 {
-			return StatusFail, fmt.Sprintf("%s 已解析到公网地址 %s，但未能确认这些地址属于当前云服务器", domain, strings.Join(public, ", ")), "确保当前主机可访问公网 IP 探测服务，或在主 meshify.yaml 的 advanced.network.public_ipv4/public_ipv6 中记录当前云服务器公网地址后重新执行。"
+			return StatusFail, fmt.Sprintf("%s resolved to public address %s, but Meshify could not confirm these addresses belong to the current cloud server", domain, strings.Join(public, ", ")), "Ensure the current host can reach public IP detection services, or record this server's public address in advanced.network.public_ipv4/public_ipv6 in the main meshify.yaml, then rerun."
 		}
-		return StatusWarn, fmt.Sprintf("%s 已解析到公网地址 %s，但未能确认这些地址是否属于当前云服务器", domain, strings.Join(public, ", ")), "如需自动确认 DNS 指向当前云服务器，请在主 meshify.yaml 的 advanced.network.public_ipv4 或 public_ipv6 中记录本机公网地址。"
+		return StatusWarn, fmt.Sprintf("%s resolved to public address %s, but Meshify could not confirm whether these addresses belong to the current cloud server", domain, strings.Join(public, ", ")), "To let Meshify confirm DNS points to this cloud server, record this host's public address in advanced.network.public_ipv4 or public_ipv6 in the main meshify.yaml."
 	}
 	missing := []string{}
 	if expectedIPv4 := strings.TrimSpace(probe.ExpectedIPv4); expectedIPv4 != "" && !containsString(probe.ResolvedIPs, expectedIPv4) {
@@ -179,11 +251,11 @@ func evaluateDNSProbe(cfg appconfig.Config, domain string, probe preflight.DNSPr
 	}
 	if len(missing) > 0 {
 		if cfg.App.ACMEChallenge == appconfig.ACMEChallengeDNS01 {
-			return StatusWarn, fmt.Sprintf("%s 的 DNS 结果缺少期望地址: %s；DNS-01 模式不因此阻断部署", domain, strings.Join(missing, ", ")), "确认 DNS-01 provider/env_file 覆盖该域名，并在切流前将 app 域名解析到当前云服务器的期望公网地址。"
+			return StatusWarn, fmt.Sprintf("%s DNS result is missing expected address: %s; DNS-01 mode does not block deploy for this", domain, strings.Join(missing, ", ")), "Confirm DNS-01 provider/env_file covers this domain, and point the app domain to this cloud server's expected public address before traffic cutover."
 		}
-		return StatusFail, fmt.Sprintf("%s 的 DNS 结果缺少期望地址: %s", domain, strings.Join(missing, ", ")), "将 app 域名解析到当前云服务器的期望公网地址。"
+		return StatusFail, fmt.Sprintf("%s DNS result is missing expected address: %s", domain, strings.Join(missing, ", ")), "Point the app domain to this cloud server's expected public address."
 	}
-	return StatusPass, fmt.Sprintf("%s 已解析到公网地址 %s", domain, strings.Join(public, ", ")), ""
+	return StatusPass, fmt.Sprintf("%s resolved to public address %s", domain, strings.Join(public, ", ")), ""
 }
 
 func addPortChecks(checks *[]Check, ports []preflight.PortBinding) {
@@ -191,42 +263,55 @@ func addPortChecks(checks *[]Check, ports []preflight.PortBinding) {
 		*checks = append(*checks, Check{ID: id, Status: status, Summary: summary, Remediations: compact(remediations)})
 	}
 	if len(ports) == 0 {
-		add("ports", StatusFail, "未能确认 80/tcp 和 443/tcp 端口占用状态", "确认 host 上可执行 ss，并重新运行 sudo meshify app deploy。")
+		add("ports", StatusFail, "Could not confirm 80/tcp and 443/tcp port usage", "Confirm ss is executable on the host, then rerun sudo meshify app deploy.")
 		return
 	}
 	for _, required := range []int{80, 443} {
-		binding, ok := findPortBinding(ports, required, "tcp")
-		if !ok {
-			add(fmt.Sprintf("port:%d/tcp", required), StatusFail, fmt.Sprintf("缺少 %d/tcp 端口占用探测结果", required), "重新运行 sudo meshify app deploy，确认端口占用探测完整。")
+		bindings := findPortBindings(ports, required, "tcp")
+		if len(bindings) == 0 {
+			add(fmt.Sprintf("port:%d/tcp", required), StatusFail, fmt.Sprintf("Missing %d/tcp port usage probe result", required), "Rerun sudo meshify app deploy and confirm port usage probing is complete.")
 			continue
 		}
-		if !binding.InUse {
-			add(fmt.Sprintf("port:%d/tcp", required), StatusPass, fmt.Sprintf("%d/tcp 当前可用", required))
+		blockingProcesses := []string{}
+		nginxInUse := false
+		for _, binding := range bindings {
+			if !binding.InUse {
+				continue
+			}
+			process := strings.TrimSpace(binding.Process)
+			if process == "" {
+				process = "unknown process"
+			}
+			if strings.EqualFold(process, "nginx") {
+				nginxInUse = true
+				continue
+			}
+			blockingProcesses = append(blockingProcesses, process)
+		}
+		if len(blockingProcesses) > 0 {
+			add(fmt.Sprintf("port:%d/tcp", required), StatusFail, fmt.Sprintf("%d/tcp is already used by %s and cannot be taken over by Meshify-managed Nginx", required, strings.Join(blockingProcesses, ", ")), "Stop or migrate non-Nginx services using 80/443, then rerun.")
 			continue
 		}
-		process := strings.TrimSpace(binding.Process)
-		if process == "" {
-			process = "未知进程"
-		}
-		if strings.EqualFold(process, "nginx") {
-			add(fmt.Sprintf("port:%d/tcp", required), StatusWarn, fmt.Sprintf("%d/tcp 已由 Nginx 使用，将复用 Nginx 虚拟主机", required), "确认现有 Nginx 站点没有占用 app.domains。")
+		if nginxInUse {
+			add(fmt.Sprintf("port:%d/tcp", required), StatusWarn, fmt.Sprintf("%d/tcp is already used by Nginx; Meshify will reuse Nginx virtual hosts", required), "Confirm existing Nginx sites do not claim app.domains.")
 			continue
 		}
-		add(fmt.Sprintf("port:%d/tcp", required), StatusFail, fmt.Sprintf("%d/tcp 已被 %s 占用，不能由 Meshify 管理的 Nginx 接管", required, process), "停止或迁移占用 80/443 的非 Nginx 服务后重新执行。")
+		add(fmt.Sprintf("port:%d/tcp", required), StatusPass, fmt.Sprintf("%d/tcp is available", required))
 	}
 }
 
-func findPortBinding(bindings []preflight.PortBinding, port int, protocol string) (preflight.PortBinding, bool) {
+func findPortBindings(bindings []preflight.PortBinding, port int, protocol string) []preflight.PortBinding {
+	matches := []preflight.PortBinding{}
 	for _, binding := range bindings {
 		bindingProtocol := strings.ToLower(strings.TrimSpace(binding.Protocol))
 		if bindingProtocol == "" {
 			bindingProtocol = "tcp"
 		}
 		if binding.Port == port && bindingProtocol == strings.ToLower(protocol) {
-			return binding, true
+			matches = append(matches, binding)
 		}
 	}
-	return preflight.PortBinding{}, false
+	return matches
 }
 
 func publicRoutableIPs(values []string) []string {
@@ -304,9 +389,9 @@ func (report Report) FailedCount() int {
 
 func (report Report) Summary() string {
 	if report.FailedCount() > 0 {
-		return fmt.Sprintf("app deploy 预检发现 %d 个失败项", report.FailedCount())
+		return fmt.Sprintf("app deploy preflight found %d failed checks", report.FailedCount())
 	}
-	return "app deploy 预检通过"
+	return "app deploy preflight passed"
 }
 
 func (report Report) NextSteps() []string {

@@ -18,8 +18,8 @@ type FileSystem interface {
 	MkdirAll(path string, perm fs.FileMode) error
 	ReadFile(name string) ([]byte, error)
 	WriteFile(name string, data []byte, perm fs.FileMode) error
-	Chmod(name string, mode fs.FileMode) error
 	Stat(name string) (fs.FileInfo, error)
+	Lstat(name string) (fs.FileInfo, error)
 }
 
 type OSFileSystem struct{}
@@ -40,12 +40,12 @@ func (OSFileSystem) WriteFile(name string, data []byte, perm fs.FileMode) error 
 	return writeFileAtomically(name, data, perm)
 }
 
-func (OSFileSystem) Chmod(name string, mode fs.FileMode) error {
-	return os.Chmod(name, mode)
-}
-
 func (OSFileSystem) Stat(name string) (fs.FileInfo, error) {
 	return os.Stat(name)
+}
+
+func (OSFileSystem) Lstat(name string) (fs.FileInfo, error) {
+	return os.Lstat(name)
 }
 
 func NewCommandFileSystem(executor Executor) FileSystem {
@@ -83,19 +83,20 @@ func (fileSystem CommandFileSystem) WriteFile(name string, data []byte, perm fs.
 	return err
 }
 
-func (fileSystem CommandFileSystem) Chmod(name string, mode fs.FileMode) error {
-	result, err := fileSystem.executor.Run(context.Background(), Command{Name: "chmod", Args: []string{fmt.Sprintf("%03o", mode.Perm()), "--", name}})
-	if err != nil {
-		if commandRefersToMissingPath(result, err) {
-			return &fs.PathError{Op: "chmod", Path: name, Err: os.ErrNotExist}
-		}
-		return err
-	}
-	return nil
+func (fileSystem CommandFileSystem) Stat(name string) (fs.FileInfo, error) {
+	return fileSystem.stat(name, "-L")
 }
 
-func (fileSystem CommandFileSystem) Stat(name string) (fs.FileInfo, error) {
-	result, err := fileSystem.executor.Run(context.Background(), Command{Name: "stat", Args: []string{"-c", "%a", "--", name}})
+func (fileSystem CommandFileSystem) Lstat(name string) (fs.FileInfo, error) {
+	return fileSystem.stat(name, "")
+}
+
+func (fileSystem CommandFileSystem) stat(name string, dereference string) (fs.FileInfo, error) {
+	args := []string{"-c", "%f %s %Y", "--", name}
+	if dereference != "" {
+		args = []string{dereference, "-c", "%f %s %Y", "--", name}
+	}
+	result, err := fileSystem.executor.Run(context.Background(), Command{Name: "stat", Args: args})
 	if err != nil {
 		if commandRefersToMissingPath(result, err) {
 			return nil, &fs.PathError{Op: "stat", Path: name, Err: os.ErrNotExist}
@@ -103,12 +104,55 @@ func (fileSystem CommandFileSystem) Stat(name string) (fs.FileInfo, error) {
 		return nil, err
 	}
 
-	modeValue, parseErr := strconv.ParseUint(strings.TrimSpace(result.Stdout), 8, 32)
+	fields := strings.Fields(result.Stdout)
+	if len(fields) != 3 {
+		return nil, fmt.Errorf("parse stat output for %s: expected mode size mtime, got %q", name, strings.TrimSpace(result.Stdout))
+	}
+	rawMode, parseErr := strconv.ParseUint(fields[0], 16, 32)
 	if parseErr != nil {
-		return nil, fmt.Errorf("parse file mode for %s: %w", name, parseErr)
+		return nil, fmt.Errorf("parse raw file mode for %s: %w", name, parseErr)
+	}
+	size, parseErr := strconv.ParseInt(fields[1], 10, 64)
+	if parseErr != nil {
+		return nil, fmt.Errorf("parse file size for %s: %w", name, parseErr)
+	}
+	mtime, parseErr := strconv.ParseInt(fields[2], 10, 64)
+	if parseErr != nil {
+		return nil, fmt.Errorf("parse file mtime for %s: %w", name, parseErr)
 	}
 
-	return commandFileInfo{name: filepath.Base(name), mode: fs.FileMode(modeValue)}, nil
+	return commandFileInfo{name: filepath.Base(name), size: size, mode: commandFileModeFromRaw(rawMode), modTime: time.Unix(mtime, 0)}, nil
+}
+
+func commandFileModeFromRaw(rawMode uint64) fs.FileMode {
+	mode := fs.FileMode(rawMode & 0o777)
+	if rawMode&0o4000 != 0 {
+		mode |= fs.ModeSetuid
+	}
+	if rawMode&0o2000 != 0 {
+		mode |= fs.ModeSetgid
+	}
+	if rawMode&0o1000 != 0 {
+		mode |= fs.ModeSticky
+	}
+	switch rawMode & 0o170000 {
+	case 0o100000:
+	case 0o040000:
+		mode |= fs.ModeDir
+	case 0o120000:
+		mode |= fs.ModeSymlink
+	case 0o010000:
+		mode |= fs.ModeNamedPipe
+	case 0o140000:
+		mode |= fs.ModeSocket
+	case 0o020000:
+		mode |= fs.ModeCharDevice | fs.ModeDevice
+	case 0o060000:
+		mode |= fs.ModeDevice
+	default:
+		mode |= fs.ModeIrregular
+	}
+	return mode
 }
 
 type FileInstaller struct {
@@ -167,21 +211,27 @@ func (installer FileInstaller) InstallOne(file render.StagedFile) (FileInstallRe
 		return result, fmt.Errorf("create parent directory for %s: %w", file.HostPath, err)
 	}
 
-	currentContent, readErr := installer.fs.ReadFile(targetPath)
-	if readErr == nil {
-		result.Created = false
-	} else if !os.IsNotExist(readErr) {
-		return result, fmt.Errorf("read existing file %s: %w", file.HostPath, readErr)
-	} else {
-		result.Created = true
-	}
-
+	info, statErr := installer.fs.Lstat(targetPath)
 	currentMode := fs.FileMode(0)
-	if info, statErr := installer.fs.Stat(targetPath); statErr == nil {
+	if statErr == nil {
+		if err := validateInstallTargetFile(file.HostPath, info); err != nil {
+			return result, err
+		}
 		currentMode = info.Mode().Perm()
 		result.Created = false
-	} else if !os.IsNotExist(statErr) {
+	} else if os.IsNotExist(statErr) {
+		result.Created = true
+	} else {
 		return result, fmt.Errorf("stat existing file %s: %w", file.HostPath, statErr)
+	}
+
+	var currentContent []byte
+	if !result.Created {
+		readContent, readErr := installer.fs.ReadFile(targetPath)
+		if readErr != nil {
+			return result, fmt.Errorf("read existing file %s: %w", file.HostPath, readErr)
+		}
+		currentContent = readContent
 	}
 
 	result.ContentChanged = result.Created || !bytes.Equal(currentContent, file.Content)
@@ -205,14 +255,24 @@ func (installer FileInstaller) InstallOne(file render.StagedFile) (FileInstallRe
 		markChanged()
 	}
 
-	if result.ModeChanged {
-		if err := installer.fs.Chmod(targetPath, file.Mode); err != nil {
-			return result, fmt.Errorf("chmod %s: %w", file.HostPath, err)
+	if result.ModeChanged && !result.ContentChanged {
+		if err := installer.fs.WriteFile(targetPath, currentContent, file.Mode); err != nil {
+			return result, fmt.Errorf("write mode-only update for %s: %w", file.HostPath, err)
 		}
 		markChanged()
 	}
 
 	return result, nil
+}
+
+func validateInstallTargetFile(hostPath string, info fs.FileInfo) error {
+	if info.Mode()&fs.ModeSymlink != 0 {
+		return fmt.Errorf("%s is a symlink; refusing to install managed file", hostPath)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s exists and is not a regular file; refusing to install managed file", hostPath)
+	}
+	return nil
 }
 
 func CollectModifiedPaths(results []FileInstallResult) []string {
@@ -287,6 +347,13 @@ func writeFileAtomically(name string, data []byte, perm fs.FileMode) error {
 	if err := temporaryFile.Close(); err != nil {
 		return err
 	}
+	if info, err := os.Lstat(name); err == nil {
+		if err := validateInstallTargetFile(name, info); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
 	if err := os.Rename(temporaryPath, name); err != nil {
 		return err
 	}
@@ -309,20 +376,30 @@ trap cleanup EXIT HUP INT TERM
 chmod 600 -- "$tmp"
 cat > "$tmp"
 chmod "$mode" -- "$tmp"
+if [ -L "$target" ]; then
+	echo "$target is a symlink; refusing to install managed file" >&2
+	exit 1
+fi
+if [ -e "$target" ] && [ ! -f "$target" ]; then
+	echo "$target exists and is not a regular file; refusing to install managed file" >&2
+	exit 1
+fi
 mv -f -- "$tmp" "$target"
 trap - EXIT HUP INT TERM
 `
 
 type commandFileInfo struct {
-	name string
-	mode fs.FileMode
+	name    string
+	size    int64
+	mode    fs.FileMode
+	modTime time.Time
 }
 
 func (info commandFileInfo) Name() string       { return info.name }
-func (info commandFileInfo) Size() int64        { return 0 }
+func (info commandFileInfo) Size() int64        { return info.size }
 func (info commandFileInfo) Mode() fs.FileMode  { return info.mode }
-func (info commandFileInfo) ModTime() time.Time { return time.Time{} }
-func (info commandFileInfo) IsDir() bool        { return false }
+func (info commandFileInfo) ModTime() time.Time { return info.modTime }
+func (info commandFileInfo) IsDir() bool        { return info.mode.IsDir() }
 func (info commandFileInfo) Sys() any           { return nil }
 
 func commandRefersToMissingPath(result Result, err error) bool {

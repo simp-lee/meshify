@@ -27,6 +27,10 @@ func (systemd Systemd) Start(ctx context.Context, units ...string) (Result, erro
 	return systemd.run(ctx, "start", units...)
 }
 
+func (systemd Systemd) Stop(ctx context.Context, units ...string) (Result, error) {
+	return systemd.run(ctx, "stop", units...)
+}
+
 func (systemd Systemd) Restart(ctx context.Context, units ...string) (Result, error) {
 	return systemd.run(ctx, "restart", units...)
 }

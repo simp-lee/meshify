@@ -1,6 +1,12 @@
 # Meshify-managed: app.name={{ .AppName }}
 # Source: deploy/templates/app/nginx.conf.tmpl
 
+{{- if .GoAccess.Enabled }}
+{{- if .GoAccess.EnhancedLogFormat }}
+log_format {{ .GoAccess.NginxLogFormatName }} '$remote_addr - $remote_user [$time_iso8601] "$request" $status $body_bytes_sent "$http_referer" "$http_user_agent" "$host" $request_time "$upstream_status" "$upstream_response_time"';
+
+{{- end }}
+{{- end }}
 map $http_upgrade ${{ .VarPrefix }}_connection_upgrade {
     default upgrade;
     '' close;
@@ -41,7 +47,15 @@ server {
     listen [::]:80;
     server_name {{ .ServerNames }};
 {{- if .AccessLog }}
+{{- if .GoAccess.Enabled }}
+{{- if .GoAccess.EnhancedLogFormat }}
+    access_log {{ .AccessLog }} {{ .GoAccess.NginxLogFormatName }};
+{{- else }}
+    access_log {{ .AccessLog }} combined;
+{{- end }}
+{{- else }}
     access_log {{ .AccessLog }};
+{{- end }}
 {{- end }}
 {{- if .ErrorLog }}
     error_log {{ .ErrorLog }};
@@ -55,6 +69,18 @@ server {
         root {{ .WebrootPath }};
     }
 
+{{- if .GoAccess.Enabled }}
+    location = {{ .GoAccess.DashboardPath }} {
+        access_log off;
+        return 301 {{ .GoAccess.DashboardURL }};
+    }
+
+    location = {{ .GoAccess.WebSocketPath }} {
+        access_log off;
+        return 421;
+    }
+
+{{- end }}
     location / {
         return 301 https://${{ .VarPrefix }}_validated_host$request_uri;
     }
@@ -65,7 +91,15 @@ server {
     listen [::]:443 ssl;
     server_name {{ .ServerNames }};
 {{- if .AccessLog }}
+{{- if .GoAccess.Enabled }}
+{{- if .GoAccess.EnhancedLogFormat }}
+    access_log {{ .AccessLog }} {{ .GoAccess.NginxLogFormatName }};
+{{- else }}
+    access_log {{ .AccessLog }} combined;
+{{- end }}
+{{- else }}
     access_log {{ .AccessLog }};
+{{- end }}
 {{- end }}
 {{- if .ErrorLog }}
     error_log {{ .ErrorLog }};
@@ -93,6 +127,54 @@ server {
         return 421;
     }
 
+{{- if .GoAccess.Enabled }}
+    location = {{ .GoAccess.DashboardPath }} {
+        if ($host != "{{ .PrimaryDomain }}") {
+            return 301 {{ .GoAccess.DashboardURL }};
+        }
+        alias {{ .GoAccess.ReportPath }};
+        default_type text/html;
+        disable_symlinks on;
+        satisfy all;
+        auth_basic "Meshify GoAccess";
+        auth_basic_user_file {{ .GoAccess.AuthBasicUserFile }};
+{{- range .GoAccess.AuthCIDRAllowlist }}
+        allow {{ . }};
+{{- end }}
+{{- if .GoAccess.AuthCIDRAllowlist }}
+        deny all;
+{{- end }}
+        access_log off;
+    }
+
+    location = {{ .GoAccess.WebSocketPath }} {
+        if ($host != "{{ .PrimaryDomain }}") {
+            return 421;
+        }
+        proxy_pass http://{{ .GoAccess.WebSocketUpstream }};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection ${{ .VarPrefix }}_connection_upgrade;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 60s;
+        satisfy all;
+        auth_basic "Meshify GoAccess";
+        auth_basic_user_file {{ .GoAccess.AuthBasicUserFile }};
+{{- range .GoAccess.AuthCIDRAllowlist }}
+        allow {{ . }};
+{{- end }}
+{{- if .GoAccess.AuthCIDRAllowlist }}
+        deny all;
+{{- end }}
+        access_log off;
+    }
+
+{{ end }}
 {{ range .StaticLocations }}
     location {{ if .Exact }}= {{ end }}{{ .Path }} {
         alias {{ .Alias }};

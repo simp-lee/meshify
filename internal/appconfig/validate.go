@@ -19,6 +19,7 @@ var nginxExpiresValuePattern = regexp.MustCompile(`^(?:off|epoch|max|[+-]?[0-9]+
 var nginxDefaultTypeValuePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]*/[A-Za-z0-9][A-Za-z0-9._+-]*$`)
 var nginxSizeValuePattern = regexp.MustCompile(`^[0-9]+(?:[kKmMgG])?$`)
 var nginxTimeValuePattern = regexp.MustCompile(`^[0-9]+(?:ms|s|m|h|d|w|M|y)?$`)
+var goAccessURLPathPattern = regexp.MustCompile(`^/[A-Za-z0-9._~/-]+$`)
 var systemdSafeEmailPattern = regexp.MustCompile(`^[A-Za-z0-9._+-]+@[A-Za-z0-9.-]+$`)
 
 func (errs validationErrors) Error() string {
@@ -41,6 +42,15 @@ func (c *Config) normalize() {
 	c.Nginx.ClientMaxBodySize = strings.TrimSpace(c.Nginx.ClientMaxBodySize)
 	c.Nginx.AccessLog = strings.TrimSpace(c.Nginx.AccessLog)
 	c.Nginx.ErrorLog = strings.TrimSpace(c.Nginx.ErrorLog)
+	c.Nginx.GoAccess.Language = strings.TrimSpace(c.Nginx.GoAccess.Language)
+	c.Nginx.GoAccess.LogFormat = strings.TrimSpace(c.Nginx.GoAccess.LogFormat)
+	c.Nginx.GoAccess.Path = strings.TrimSpace(c.Nginx.GoAccess.Path)
+	c.Nginx.GoAccess.WebSocketPath = strings.TrimSpace(c.Nginx.GoAccess.WebSocketPath)
+	c.Nginx.GoAccess.WebSocketListen = strings.TrimSpace(c.Nginx.GoAccess.WebSocketListen)
+	c.Nginx.GoAccess.AuthBasicUserFile = strings.TrimSpace(c.Nginx.GoAccess.AuthBasicUserFile)
+	for i, cidr := range c.Nginx.GoAccess.AuthCIDRAllowlist {
+		c.Nginx.GoAccess.AuthCIDRAllowlist[i] = strings.TrimSpace(cidr)
+	}
 	c.Nginx.Proxy.ConnectTimeout = strings.TrimSpace(c.Nginx.Proxy.ConnectTimeout)
 	c.Nginx.Proxy.ReadTimeout = strings.TrimSpace(c.Nginx.Proxy.ReadTimeout)
 	c.Nginx.Proxy.SendTimeout = strings.TrimSpace(c.Nginx.Proxy.SendTimeout)
@@ -75,7 +85,9 @@ func (c Config) Validate() error {
 	validateACMEChallenge(&errs, c.App.ACMEChallenge)
 	validateMode(&errs, c)
 	validateService(&errs, c)
-	validateNginx(&errs, c.Nginx)
+	validateNginx(&errs, c)
+	validateGoAccessAppListenConflict(&errs, c)
+	validateGoAccessPathConflicts(&errs, c)
 	validateDNS01(&errs, c.App.ACMEChallenge, c.DNS01)
 	validateTailscale(&errs, c)
 
@@ -246,12 +258,14 @@ func validateServiceEnvFile(errs *validationErrors, path string) {
 	validatePathField(errs, "service.env_file", path, true)
 }
 
-func validateNginx(errs *validationErrors, cfg NginxConfig) {
+func validateNginx(errs *validationErrors, c Config) {
+	cfg := c.Nginx
 	if cfg.ClientMaxBodySize != "" && !nginxSizeValuePattern.MatchString(cfg.ClientMaxBodySize) {
 		*errs = append(*errs, "nginx.client_max_body_size must be a simple nginx size such as 20m")
 	}
 	validateNginxOptionalLogPath(errs, "nginx.access_log", cfg.AccessLog, true)
 	validateNginxOptionalLogPath(errs, "nginx.error_log", cfg.ErrorLog, false)
+	validateNginxGoAccess(errs, c)
 	validateNginxProxy(errs, cfg.Proxy)
 
 	seenPaths := map[string]struct{}{}
@@ -301,6 +315,497 @@ func validateNginx(errs *validationErrors, cfg NginxConfig) {
 		}
 		seenPaths[location.Path] = struct{}{}
 	}
+}
+
+func validateNginxGoAccess(errs *validationErrors, c Config) {
+	cfg := c.Nginx
+	goaccess := cfg.GoAccess
+	if !goaccess.Enabled && !nginxGoAccessHasFields(goaccess) {
+		return
+	}
+
+	language := goaccess.EffectiveLanguage()
+	switch language {
+	case NginxGoAccessLanguageEnglish, NginxGoAccessLanguageSimplifiedChinese:
+	default:
+		*errs = append(*errs, "nginx.goaccess.language must be one of: en, zh-CN")
+	}
+
+	logFormat := goaccess.EffectiveLogFormat()
+	switch logFormat {
+	case NginxGoAccessLogFormatEnhanced, NginxGoAccessLogFormatCombined:
+	default:
+		*errs = append(*errs, "nginx.goaccess.log_format must be one of: enhanced, combined")
+	}
+
+	dashboardPath := c.NginxGoAccessDashboardPath()
+	websocketPath := c.NginxGoAccessWebSocketPath()
+	validateGoAccessDashboardPath(errs, "nginx.goaccess.path", dashboardPath)
+	validateGoAccessWebSocketPath(errs, "nginx.goaccess.websocket_path", websocketPath)
+	if dashboardPath == websocketPath {
+		*errs = append(*errs, "nginx.goaccess.websocket_path must not duplicate nginx.goaccess.path")
+	}
+	if strings.HasSuffix(dashboardPath, "/") && strings.HasPrefix(websocketPath, dashboardPath) {
+		*errs = append(*errs, "nginx.goaccess.websocket_path must not be nested under a prefix-style nginx.goaccess.path")
+	}
+
+	if goaccess.WebSocketListen != "" {
+		validateGoAccessWebSocketListen(errs, goaccess.WebSocketListen)
+	}
+	if goaccess.AuthBasicUserFile != "" {
+		validateNginxOptionalLogPath(errs, "nginx.goaccess.auth_basic_user_file", goaccess.AuthBasicUserFile, false)
+	}
+	for i, cidr := range goaccess.AuthCIDRAllowlist {
+		field := fmt.Sprintf("nginx.goaccess.auth_cidr_allowlist[%d]", i)
+		if cidr == "" {
+			*errs = append(*errs, field+" is required when set")
+			continue
+		}
+		if _, _, err := net.ParseCIDR(cidr); err != nil {
+			*errs = append(*errs, field+" must be a valid CIDR")
+		}
+	}
+
+	if !goaccess.Enabled {
+		*errs = append(*errs, "nginx.goaccess.enabled must be true when nginx.goaccess fields are set")
+		return
+	}
+	if cfg.AccessLog == "off" {
+		*errs = append(*errs, "nginx.access_log must not be off when nginx.goaccess.enabled is true")
+	}
+	if cfg.AccessLog != "" && cfg.AccessLog != "off" && goAccessServiceIsolationHidesPath(cfg.AccessLog) {
+		*errs = append(*errs, "nginx.access_log must not be under /home, /root, /run/user, /tmp, or /var/tmp when nginx.goaccess.enabled is true because the GoAccess service uses ProtectHome=true and PrivateTmp=true")
+	}
+	if cfg.AccessLog != "" && cfg.AccessLog != "off" && pathIsUnder(cfg.AccessLog, "/var/log/nginx") {
+		*errs = append(*errs, "nginx.access_log must not be under /var/log/nginx when nginx.goaccess.enabled is true because distro logrotate commonly owns /var/log/nginx/*.log")
+	}
+	if goaccess.AuthBasicUserFile == "" {
+		*errs = append(*errs, "nginx.goaccess.auth_basic_user_file is required when nginx.goaccess.enabled is true")
+	}
+	validateGoAccessStaticLocationConflicts(errs, dashboardPath, websocketPath, cfg.StaticLocations)
+}
+
+func goAccessServiceIsolationHidesPath(path string) bool {
+	cleanPath := filepath.Clean(path)
+	for _, root := range []string{"/home", "/root", "/run/user", "/tmp", "/var/tmp"} {
+		if cleanPath == root || strings.HasPrefix(cleanPath, root+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func nginxGoAccessHasFields(cfg NginxGoAccessConfig) bool {
+	return cfg.Language != "" ||
+		cfg.LogFormat != "" ||
+		cfg.Path != "" ||
+		cfg.WebSocketPath != "" ||
+		cfg.WebSocketListen != "" ||
+		cfg.AuthBasicUserFile != "" ||
+		len(cfg.AuthCIDRAllowlist) > 0
+}
+
+func validateGoAccessDashboardPath(errs *validationErrors, field string, path string) {
+	validateNginxLocationPath(errs, field, path)
+	validateGoAccessURLPath(errs, field, path)
+	if strings.HasSuffix(path, "/") {
+		*errs = append(*errs, field+" must not end with / because the GoAccess dashboard is served as an exact HTML report location")
+	}
+}
+
+func validateGoAccessWebSocketPath(errs *validationErrors, field string, path string) {
+	validateNginxLocationPath(errs, field, path)
+	validateGoAccessURLPath(errs, field, path)
+}
+
+func validateGoAccessURLPath(errs *validationErrors, field string, path string) {
+	if path == "" {
+		return
+	}
+	if !goAccessURLPathPattern.MatchString(path) {
+		*errs = append(*errs, field+" must be a canonical URL path using only ASCII letters, digits, slash, dot, underscore, tilde, and hyphen")
+	}
+	if strings.Contains(path, "//") {
+		*errs = append(*errs, field+" must not contain repeated slashes")
+	}
+}
+
+func validateGoAccessWebSocketListen(errs *validationErrors, listen string) {
+	host, portString, err := net.SplitHostPort(listen)
+	if err != nil {
+		*errs = append(*errs, "nginx.goaccess.websocket_listen must be in host:port format")
+		return
+	}
+	if !isLoopbackIPLiteralHost(host) {
+		*errs = append(*errs, "nginx.goaccess.websocket_listen must use a loopback IP such as 127.0.0.1 or ::1")
+	}
+	port, ok := validatePort(errs, "nginx.goaccess.websocket_listen", portString)
+	if !ok {
+		return
+	}
+	if isReservedMeshifyPort(port) {
+		*errs = append(*errs, "nginx.goaccess.websocket_listen must not reuse Meshify, Headscale, Nginx, or Tailscale reserved ports")
+	}
+}
+
+func validateGoAccessAppListenConflict(errs *validationErrors, c Config) {
+	if !c.Nginx.GoAccess.Enabled || c.App.Listen == "" {
+		return
+	}
+	appHost, appPortString, err := net.SplitHostPort(c.App.Listen)
+	if err != nil {
+		return
+	}
+	appPort, err := strconv.Atoi(appPortString)
+	if err != nil {
+		return
+	}
+	websocketListen := EffectiveNginxGoAccessWebSocketListen(c.App.Name, c.Nginx.GoAccess)
+	goAccessHost, goAccessPortString, err := net.SplitHostPort(websocketListen)
+	if err != nil {
+		return
+	}
+	goAccessPort, err := strconv.Atoi(goAccessPortString)
+	if err != nil {
+		return
+	}
+	if appPort == goAccessPort && listenHostsOverlap(appHost, goAccessHost) {
+		*errs = append(*errs, "nginx.goaccess.websocket_listen must not overlap app.listen bind host and port")
+	}
+}
+
+func listenHostsOverlap(left string, right string) bool {
+	left = normalizeListenHost(left)
+	right = normalizeListenHost(right)
+	if left == "" || right == "" {
+		return true
+	}
+	if left == "*" || right == "*" {
+		return true
+	}
+	if listenHostIsWildcard(left) {
+		return listenWildcardOverlapsHost(left, right)
+	}
+	if listenHostIsWildcard(right) {
+		return listenWildcardOverlapsHost(right, left)
+	}
+	if left == right {
+		return true
+	}
+	if left == "localhost" {
+		return listenHostIsLoopback(right)
+	}
+	if right == "localhost" {
+		return listenHostIsLoopback(left)
+	}
+	leftIP := net.ParseIP(left)
+	rightIP := net.ParseIP(right)
+	return leftIP != nil && rightIP != nil && leftIP.Equal(rightIP)
+}
+
+func listenWildcardOverlapsHost(wildcard string, host string) bool {
+	switch wildcard {
+	case "0.0.0.0":
+		return listenHostIsIPv4(host) || host == "localhost"
+	case "::":
+		return true
+	default:
+		return true
+	}
+}
+
+func listenHostIsIPv4(host string) bool {
+	ip := net.ParseIP(host)
+	return ip != nil && ip.To4() != nil
+}
+
+func listenHostIsIPv6(host string) bool {
+	ip := net.ParseIP(host)
+	return ip != nil && ip.To4() == nil
+}
+
+func normalizeListenHost(host string) string {
+	host = strings.ToLower(strings.TrimSpace(host))
+	host = strings.TrimPrefix(host, "[")
+	host = strings.TrimSuffix(host, "]")
+	if zoneIndex := strings.Index(host, "%"); zoneIndex >= 0 {
+		host = host[:zoneIndex]
+	}
+	return host
+}
+
+func listenHostIsWildcard(host string) bool {
+	switch host {
+	case "*", "0.0.0.0", "::":
+		return true
+	default:
+		return false
+	}
+}
+
+func listenHostIsLoopback(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback() && !ip.IsUnspecified()
+}
+
+func validateGoAccessPathConflicts(errs *validationErrors, c Config) {
+	if !c.Nginx.GoAccess.Enabled {
+		return
+	}
+	appName := c.ResourceName()
+	if appName == "" {
+		return
+	}
+	canonicalAccessLog := goAccessCanonicalAccessLogPath(c)
+	validateGoAccessErrorLogPathConflicts(errs, c, canonicalAccessLog)
+	validateGoAccessCanonicalAccessLogPathConflicts(errs, c, canonicalAccessLog)
+
+	authFile := strings.TrimSpace(c.Nginx.GoAccess.AuthBasicUserFile)
+	if authFile == "" {
+		return
+	}
+	validateGoAccessAuthFileAppEtcPath(errs, c, authFile)
+	for _, forbidden := range goAccessManagedArtifactPaths(c, canonicalAccessLog) {
+		if cleanPathEqual(authFile, forbidden.path) {
+			*errs = append(*errs, "nginx.goaccess.auth_basic_user_file must not point to Meshify-managed "+forbidden.label+" path")
+			return
+		}
+	}
+	reportDir := filepath.Join("/var/lib", c.ResourceName(), "goaccess")
+	if pathIsUnder(authFile, reportDir) {
+		*errs = append(*errs, "nginx.goaccess.auth_basic_user_file must not be under Meshify-managed GoAccess report directory")
+		return
+	}
+	validateGoAccessAuthFileManagedRootPath(errs, c, authFile)
+}
+
+func validateGoAccessAuthFileAppEtcPath(errs *validationErrors, c Config, authFile string) {
+	appEtcDir := filepath.Join("/etc", c.ResourceName())
+	if !pathIsUnder(authFile, appEtcDir) {
+		return
+	}
+	suggestedPath := filepath.Join(appEtcDir, "goaccess.htpasswd")
+	if cleanPathEqual(authFile, suggestedPath) {
+		return
+	}
+	*errs = append(*errs, "nginx.goaccess.auth_basic_user_file under /etc/"+c.ResourceName()+" must be the direct "+suggestedPath+" bootstrap path")
+}
+
+func validateGoAccessAuthFileManagedRootPath(errs *validationErrors, c Config, authFile string) {
+	suggestedPath := filepath.Join("/etc", c.ResourceName(), "goaccess.htpasswd")
+	if cleanPathEqual(authFile, suggestedPath) {
+		return
+	}
+	for _, root := range goAccessManagedRootPaths(c) {
+		if pathIsUnder(authFile, root.path) {
+			label := root.label
+			if !strings.HasSuffix(label, "directory") {
+				label += " directory"
+			}
+			*errs = append(*errs, "nginx.goaccess.auth_basic_user_file must not be under Meshify-managed "+label)
+			return
+		}
+	}
+	if pathIsUnder(authFile, "/var/log/meshify/apps") {
+		*errs = append(*errs, "nginx.goaccess.auth_basic_user_file must not be under Meshify-managed app log namespace")
+		return
+	}
+}
+
+func validateGoAccessErrorLogPathConflicts(errs *validationErrors, c Config, canonicalAccessLog string) {
+	errorLog := strings.TrimSpace(c.Nginx.ErrorLog)
+	if errorLog == "" {
+		return
+	}
+	if cleanPathEqual(errorLog, canonicalAccessLog) {
+		*errs = append(*errs, "nginx.error_log must not equal the GoAccess canonical access log")
+		return
+	}
+	authFile := strings.TrimSpace(c.Nginx.GoAccess.AuthBasicUserFile)
+	if authFile != "" && cleanPathEqual(errorLog, authFile) {
+		*errs = append(*errs, "nginx.error_log must not equal nginx.goaccess.auth_basic_user_file")
+		return
+	}
+	for _, forbidden := range goAccessManagedArtifactPaths(c, canonicalAccessLog) {
+		if forbidden.label == "GoAccess canonical access log" {
+			continue
+		}
+		if cleanPathEqual(errorLog, forbidden.path) {
+			*errs = append(*errs, "nginx.error_log must not point to Meshify-managed "+forbidden.label+" path")
+			return
+		}
+	}
+	reportDir := filepath.Join("/var/lib", c.ResourceName(), "goaccess")
+	if pathIsUnder(errorLog, reportDir) {
+		*errs = append(*errs, "nginx.error_log must not be under Meshify-managed GoAccess report directory")
+		return
+	}
+	for _, root := range goAccessManagedRootPaths(c) {
+		if pathIsUnder(errorLog, root.path) {
+			*errs = append(*errs, "nginx.error_log must not be under Meshify-managed "+root.label+" directory")
+			return
+		}
+	}
+	if pathIsUnder(errorLog, "/var/log/meshify/apps") {
+		*errs = append(*errs, "nginx.error_log must not be under Meshify-managed app log namespace")
+		return
+	}
+}
+
+func validateGoAccessCanonicalAccessLogPathConflicts(errs *validationErrors, c Config, canonicalAccessLog string) {
+	accessLog := strings.TrimSpace(c.Nginx.AccessLog)
+	if accessLog == "" || accessLog == "off" {
+		return
+	}
+	meshifyAppsLogRoot := "/var/log/meshify/apps"
+	currentAppLogDir := filepath.Join(meshifyAppsLogRoot, c.ResourceName())
+	currentAppManagedLog := filepath.Join(currentAppLogDir, "access.log")
+	if cleanPathEqual(canonicalAccessLog, currentAppLogDir) {
+		*errs = append(*errs, "nginx.access_log must be a file under the Meshify-managed GoAccess log directory, not the directory itself")
+		return
+	}
+	if pathIsUnder(canonicalAccessLog, meshifyAppsLogRoot) && !pathIsUnder(canonicalAccessLog, currentAppLogDir) {
+		*errs = append(*errs, "nginx.access_log under /var/log/meshify/apps must stay under the current app log directory")
+		return
+	}
+	if pathIsUnder(canonicalAccessLog, currentAppLogDir) && !cleanPathEqual(canonicalAccessLog, currentAppManagedLog) {
+		*errs = append(*errs, "nginx.access_log under the Meshify-managed GoAccess log directory must be the direct access.log file")
+		return
+	}
+	authFile := strings.TrimSpace(c.Nginx.GoAccess.AuthBasicUserFile)
+	if authFile != "" && cleanPathEqual(canonicalAccessLog, authFile) {
+		*errs = append(*errs, "nginx.access_log must not equal nginx.goaccess.auth_basic_user_file")
+		return
+	}
+	for _, forbidden := range goAccessManagedArtifactPaths(c, canonicalAccessLog) {
+		if forbidden.label == "GoAccess canonical access log" {
+			continue
+		}
+		if cleanPathEqual(canonicalAccessLog, forbidden.path) {
+			*errs = append(*errs, "nginx.access_log must not point to Meshify-managed "+forbidden.label+" path")
+			return
+		}
+	}
+	reportDir := filepath.Join("/var/lib", c.ResourceName(), "goaccess")
+	if pathIsUnder(canonicalAccessLog, reportDir) {
+		*errs = append(*errs, "nginx.access_log must not be under Meshify-managed GoAccess report directory")
+		return
+	}
+	if cleanPathEqual(canonicalAccessLog, currentAppManagedLog) {
+		return
+	}
+	for _, root := range goAccessManagedRootPaths(c) {
+		if pathIsUnder(canonicalAccessLog, root.path) {
+			*errs = append(*errs, "nginx.access_log must not be under Meshify-managed "+root.label+" directory")
+			return
+		}
+	}
+}
+
+type goAccessManagedPath struct {
+	label string
+	path  string
+}
+
+func goAccessCanonicalAccessLogPath(c Config) string {
+	return c.NginxGoAccessCanonicalAccessLogPath()
+}
+
+func goAccessManagedArtifactPaths(c Config, canonicalAccessLog string) []goAccessManagedPath {
+	appName := c.ResourceName()
+	primaryDomain := c.PrimaryDomain()
+	varLibDir := filepath.Join("/var/lib", appName)
+	etcDir := filepath.Join("/etc", appName)
+	hookDir := filepath.Join("/usr/local/lib/meshify/apps", appName)
+	goAccessReportDir := filepath.Join(varLibDir, "goaccess")
+	paths := []goAccessManagedPath{
+		{label: "Nginx site", path: filepath.Join("/etc/nginx/sites-available", appName+".conf")},
+		{label: "Nginx enabled site", path: filepath.Join("/etc/nginx/sites-enabled", appName+".conf")},
+		{label: "app service", path: filepath.Join("/etc/systemd/system", appName+".service")},
+		{label: "lego renew service", path: filepath.Join("/etc/systemd/system", appName+"-lego-renew.service")},
+		{label: "lego renew timer", path: filepath.Join("/etc/systemd/system", appName+"-lego-renew.timer")},
+		{label: "deploy hook", path: filepath.Join(hookDir, "install-cert-and-reload-nginx.sh")},
+		{label: "app var marker", path: filepath.Join(varLibDir, ".meshify-managed")},
+		{label: "app etc marker", path: filepath.Join(etcDir, ".meshify-managed")},
+		{label: "app hook marker", path: filepath.Join(hookDir, ".meshify-managed")},
+		{label: "GoAccess config", path: filepath.Join(etcDir, "goaccess.conf")},
+		{label: "GoAccess service", path: filepath.Join("/etc/systemd/system", appName+"-goaccess.service")},
+		{label: "GoAccess logrotate", path: filepath.Join("/etc/logrotate.d", appName+"-goaccess")},
+		{label: "GoAccess report directory", path: goAccessReportDir},
+		{label: "GoAccess report", path: filepath.Join(goAccessReportDir, "report.html")},
+		{label: "GoAccess db", path: filepath.Join(goAccessReportDir, "db")},
+		{label: "GoAccess canonical access log", path: canonicalAccessLog},
+		{label: "GoAccess log marker", path: filepath.Join("/var/log/meshify/apps", appName, ".meshify-managed")},
+	}
+	if primaryDomain != "" {
+		tlsDir := filepath.Join(etcDir, "tls", primaryDomain)
+		paths = append(paths,
+			goAccessManagedPath{label: "TLS marker", path: filepath.Join(tlsDir, ".meshify-managed")},
+			goAccessManagedPath{label: "TLS fullchain", path: filepath.Join(tlsDir, "fullchain.pem")},
+			goAccessManagedPath{label: "TLS private key", path: filepath.Join(tlsDir, "privkey.pem")},
+		)
+	}
+	return paths
+}
+
+func goAccessManagedRootPaths(c Config) []goAccessManagedPath {
+	appName := c.ResourceName()
+	return []goAccessManagedPath{
+		{label: "app var root", path: filepath.Join("/var/lib", appName)},
+		{label: "app etc root", path: filepath.Join("/etc", appName)},
+		{label: "app hook root", path: filepath.Join("/usr/local/lib/meshify/apps", appName)},
+		{label: "GoAccess log directory", path: filepath.Join("/var/log/meshify/apps", appName)},
+	}
+}
+
+func cleanPathEqual(left string, right string) bool {
+	return filepath.Clean(left) == filepath.Clean(right)
+}
+
+func pathIsUnder(path string, root string) bool {
+	cleanPath := filepath.Clean(path)
+	cleanRoot := filepath.Clean(root)
+	return cleanPath == cleanRoot || strings.HasPrefix(cleanPath, cleanRoot+"/")
+}
+
+func validateGoAccessStaticLocationConflicts(errs *validationErrors, dashboardPath string, websocketPath string, locations []NginxStaticLocationConfig) {
+	for index, location := range locations {
+		field := fmt.Sprintf("nginx.static_locations[%d].path", index)
+		if location.Path == "" {
+			continue
+		}
+		if goAccessPathOverlapsStaticLocation(dashboardPath, location) {
+			*errs = append(*errs, "nginx.goaccess.path must not overlap "+field)
+		}
+		if goAccessPathOverlapsStaticLocation(websocketPath, location) {
+			*errs = append(*errs, "nginx.goaccess.websocket_path must not overlap "+field)
+		}
+	}
+}
+
+func goAccessPathOverlapsStaticLocation(path string, location NginxStaticLocationConfig) bool {
+	if location.Path == "" {
+		return false
+	}
+	match := location.Match
+	if match == "" {
+		match = "prefix"
+	}
+	if match == "exact" {
+		return path == location.Path
+	}
+	return strings.HasPrefix(pathWithTrailingSlash(path), location.Path) ||
+		strings.HasPrefix(pathWithTrailingSlash(location.Path), pathWithTrailingSlash(path))
+}
+
+func pathWithTrailingSlash(path string) string {
+	if strings.HasSuffix(path, "/") {
+		return path
+	}
+	return path + "/"
 }
 
 func validateNginxProxy(errs *validationErrors, proxy NginxProxyConfig) {
@@ -724,6 +1229,11 @@ func isLoopbackHost(host string) bool {
 	if strings.EqualFold(host, "localhost") {
 		return true
 	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback() && !ip.IsUnspecified()
+}
+
+func isLoopbackIPLiteralHost(host string) bool {
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback() && !ip.IsUnspecified()
 }

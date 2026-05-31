@@ -2,7 +2,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Meshify 是一个用 Go 写的服务器部署工具，不是 VPN 客户端。它适合想自建私有 Tailscale/Headscale 网络、但不想手工配置 Headscale、Nginx、HTTPS 证书和 systemd 的个人或小团队：准备一台 Debian/Ubuntu 云服务器、一个域名和 sudo 权限，Meshify 就会按 `meshify.yaml` 完成部署；也可以用 `meshify app` 把同机或 tailnet 内的 HTTP/WebSocket 服务挂到公网 HTTPS。如果你只是想在云主机上跑自己的 Go Web 服务，也可以只用 app 流程，不部署私有 Tailscale/Headscale 网络。
+Meshify 是一个用 Go 写的服务器部署工具，不是 VPN 客户端。它适合想自建私有 Tailscale/Headscale 网络、但不想手工配置 Headscale、Nginx、HTTPS 证书和 systemd 的个人或小团队：准备一台 Debian/Ubuntu 云服务器、一个域名和 root 或 sudo 权限，Meshify 就会按 `meshify.yaml` 完成部署；也可以用 `meshify app` 把同机或 tailnet 内的 HTTP/WebSocket 服务挂到公网 HTTPS，并可选启用 GoAccess 实时访问日志看板。如果你只是想在云主机上跑自己的 Go Web 服务，也可以只用 app 流程，不部署私有 Tailscale/Headscale 网络。
 
 ## 先判断是否适合
 
@@ -10,7 +10,7 @@ Meshify 是一个用 Go 写的服务器部署工具，不是 VPN 客户端。它
 | --- | --- |
 | 用官方 Tailscale 客户端加入自己的私有网络 | 适合，Meshify 部署的是 Headscale 控制面 |
 | 在一台云服务器上自动配置 Headscale、Nginx、证书续期和基础验证 | 适合，这是本仓库的核心目标 |
-| 把同机 Go Web 服务或 tailnet 内 HTTP/WebSocket 服务发布到 HTTPS | 适合，使用 `meshify app` |
+| 把同机 Go Web 服务或 tailnet 内 HTTP/WebSocket 服务发布到 HTTPS，并可选启用访问日志看板 | 适合，使用 `meshify app`，按需启用 `nginx.goaccess` |
 | 只发布云主机本机的 Go Web 服务，不搭私有 Tailscale/Headscale 网络 | 适合，使用 `meshify app` 的 `listen` 模式 |
 | 搭多机高可用、Kubernetes、Terraform、Ansible、Web UI、OIDC/SSO | 不适合，这些不在当前范围内 |
 | 找 Tailscale 客户端、通用反向代理框架或 Go SDK | 不适合，本仓库主要是 CLI、配置示例和运行时模板 |
@@ -19,13 +19,13 @@ Meshify 是一个用 Go 写的服务器部署工具，不是 VPN 客户端。它
 
 部署前先做三件事：
 
-- 准备一台 Debian/Ubuntu 或 Debian 系服务器，并有 root 或免密 sudo。
+- 准备一台 Debian/Ubuntu 或 Debian 系服务器，并能用 root 或 sudo 执行部署。
 - 把公网域名，例如 `hs.example.com`，解析到这台服务器。
 - 放行 `80/tcp`、`443/tcp`、`3478/udp`，本机防火墙和云安全组都要放行。
 
 如果你只想部署本机 Go Web 服务，不创建私有网络，只需要 app 域名和 `80/tcp`、`443/tcp`；`3478/udp` 只用于主 Headscale 部署。
 
-在目标服务器安装 Release 二进制。把 `vX.Y.Z` 替换成对应 release tag：
+在目标服务器安装 Release 二进制。先打开 [Releases](https://github.com/simp-lee/meshify/releases) 复制最新稳定 release tag，再把下面的 `vX.Y.Z` 替换成这个 tag；不要原样复制占位符。
 
 ```bash
 VERSION=vX.Y.Z
@@ -37,11 +37,12 @@ meshify --help
 
 如果使用源码 checkout 而不是 Release 二进制，运行 `make build` 后把 `./meshify` 安装到 `/usr/local/bin/meshify`。
 
-然后按默认流程执行 `init -> deploy -> verify`，最后用只读状态命令检查结果。部署前务必检查 `meshify.yaml`；如果里面仍是示例值，至少把 `default.server_url`、`default.base_domain` 和 `default.certificate_email` 改成你的真实值。
+然后按默认流程执行 `init -> verify -> deploy -> verify -> status`。部署前务必检查 `meshify.yaml`；如果里面仍是示例值，至少把 `default.server_url`、`default.base_domain` 和 `default.certificate_email` 改成你的真实值。
 
 ```bash
 meshify init --config meshify.yaml
 # 检查 meshify.yaml；如仍是示例值，先编辑 default 段
+meshify verify --config meshify.yaml
 sudo meshify deploy --config meshify.yaml
 meshify verify --config meshify.yaml
 meshify status --config meshify.yaml
@@ -68,7 +69,7 @@ Meshify 刻意保持范围小：不做多机高可用、Kubernetes、Terraform�
 
 ### 部署前准备
 
-- 服务器权限：Debian、Ubuntu，或 `/etc/os-release` 通过 `ID` / `ID_LIKE` 报告 `debian` 或 `ubuntu` 的 Debian 系发行版上的 root 或免密 sudo。
+- 服务器权限：Debian、Ubuntu，或 `/etc/os-release` 通过 `ID` / `ID_LIKE` 报告 `debian` 或 `ubuntu` 的 Debian 系发行版上的 root 或可用 sudo；非 root 直接运行时需通过 `sudo -n true`。
 - 主机能力：部署前必须能使用 `apt-get`、`dpkg` 和已启动的 systemd runtime。
 - DNS：把 `hs.example.com` 这样的公网 Headscale 域名解析到服务器。
 - 防火墙：本机防火墙和云安全组都要放行 `80/tcp`、`443/tcp`、`3478/udp`。
@@ -123,7 +124,7 @@ default:
 
 只有公网 80 不可靠或组织策略要求 DNS 验证时才使用 DNS-01。DNS-01 使用 lego provider code `cloudflare`、`route53`、`digitalocean`、`gcloud`、`tencentcloud`，其中 `google` 可作为 `gcloud` 别名。
 
-不要把 DNS API 值写进 `meshify.yaml`。Cloudflare、DigitalOcean 和腾讯云需要 root-only 的 `advanced.dns01.env_file`；Route53 和 gcloud 可以在部署和 systemd 续期使用同一主机身份时走 lego 的环境凭据链。原始 DNS token 或 key 放在单独的 root-only 文件中，并通过 lego `_FILE` 变量引用。
+不要把 DNS API 值写进 `meshify.yaml`，也不要把原始 token/key 直接写进 `env_file`。Cloudflare、DigitalOcean 和腾讯云需要 root-only 的 `advanced.dns01.env_file`，并用各自支持的 `_FILE` 变量引用 root-only 密钥文件；Route53 和 gcloud 可走主机凭据链，或只在 `env_file` 中放它们支持的 provider 设置或凭据文件路径。
 
 腾讯云 DNS / DNSPod 示例：先在腾讯云或 DNSPod 里创建能管理 DNSPod 解析记录的 API 密钥，然后把 SecretId 和 SecretKey 放进 root-only 文件，再由 lego env 文件引用这些文件：
 
@@ -180,7 +181,15 @@ meshify verify --config meshify.yaml
 meshify status --config meshify.yaml
 ```
 
-`verify` 会重新检查 Headscale、ACL、Nginx、TLS hook、证书计划、onboarding 准备状态，以及 Tailscale 客户端版本基线。`meshify status` 是只读命令，用来查看配置状态、已完成 checkpoint、警告和上次可恢复失败。
+`verify` 是静态配置和 runtime 模板检查。它会重新检查渲染出的 Headscale、ACL、Nginx、TLS hook、证书计划、onboarding 准备状态，以及 Tailscale 客户端版本基线；它不读取宿主机上的 systemd 状态、证书文件、Nginx runtime、Headscale 进程状态或客户端在线状态。`meshify status` 是只读命令，用来查看配置状态、已完成 checkpoint、警告和上次可恢复失败。
+
+部署后的宿主机运行态仍要用系统命令确认：
+
+```bash
+sudo systemctl status headscale.service nginx.service --no-pager --full
+sudo nginx -t
+curl -I https://hs.example.com
+```
 
 预期结果：
 
@@ -236,7 +245,13 @@ Internet
 | Nginx app site                                 |
 |   - app certificate and Host/SNI allowlist     |
 |   - optional static alias locations            |
-|   - proxy / to 127.0.0.1:18001                |
+|   - proxy / to 127.0.0.1:18001                 |
+|                                                |
+| Optional GoAccess log dashboard                |
+|   - reads canonical Nginx access log           |
+|   - live updates over loopback WebSocket       |
+|   - Nginx serves report.html and proxies /ws   |
+|   - logrotate for meshify-managed access log   |
 |                                                |
 | example-app.service                            |
 |   - runs as app.name system user               |
@@ -294,7 +309,11 @@ meshify-apps/admin.yaml
 meshify-apps/tailapp.yaml
 ```
 
-只部署 app 时可以没有 `meshify.yaml`；上面的目录只是同时管理主私有网络和多个 app 时的常见放法。
+只部署同机 `listen` app 时可以没有 `meshify.yaml`；上面的目录只是同时管理主私有网络和多个 app 时的常见放法。
+
+`upstream` app 必须使用 Tailscale client；`listen` app 只有主动访问 tailnet 时才设置 `tailscale.enabled_for_listen: true`。`tailscale.login_server` 为空时，Meshify 会从 `tailscale.meshify_config` 读取 `default.server_url`；`tailscale.meshify_config` 为空时默认是命令当前工作目录下的 `./meshify.yaml`，不是 `--config` 旁边的文件。主配置不在当前目录时请显式设置 `tailscale.meshify_config`；没有主配置时请显式设置 `tailscale.login_server`，并提供 root-only 的 `tailscale.auth_key_file` 或提前把这台云服务器登录到对应 tailnet。
+
+deploy 会检查 Tailscale client 是否已安装、运行并登录到期望 login server；已满足时会跳过安装和重登。自动登录固定附加 `--accept-dns=false --accept-routes=false --shields-up`。如果当前机器已经登录到无法证明匹配的 login server，deploy 会失败，不会自动 `logout`、清状态或重入网。
 
 配置文件名不是部署身份；真正的部署身份来自 `app.name`。重命名配置文件不会重命名 systemd unit、Nginx 站点或证书目录。
 
@@ -308,6 +327,8 @@ meshify-apps/tailapp.yaml
 `listen` 表示本机 app 模式：Go 服务运行在同一台云服务器上，只监听 loopback，例如 `127.0.0.1:18001`。Meshify 会生成 app systemd service、Nginx 站点、证书、hook 和续期 timer；它只验证业务二进制存在且可执行，不复制你的业务二进制。
 
 `upstream` 表示 tailnet upstream 模式：公网 Nginx 反代到 tailnet 内其它节点的固定 HTTP/WebSocket 地址，例如 `100.64.10.20:18001`。该模式不生成本机 app service。`listen` 和 `upstream` 必须二选一；`upstream` 模式自动需要 Tailscale client。`upstream` 只适合 HTTP/WebSocket 服务，不用于 PostgreSQL、Redis、MySQL 等数据库端口公网发布。
+
+默认 app 配置会启用 `nginx.http2: true`。目标机的 Nginx 必须至少为 `1.25.1` 且包含 `http_v2` 模块；如果使用 Debian/Ubuntu 发行版自带的较旧 Nginx，先把 app 配置里的 `nginx.http2` 改成 `false` 再部署。
 
 #### 最小 app 配置
 
@@ -340,6 +361,8 @@ tailscale:
 `upstream` 模式示例：
 
 ```yaml
+api_version: meshify/app/v1alpha1
+
 app:
   name: "tailapp"
   domains:
@@ -353,6 +376,11 @@ service:
   exec_start: ""
   working_directory: ""
   env_file: ""
+
+tailscale:
+  # 如果同目录没有主 meshify.yaml，就显式填写 login_server。
+  # login_server: "https://hs.example.com"
+  # auth_key_file: "/etc/meshify/tailscale/app-auth-key"
 ```
 
 多个域名写在同一个 `app.domains` 列表中。所有域名会写入同一个 Nginx `server_name`、同一张证书的 SAN，以及 Host/SNI allowlist。首版不会自动做 `abc.com` 和 `www.abc.com` 之间的 canonical redirect；它们默认服务同一个 app。
@@ -374,33 +402,115 @@ service:
 | `proxy.buffering` / `proxy.request_buffering` | 适合流式响应、SSE 或上传转发场景 |
 | `nginx.static_locations` | 从业务发布目录暴露 `/static/`、`/sitemap.xml`、`/sitemaps/` 等静态文件 |
 
-`nginx.static_locations` 会渲染在 app 反代 location 之前，支持可选 `default_type`、`expires`、`Cache-Control`、`try_files $uri =404`、`gzip_static on` 和 `access_log off`。Meshify 不复制静态文件内容；静态文件应由业务发布流程和业务二进制一起放到对应 release 路径。
+日志路径建议默认保持 `nginx.access_log: ""`；只有需要接入既有日志目录、外部采集器或自定义轮转策略时，才显式设置其它路径。
+
+| 配置 | 行为 | 是否自动轮转 |
+| --- | --- | --- |
+| `nginx.access_log: ""` + GoAccess 关闭 | Meshify 不渲染 app 专属 `access_log`，Nginx 继承全局日志配置；Debian/Ubuntu 通常使用 `/var/log/nginx/access.log` | Meshify 不处理；通常由发行版 Nginx/logrotate 处理 |
+| `nginx.access_log: ""` + GoAccess 开启 | Meshify 使用并创建 `/var/log/meshify/apps/<app-name>/access.log`，并渲染 GoAccess 需要的日志格式 | 会自动轮转：daily、保留 14 份、压缩，轮转后 reload Nginx 并 restart GoAccess |
+| 显式设置其它 `nginx.access_log` 路径 + GoAccess 关闭 | Meshify 只把路径写进 Nginx 配置，不创建文件或目录 | 不会；需要自行配置 logrotate |
+| 显式设置其它 `nginx.access_log` 路径 + GoAccess 开启 | 该路径作为外部 canonical access log；部署前必须预先准备，并满足下方 GoAccess 安全要求 | 不会；需要自行轮转，并处理 Nginx reopen/reload 和 GoAccess 重启 |
+
+`nginx.static_locations` 会渲染在 app 反代 location 之前，支持可选 `default_type`、`expires`、`Cache-Control`、`try_files $uri =404`、`gzip_static on` 和 `access_log off`。同一个 location 中建议只设置 `expires` 或 `cache_control` 之一，因为 Nginx `expires` 也会生成 `Cache-Control` 响应头；如果两者都设置，Meshify 会同时渲染两个指令。Meshify 不复制静态文件内容；静态文件应由业务发布流程和业务二进制一起放到对应 release 路径。
 
 `nginx.http2` 为 true 或任一静态 location 设置 `gzip_static: true` 时，app deploy 会在写入 runtime 文件前检查 `nginx -V`；`http2 on;` 要求 Nginx 至少为 `1.25.1` 且包含 `http_v2` 模块。
 
-#### Tailscale 逻辑
+#### GoAccess app 访问日志看板
 
-- `upstream` 模式自动需要 Tailscale client。
-- `listen` 模式只有在本机 app 也需要主动访问 tailnet 时才设置 `tailscale.enabled_for_listen: true`。
-- 如果本机 app 不需要访问 tailnet，保持 `tailscale.enabled_for_listen` 为 false，并忽略 `tailscale` 段其余字段。
-- `tailscale.login_server` 为空时，Meshify 从 `tailscale.meshify_config` 指向的主 `meshify.yaml` 读取 `default.server_url`。
-- `tailscale.meshify_config` 为空时，默认使用当前目录的 `meshify.yaml`。
-- `tailscale.hostname` 为空时不传 `--hostname`，让 Tailscale 使用系统 hostname。
-- `tailscale.auth_key_file` 只保存 root-only auth key 文件路径，不保存 key 内容。
+`nginx.goaccess` 默认关闭。启用后会得到一个带 basic auth 的实时 HTML 访问日志看板，默认入口是 `https://<primary-domain>/_meshify/apps/<app-name>/goaccess`。Meshify 会安装或检查 `goaccess`，生成 GoAccess 配置、`<app-name>-goaccess.service`、`/var/lib/<app-name>/goaccess/report.html` 报表，以及启用 `persist true` 和 `restore true` 的 GoAccess `db-path` `/var/lib/<app-name>/goaccess/db`；如果使用 Meshify 托管的 access log，也会一起配置 `logrotate`。
 
-deploy 会先检查 Tailscale client 是否已安装、已运行、已登录期望 login server。已经满足时会跳过安装、跳过创建 preauth key、跳过重新登录。未登录时，本机 Meshify 管理的 Headscale 会自动创建短期 preauth key；外部 Headscale 使用 `tailscale.auth_key_file` 或预先登录好的 client。
+启用 GoAccess 后始终是实时看板：Nginx 托管 HTML 报表，GoAccess service 通过 loopback WebSocket 提供实时数据，Meshify 在 `nginx.goaccess.websocket_path` 反代这个通道。
 
-自动登录时，Meshify 会运行带 `--login-server` 和 `--auth-key` 的 `tailscale up`，并固定附加这些策略参数：
-
-```bash
---accept-dns=false --accept-routes=false --shields-up
+```yaml
+nginx:
+  access_log: ""
+  error_log: "/var/log/nginx/example-app.error.log"
+  goaccess:
+    enabled: true
+    language: "zh-CN" # en | zh-CN
+    log_format: "enhanced" # enhanced | combined
+    auth_basic_user_file: "/etc/example-app/goaccess.htpasswd"
+    auth_cidr_allowlist: [] # 可选 CIDR；basic auth 仍然必须通过
+    # path: "/_meshify/apps/example-app/goaccess"
+    # websocket_path: "/_meshify/apps/example-app/goaccess/ws"
+    websocket_listen: "" # 通常留空；默认 127.0.0.1:<app-derived-port>
 ```
 
-如果当前机器已经登录到无法证明匹配的 login server，deploy 会显式失败，不会自动 `logout`、清状态或重入网。
+启用前需要先准备 htpasswd 文件。它必须是已存在的普通非空文件，至少包含一行 `user:hash` 凭据；该行的 user 和 hash 都不能包含空白字符。文件必须 root-owned、不能被 group 写入、不能被其他本机用户访问，并且 Nginx 运行用户能读取。每一层父目录都必须 root-owned、不能被 group/others 写入，并且允许 Nginx 运行用户进入。放在 `/etc/<app-name>` 下时只能使用直接路径 `/etc/<app-name>/goaccess.htpasswd`。
+
+`auth_cidr_allowlist` 为空时只要求 basic auth；非空时 Nginx 会同时要求来源 IP 匹配 allowlist 且 basic auth 通过。它不是免密白名单，不会绕过密码校验。
+
+Debian/Ubuntu 上可以用 `apache2-utils` 提供的 `htpasswd` 创建：
+
+```bash
+sudo apt update
+sudo apt install -y apache2-utils
+sudo install -d -o root -g root -m 0755 /etc/example-app
+sudo htpasswd -c -m /etc/example-app/goaccess.htpasswd goaccess
+sudo chown root:www-data /etc/example-app/goaccess.htpasswd
+sudo chmod 0640 /etc/example-app/goaccess.htpasswd
+```
+
+首次创建文件才使用 `-c`；后续新增或修改用户时去掉 `-c`，否则会清空已有凭据：
+
+```bash
+# 新增或修改用户时不要加 -c，避免覆盖已有 htpasswd 文件。
+sudo htpasswd -m /etc/example-app/goaccess.htpasswd another-user
+```
+
+Meshify 不提供可复制的 htpasswd 模板，也不要复用示例 hash；这个文件本质上是看板密码库，必须按部署现场生成。
+
+关键规则：
+
+| 项目 | 规则 |
+| --- | --- |
+| `nginx.access_log` | 启用 GoAccess 时不能设为 `off`；其它行为见上面的日志路径表 |
+| 外部 `access_log` 安全要求 | 必须预先存在，普通非 symlink，owner 为 root 或 www-data，文件不能被 group/others 写入，父目录必须 root-owned 且不能被 group/others 写入；Meshify 不创建文件、不 chown 外部日志根、不安装托管 logrotate；deploy 会先创建或确认 GoAccess runtime identity，再做最终可读性检查 |
+| 禁用路径 | 外部 access log 不要放在其它 app 的 `/var/log/meshify/apps/`、当前 app 下的嵌套路径、`/home`、`/root`、`/run/user`、`/tmp`、`/var/tmp` 或 `/var/log/nginx`；`/home`、`/root`、`/run/user`、`/tmp`、`/var/tmp` 会被 `ProtectHome=true` 或 `PrivateTmp=true` 隔离，`/var/log/nginx` 通常由发行版 logrotate 管理 |
+| `error_log` | GoAccess 不解析它；它不能等于 canonical access log 或 htpasswd 文件，也不能放在 app/GoAccess 生成目录下 |
+| `path` / `websocket_path` | 通常留空，由 `app.name` 派生；显式设置后同步更新书签和监控探测 |
+| `websocket_listen` | 通常留空；显式设置时必须是 loopback IP literal，不能使用 `localhost`、wildcard 或冲突端口；其它 loopback IP literal 也有效 |
+| `language` | `en` 使用 `C.UTF-8`；`zh-CN` 使用 `zh_CN.UTF-8` 显示 GoAccess UI，并保持 `LC_TIME=C.UTF-8` 解析日志；deploy 会检查 `locale -a`，语言只影响 GoAccess UI 文案，不改变原始日志字段 |
+| `log_format` | `enhanced` 是默认值，包含 Host 和 request serving time；`combined` 是兼容模式，不含 serving-time 指标 |
+
+看板只以 primary domain 为准；secondary domain 上的看板请求会重定向到 `https://<primary-domain><nginx.goaccess.path>`，WebSocket 请求会返回 `421`。设置了 `access_log: false` 的静态 location 不会进入 GoAccess。GoAccess 覆盖请求量、访客、URL、状态码、IP/Host、referrer、User-Agent、带宽、访问时间；`enhanced` 模式还包含 request serving time。
+
+部署或刷新后检查：
+
+```bash
+meshify app verify --config meshify-apps/example-app.yaml
+sudo nginx -t
+systemctl status example-app-goaccess.service --no-pager --full
+curl -I https://app.example.com/_meshify/apps/example-app/goaccess
+```
+
+常用排障命令：
+
+```bash
+# 查看 GoAccess 实时看板服务状态。
+systemctl status <app-name>-goaccess.service --no-pager --full
+
+# 查看 GoAccess 服务最近日志。
+journalctl -u <app-name>-goaccess.service -e
+
+# 实时跟踪 GoAccess 使用的 canonical access log。
+tail -f <canonical-access-log>
+
+# 实时跟踪 Nginx error log。
+tail -f <error-log>
+
+# listen 模式：查看本机业务 app service 日志。
+journalctl -u <app-name>.service -e
+
+# upstream 模式：从当前宿主机检查固定 tailnet upstream。
+curl -I http://<app.upstream>
+```
+
+`<canonical-access-log>` 使用配置里的 `nginx.access_log`；如果为空，则使用 `/var/log/meshify/apps/<app-name>/access.log`。`<error-log>` 使用配置里的 `nginx.error_log`；如果为空，则查看 Nginx 默认 error log。
 
 #### app verify 和状态
 
-`meshify app verify` 是 app 流程的静态配置和模板检查，状态通过时 CLI 输出 `static-passed`。它会校验 app schema、模板渲染、Nginx Host/SNI guard、证书路径、systemd 计划、Tailscale 需求推导和敏感值泄露；它不读取宿主机上的已部署文件、systemd 状态、证书 SAN、Nginx runtime 或 Tailscale 在线状态。`meshify app deploy` 也会先执行同类静态检查。
+`meshify app verify` 是 app 流程的静态配置和模板检查，状态通过时 CLI 输出 `static-passed`。它会校验 app schema、模板渲染、Nginx Host/SNI guard、证书路径、systemd 计划、Tailscale 需求推导、启用时的 GoAccess dashboard/WebSocket runtime 文件和敏感值泄露；它不读取宿主机上的已部署文件、systemd 状态、证书 SAN、Nginx runtime、GoAccess 进程状态或 Tailscale 在线状态。`meshify app deploy` 也会执行同类静态检查。
 
 主流程的 `meshify status` 读取主部署 checkpoint、activation history 和上次可恢复失败；app 首版没有独立 checkpoint store，因此不提供 `meshify app status`。
 
@@ -408,10 +518,12 @@ release binary 的 app runtime 模板唯一来源是 `deploy/templates/app/`，�
 
 #### app 部署前检查
 
-- `app.domains` 都解析到当前云服务器。
+- `app.domains` 都解析到当前云服务器，且不要复用主 Headscale 的 `server_url` 主机名。
 - 对 app 站点，公网只通过 Nginx 开放 `80/tcp` 和 `443/tcp`，不开放 `18001` 这类 app 端口；如果同机也运行主 Headscale 部署，`3478/udp` 仍然需要留给 STUN。
+- 同机也管理主 Headscale 时，`app.listen` 和 `nginx.goaccess.websocket_listen` 不要复用 Headscale metrics 端口。
 - `listen` 模式业务二进制已经安装，且 `service.exec_start` 的第一个 token 是可执行文件绝对路径。
 - 如设置 `service.env_file`，它必须指向 root-owned、root-only 文件。
+- 如启用 `nginx.goaccess.enabled`，按上文准备 htpasswd；显式外部 `nginx.access_log` 必须已存在并满足外部日志安全要求。
 - `nginx.static_locations` 的 alias 指向已经随 app release 发布的文件或目录。
 - `upstream` 模式后端是固定 `100.64.x.y:port`，并且从云服务器可以访问。
 - DNS-01 的 `dns01.env_file` 和 Tailscale 的 `tailscale.auth_key_file` 都是 root-only 文件。

@@ -3,6 +3,7 @@ package apppreflight
 import (
 	"meshify/internal/appconfig"
 	"meshify/internal/preflight"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -45,7 +46,7 @@ func TestBuildReportChecksAuthKeyFileReadiness(t *testing.T) {
 		TailscaleAuthKeyFile:        cfg.Tailscale.AuthKeyFile,
 		TailscaleAuthKeyFileChecked: true,
 		TailscaleAuthKeyFileReady:   true,
-		TailscaleAuthKeyFileDetail:  "tailscale.auth_key_file 已通过 root-only 校验",
+		TailscaleAuthKeyFileDetail:  "tailscale.auth_key_file passed root-only validation",
 	})
 	if report.FailedCount() != 0 {
 		t.Fatalf("FailedCount() = %d, want auth key file readiness pass", report.FailedCount())
@@ -65,7 +66,7 @@ func TestBuildReportRequiresCurrentRootForAppDeploy(t *testing.T) {
 	if report.FailedCount() == 0 {
 		t.Fatal("FailedCount() = 0, want non-root failure even when sudo works")
 	}
-	if got := checkSummary(report, "permissions"); !strings.Contains(got, "root 权限") {
+	if got := checkSummary(report, "permissions"); !strings.Contains(got, "root privileges") {
 		t.Fatalf("permissions summary = %q, want root-only app deploy requirement", got)
 	}
 }
@@ -100,7 +101,7 @@ func TestBuildReportChecksServiceEnvFileReadiness(t *testing.T) {
 		ServiceEnvFile:        cfg.Service.EnvFile,
 		ServiceEnvFileChecked: true,
 		ServiceEnvFileReady:   true,
-		ServiceEnvFileDetail:  "service.env_file 已通过 root-only 校验",
+		ServiceEnvFileDetail:  "service.env_file passed root-only validation",
 	})
 	if report.FailedCount() != 0 {
 		t.Fatalf("FailedCount() = %d, want service env file readiness pass", report.FailedCount())
@@ -163,7 +164,7 @@ func TestBuildReportWarnsWhenDNSHostAlignmentIsUnproven(t *testing.T) {
 	if report.FailedCount() != 0 {
 		t.Fatalf("FailedCount() = %d, want warning-only DNS uncertainty", report.FailedCount())
 	}
-	if got := checkSummary(report, "dns:app.example.com"); !strings.Contains(got, "未能确认") {
+	if got := checkSummary(report, "dns:app.example.com"); !strings.Contains(got, "could not confirm") {
 		t.Fatalf("dns summary = %q, want unproven host alignment warning", got)
 	}
 }
@@ -183,17 +184,17 @@ func TestBuildReportDoesNotBlockDNS01WhenPublicDNSIsNotReady(t *testing.T) {
 		{
 			name: "lookup missing",
 			dns:  map[string]preflight.DNSProbe{"app.example.com": {Host: "app.example.com", LookupError: "no such host"}},
-			want: "DNS 解析未确认",
+			want: "DNS resolution is unconfirmed",
 		},
 		{
 			name: "private only",
 			dns:  map[string]preflight.DNSProbe{"app.example.com": {Host: "app.example.com", ResolvedIPs: []string{"127.0.0.1"}}},
-			want: "未解析到公网可路由地址",
+			want: "did not resolve to a public routable address",
 		},
 		{
 			name: "expected mismatch",
 			dns:  map[string]preflight.DNSProbe{"app.example.com": {Host: "app.example.com", ResolvedIPs: []string{"8.8.8.8"}, ExpectedIPv4: "1.1.1.1"}},
-			want: "缺少期望地址",
+			want: "missing expected address",
 		},
 	}
 	for _, tt := range tests {
@@ -212,7 +213,7 @@ func TestBuildReportDoesNotBlockDNS01WhenPublicDNSIsNotReady(t *testing.T) {
 			if report.FailedCount() != 0 {
 				t.Fatalf("FailedCount() = %d, want DNS-01 warning only", report.FailedCount())
 			}
-			if got := checkSummary(report, "dns:app.example.com"); !strings.Contains(got, tt.want) || !strings.Contains(got, "不因此阻断部署") {
+			if got := checkSummary(report, "dns:app.example.com"); !strings.Contains(got, tt.want) || !strings.Contains(got, "does not block deploy") {
 				t.Fatalf("dns summary = %q, want warning containing %q", got, tt.want)
 			}
 		})
@@ -241,6 +242,57 @@ func TestBuildReportChecksAppPorts(t *testing.T) {
 	})
 	if report.FailedCount() != 0 {
 		t.Fatalf("FailedCount() = %d, want nginx coexistence warning only", report.FailedCount())
+	}
+
+	report = BuildReport(cfg, Inputs{
+		Permissions: preflight.PermissionState{IsRoot: true},
+		DNS:         validDNS(cfg),
+		Ports: []preflight.PortBinding{
+			{Port: 80, Protocol: "tcp", InUse: true, LocalAddress: "0.0.0.0", Process: "nginx"},
+			{Port: 80, Protocol: "tcp", InUse: true, LocalAddress: "127.0.0.1", Process: "caddy"},
+			{Port: 443, Protocol: "tcp"},
+		},
+		ServiceBinaryOK: true,
+	})
+	if report.FailedCount() == 0 {
+		t.Fatal("FailedCount() = 0, want duplicate non-nginx port conflict")
+	}
+	if got := checkSummary(report, "port:80/tcp"); !strings.Contains(got, "caddy") {
+		t.Fatalf("port:80/tcp summary = %q, want caddy conflict", got)
+	}
+}
+
+func TestBuildReportChecksAppListenReadiness(t *testing.T) {
+	t.Parallel()
+
+	cfg := validAppConfig()
+	report := BuildReport(cfg, Inputs{
+		Permissions:      preflight.PermissionState{IsRoot: true},
+		DNS:              validDNS(cfg),
+		Ports:            availableAppPorts(),
+		AppListenChecked: true,
+		AppListenReady:   false,
+		AppListenDetail:  "app.listen 127.0.0.1:18001 is already used by other-service",
+		ServiceBinaryOK:  true,
+	})
+	if report.FailedCount() == 0 {
+		t.Fatal("FailedCount() = 0, want app.listen readiness failure")
+	}
+	if got := checkSummary(report, "app-listen"); !strings.Contains(got, "other-service") {
+		t.Fatalf("app-listen summary = %q, want conflicting process", got)
+	}
+
+	report = BuildReport(cfg, Inputs{
+		Permissions:      preflight.PermissionState{IsRoot: true},
+		DNS:              validDNS(cfg),
+		Ports:            availableAppPorts(),
+		AppListenChecked: true,
+		AppListenReady:   true,
+		AppListenDetail:  "app.listen 127.0.0.1:18001 is available",
+		ServiceBinaryOK:  true,
+	})
+	if report.FailedCount() != 0 {
+		t.Fatalf("FailedCount() = %d, want app.listen readiness pass", report.FailedCount())
 	}
 }
 
@@ -272,10 +324,124 @@ func TestBuildReportChecksDNS01Credentials(t *testing.T) {
 		ServiceBinaryOK:       true,
 		DNSCredentialsChecked: true,
 		DNSCredentialsReady:   true,
-		DNSCredentialsDetail:  "DNS-01 provider env_file 已通过校验",
+		DNSCredentialsDetail:  "DNS-01 provider env_file passed validation",
 	})
 	if report.FailedCount() != 0 {
 		t.Fatalf("FailedCount() = %d, want DNS credentials pass", report.FailedCount())
+	}
+}
+
+func TestBuildReportChecksGoAccessReadiness(t *testing.T) {
+	t.Parallel()
+
+	cfg := validAppConfig()
+	cfg.Nginx.GoAccess.Enabled = true
+	cfg.Nginx.GoAccess.AuthBasicUserFile = "/etc/app/goaccess.htpasswd"
+
+	report := BuildReport(cfg, Inputs{
+		Permissions:             preflight.PermissionState{IsRoot: true},
+		DNS:                     validDNS(cfg),
+		Ports:                   availableAppPorts(),
+		ServiceBinaryOK:         true,
+		GoAccessAuthFileChecked: true,
+		GoAccessAuthFileReady:   false,
+		GoAccessAuthFileDetail:  "htpasswd is group-writable",
+		GoAccessPortChecked:     true,
+		GoAccessPortReady:       true,
+		GoAccessLocaleChecked:   true,
+		GoAccessLocaleReady:     true,
+		GoAccessLogFileChecked:  true,
+		GoAccessLogFileReady:    true,
+		GoAccessLogFileDetail:   "log readable",
+	})
+	if report.FailedCount() == 0 {
+		t.Fatal("FailedCount() = 0, want GoAccess auth failure")
+	}
+	if got := checkSummary(report, "goaccess-auth-file"); !strings.Contains(got, "group-writable") {
+		t.Fatalf("goaccess-auth-file summary = %q, want auth detail", got)
+	}
+
+	report = BuildReport(cfg, Inputs{
+		Permissions:             preflight.PermissionState{IsRoot: true},
+		DNS:                     validDNS(cfg),
+		Ports:                   availableAppPorts(),
+		ServiceBinaryOK:         true,
+		GoAccessAuthFileChecked: true,
+		GoAccessAuthFileReady:   true,
+		GoAccessPortChecked:     true,
+		GoAccessPortReady:       false,
+		GoAccessPortDetail:      "port 40123 occupied",
+		GoAccessLocaleChecked:   true,
+		GoAccessLocaleReady:     true,
+	})
+	if report.FailedCount() == 0 {
+		t.Fatal("FailedCount() = 0, want GoAccess port failure")
+	}
+	if got := checkSummary(report, "goaccess-port"); !strings.Contains(got, "occupied") {
+		t.Fatalf("goaccess-port summary = %q, want port detail", got)
+	}
+
+	explicitLog := cfg
+	explicitLog.Nginx.AccessLog = "/var/log/meshify/custom/app.access.log"
+	report = BuildReport(explicitLog, Inputs{
+		Permissions:             preflight.PermissionState{IsRoot: true},
+		DNS:                     validDNS(explicitLog),
+		Ports:                   availableAppPorts(),
+		ServiceBinaryOK:         true,
+		GoAccessAuthFileChecked: true,
+		GoAccessAuthFileReady:   true,
+		GoAccessPortChecked:     true,
+		GoAccessPortReady:       true,
+		GoAccessLocaleChecked:   true,
+		GoAccessLocaleReady:     true,
+	})
+	if report.FailedCount() == 0 {
+		t.Fatal("FailedCount() = 0, want explicit GoAccess log readiness check failure")
+	}
+	if got := checkSummary(report, "goaccess-log-file"); !strings.Contains(got, "was not validated automatically") {
+		t.Fatalf("goaccess-log-file summary = %q, want unchecked explicit log failure", got)
+	}
+	nextSteps := report.NextSteps()
+	if !slices.ContainsFunc(nextSteps, func(step string) bool {
+		return strings.Contains(step, "explicit nginx.access_log") &&
+			strings.Contains(step, "file must already exist") &&
+			strings.Contains(step, "GoAccess runtime user")
+	}) {
+		t.Fatalf("NextSteps() = %#v, want explicit nginx.access_log readiness remediation", nextSteps)
+	}
+
+	explicitManagedLog := cfg
+	explicitManagedLog.Nginx.AccessLog = "/var/log/meshify/apps/app/access.log"
+	report = BuildReport(explicitManagedLog, Inputs{
+		Permissions:             preflight.PermissionState{IsRoot: true},
+		DNS:                     validDNS(explicitManagedLog),
+		Ports:                   availableAppPorts(),
+		ServiceBinaryOK:         true,
+		GoAccessAuthFileChecked: true,
+		GoAccessAuthFileReady:   true,
+		GoAccessPortChecked:     true,
+		GoAccessPortReady:       true,
+		GoAccessLocaleChecked:   true,
+		GoAccessLocaleReady:     true,
+	})
+	if got := checkSummary(report, "goaccess-log-file"); got != "" {
+		t.Fatalf("goaccess-log-file summary = %q, want no explicit log preflight for Meshify-managed log", got)
+	}
+
+	report = BuildReport(cfg, Inputs{
+		Permissions:             preflight.PermissionState{IsRoot: true},
+		DNS:                     validDNS(cfg),
+		Ports:                   availableAppPorts(),
+		ServiceBinaryOK:         true,
+		GoAccessAuthFileChecked: true,
+		GoAccessAuthFileReady:   true,
+		GoAccessPortChecked:     true,
+		GoAccessPortReady:       true,
+		GoAccessLocaleChecked:   true,
+		GoAccessLocaleReady:     true,
+	})
+	if report.FailedCount() != 0 {
+		t.Fatalf("FailedCount() = %d, want GoAccess checks pass", report.FailedCount())
 	}
 }
 

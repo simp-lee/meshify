@@ -17,11 +17,14 @@ type Asset struct {
 }
 
 const (
-	NginxTemplate        = "templates/app/nginx.conf.tmpl"
-	ServiceTemplate      = "templates/app/service.tmpl"
-	RenewServiceTemplate = "templates/app/lego-renew.service.tmpl"
-	RenewTimerTemplate   = "templates/app/lego-renew.timer.tmpl"
-	HookTemplate         = "templates/app/install-cert-and-reload-nginx.sh.tmpl"
+	NginxTemplate             = "templates/app/nginx.conf.tmpl"
+	ServiceTemplate           = "templates/app/service.tmpl"
+	RenewServiceTemplate      = "templates/app/lego-renew.service.tmpl"
+	RenewTimerTemplate        = "templates/app/lego-renew.timer.tmpl"
+	HookTemplate              = "templates/app/install-cert-and-reload-nginx.sh.tmpl"
+	GoAccessConfigTemplate    = "templates/app/goaccess.conf.tmpl"
+	GoAccessServiceTemplate   = "templates/app/goaccess.service.tmpl"
+	GoAccessLogrotateTemplate = "templates/app/goaccess-logrotate.tmpl"
 )
 
 func RuntimeCatalog(cfg appconfig.Config) ([]Asset, error) {
@@ -37,6 +40,15 @@ func RuntimeCatalog(cfg appconfig.Config) ([]Asset, error) {
 	}
 	if cfg.Mode() == appconfig.ModeListen {
 		items = append(items, Asset{SourcePath: ServiceTemplate, ContentMode: assets.ContentModeRender, HostPath: "/etc/systemd/system/" + names.ServiceUnit, Mode: 0o644})
+	}
+	if cfg.Nginx.GoAccess.Enabled {
+		items = append(items,
+			Asset{SourcePath: GoAccessConfigTemplate, ContentMode: assets.ContentModeRender, HostPath: names.GoAccessConfigPath, Mode: 0o644},
+			Asset{SourcePath: GoAccessServiceTemplate, ContentMode: assets.ContentModeRender, HostPath: "/etc/systemd/system/" + names.GoAccessServiceUnit, Mode: 0o644},
+		)
+		if appsvc.GoAccessManagesCanonicalAccessLog(cfg) {
+			items = append(items, Asset{SourcePath: GoAccessLogrotateTemplate, ContentMode: assets.ContentModeRender, HostPath: names.GoAccessLogrotatePath, Mode: 0o644})
+		}
 	}
 	return cloneCatalog(items), nil
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"meshify/internal/appconfig"
 	"meshify/internal/host"
+	"strconv"
 	"strings"
 )
 
@@ -39,6 +40,187 @@ exit 1`
 
 func GuardServerNameConflictsCommand(names Names, domains []string) host.Command {
 	return guardServerNameConflictsCommand(names.NginxEnabledPath, names.NginxAvailablePath, domains)
+}
+
+func GuardGoAccessWebSocketPortAssignmentCommand(names Names) host.Command {
+	script := `set -eu
+current_enabled=$1
+current_available=$2
+target=$3
+target_host=$4
+target_port=$5
+dump=$(mktemp)
+trap 'rm -f "$dump"' EXIT INT TERM
+
+if ! nginx -T > "$dump" 2>&1; then
+    cat "$dump" >&2
+    exit 1
+fi
+
+awk -v current_enabled="$current_enabled" -v current_available="$current_available" -v target="$target" -v target_host="$target_host" -v target_port="$target_port" '
+    function init_targets() {
+        proxy_targets["http://" target] = "http://" target
+        upstream_server_targets[target] = "http://" target
+        if ((target_host == "127.0.0.1" || target_host == "::1") && target_port != "") {
+            proxy_targets["http://localhost:" target_port] = "http://localhost:" target_port
+            upstream_server_targets["localhost:" target_port] = "http://localhost:" target_port
+        }
+    }
+    function count_char(text, char,    count, i) {
+        count = 0
+        for (i = 1; i <= length(text); i++) {
+            if (substr(text, i, 1) == char) count++
+        }
+        return count
+    }
+    function normalize_directive(text,    normalized) {
+        normalized = text
+        gsub(/[{};]/, " ", normalized)
+        gsub(/[ \t\r\n]+/, " ", normalized)
+        return " " normalized " "
+    }
+    function check_upstream_server(text,    normalized, tail, count, parts) {
+        if (!in_upstream || upstream_name == "") {
+            return
+        }
+        normalized = normalize_directive(text)
+        while (match(normalized, /(^| )server /)) {
+            tail = substr(normalized, RSTART + RLENGTH)
+            count = split(tail, parts, /[ \t]+/)
+            if (count > 0 && parts[1] in upstream_server_targets) {
+                target_upstreams[upstream_name] = upstream_server_targets[parts[1]]
+            }
+            normalized = tail
+        }
+    }
+    function reset_upstream_state() {
+        in_upstream = 0
+        pending_upstream_name = ""
+        upstream_name = ""
+        upstream_file = ""
+        upstream_depth = 0
+    }
+    function start_upstream(name) {
+        pending_upstream_name = ""
+        upstream_name = name
+        upstream_file = current_file
+        upstream_depth = 0
+        in_upstream = 1
+    }
+    function process_upstream_line(text,    header) {
+        if (!in_upstream && pending_upstream_name != "") {
+            if (text ~ /^[ \t]*$/) {
+                return
+            }
+            if (match(text, /^[ \t]*\{/)) {
+                start_upstream(pending_upstream_name)
+            } else {
+                pending_upstream_name = ""
+            }
+        }
+        if (!in_upstream && match(text, /^[ \t]*upstream[ \t]+[A-Za-z0-9_.-]+[ \t]*(\{|$)/)) {
+            header = substr(text, RSTART, RLENGTH)
+            sub(/^[ \t]*upstream[ \t]+/, "", header)
+            sub(/[ \t]*\{$/, "", header)
+            sub(/[ \t]+$/, "", header)
+            if (index(text, "{") > 0) {
+                start_upstream(header)
+            } else {
+                pending_upstream_name = header
+                return
+            }
+        }
+        if (!in_upstream) {
+            return
+        }
+        check_upstream_server(text)
+        upstream_depth += count_char(text, "{") - count_char(text, "}")
+        if (upstream_depth <= 0) {
+            in_upstream = 0
+            upstream_name = ""
+            upstream_file = ""
+        }
+    }
+    function check_proxy_target(normalized, proxy_target, label,    prefix, nextChar) {
+        prefix = " proxy_pass " proxy_target
+        if (index(normalized, prefix) == 0) {
+            return
+        }
+        nextChar = substr(normalized, index(normalized, prefix) + length(prefix), 1)
+        if (nextChar == "" || nextChar == " " || nextChar == "/" || nextChar == "$" || nextChar == "?") {
+            printf "%s already proxies to %s; set nginx.goaccess.websocket_listen to a different loopback host:port\n", current_file, label > "/dev/stderr"
+            found = 1
+        }
+    }
+    function check_directive(text,    normalized, proxy_target, upstream) {
+        if (current_file == "" || current_file == current_enabled || current_file == current_available) {
+            return
+        }
+        normalized = normalize_directive(text)
+        for (proxy_target in proxy_targets) {
+            check_proxy_target(normalized, proxy_target, proxy_targets[proxy_target])
+        }
+        for (upstream in target_upstreams) {
+            check_proxy_target(normalized, "http://" upstream, "upstream " upstream " for " target_upstreams[upstream])
+        }
+    }
+    function process_line(text,    pos, part) {
+        while (text != "") {
+            pos = index(text, ";")
+            if (pos == 0) {
+                directive = directive " " text
+                return
+            }
+            part = substr(text, 1, pos)
+            directive = directive " " part
+            check_directive(directive)
+            directive = ""
+            text = substr(text, pos + 1)
+        }
+    }
+    BEGIN {
+        init_targets()
+        current_file = ""
+        directive = ""
+    }
+    FNR == 1 {
+        current_file = ""
+        directive = ""
+        reset_upstream_state()
+    }
+    NR == FNR {
+        if ($0 ~ /^# configuration file /) {
+            reset_upstream_state()
+            current_file = $0
+            sub(/^# configuration file /, "", current_file)
+            sub(/:$/, "", current_file)
+            next
+        }
+        line = $0
+        sub(/[ \t]*#.*/, "", line)
+        process_upstream_line(line)
+        next
+    }
+    /^# configuration file / {
+        directive = ""
+        current_file = $0
+        sub(/^# configuration file /, "", current_file)
+        sub(/:$/, "", current_file)
+        next
+    }
+    {
+        line = $0
+        sub(/[ \t]*#.*/, "", line)
+        process_line(line)
+    }
+    END { exit found ? 1 : 0 }
+' "$dump" "$dump"`
+	return host.Command{
+		Name:        "sh",
+		Args:        []string{"-c", script, "meshify-app-goaccess-websocket-port-assignment", strings.TrimSpace(names.NginxEnabledPath), strings.TrimSpace(names.NginxAvailablePath), strings.TrimSpace(names.GoAccessWebSocketListen), strings.TrimSpace(names.GoAccessWebSocketHost), strconv.Itoa(names.GoAccessWebSocketPort)},
+		DisplayName: "guard-goaccess-websocket-port-assignment",
+		DisplayArgs: []string{names.GoAccessWebSocketListen},
+	}
 }
 
 func guardServerNameConflictsCommand(currentEnabledPath string, currentAvailablePath string, domains []string) host.Command {
@@ -260,6 +442,7 @@ func ValidateRenderedNginx(cfg appconfig.Config, names Names, content []byte) er
 	}
 	validateHTTPServerBlock(&errs, httpBlock, cfg, names)
 	validateHTTPSServerBlock(&errs, httpsBlock, cfg, names)
+	validateGoAccessNginx(&errs, text, httpBlock, httpsBlock, cfg, names)
 	if len(errs) > 0 {
 		return errors.New(strings.Join(errs, "; "))
 	}
@@ -287,7 +470,13 @@ func validateHTTPSServerBlock(errs *[]string, block string, cfg appconfig.Config
 	mustContain(errs, block, "server_name "+strings.Join(cfg.App.Domains, " ")+";", "HTTPS server_name domain list")
 	mustContain(errs, block, "ssl_certificate "+names.FullchainPath+";", "HTTPS fullchain certificate path")
 	mustContain(errs, block, "ssl_certificate_key "+names.PrivateKeyPath+";", "HTTPS private key path")
-	if cfg.Nginx.AccessLog != "" {
+	if cfg.Nginx.GoAccess.Enabled {
+		if cfg.Nginx.GoAccess.EffectiveLogFormat() == appconfig.NginxGoAccessLogFormatEnhanced {
+			mustContain(errs, block, "access_log "+names.GoAccessCanonicalAccessLogPath+" "+names.GoAccessNginxLogFormatName+";", "HTTPS GoAccess enhanced access_log")
+		} else {
+			mustContain(errs, block, "access_log "+names.GoAccessCanonicalAccessLogPath+" combined;", "HTTPS GoAccess combined access_log")
+		}
+	} else if cfg.Nginx.AccessLog != "" {
 		mustContain(errs, block, "access_log "+cfg.Nginx.AccessLog+";", "HTTPS access_log")
 	}
 	if cfg.Nginx.ErrorLog != "" {
@@ -302,19 +491,316 @@ func validateHTTPSServerBlock(errs *[]string, block string, cfg appconfig.Config
 		"location / {\n        proxy_pass",
 		"HTTPS Host allowlist before proxy location")
 	validateStaticLocations(errs, block, cfg.Nginx.StaticLocations)
+	validateAppProxyLocation(errs, block, cfg, names)
+}
+
+func validateAppProxyLocation(errs *[]string, block string, cfg appconfig.Config, names Names) {
+	appProxyBlock := nginxBlockStartingWith(block, "location / {")
+	if appProxyBlock == "" {
+		*errs = append(*errs, "HTTPS app proxy location missing")
+		return
+	}
 	mustContain(errs, block, "proxy_set_header Host $"+names.VarPrefix+"_validated_host;", "HTTPS validated Host forwarding")
 	mustContain(errs, block, "proxy_pass http://"+names.VarPrefix+"_upstream", "HTTPS proxy_pass app upstream")
+	mustHaveNginxDirectiveLine(errs, appProxyBlock, 1, "proxy_pass http://"+names.VarPrefix+"_upstream;", "HTTPS app proxy_pass")
+	mustHaveNginxDirective(errs, appProxyBlock, 1, "HTTPS app HTTP/1.1 proxy", "proxy_http_version", "1.1")
+	mustHaveNginxDirective(errs, appProxyBlock, 1, "HTTPS app validated Host forwarding", "proxy_set_header", "Host", "$"+names.VarPrefix+"_validated_host")
+	mustHaveNginxDirective(errs, appProxyBlock, 1, "HTTPS app WebSocket Upgrade header", "proxy_set_header", "Upgrade", "$http_upgrade")
+	mustHaveNginxDirective(errs, appProxyBlock, 1, "HTTPS app WebSocket Connection header", "proxy_set_header", "Connection", "$"+names.VarPrefix+"_connection_upgrade")
+	mustHaveNginxDirective(errs, appProxyBlock, 1, "HTTPS app validated X-Forwarded-Host forwarding", "proxy_set_header", "X-Forwarded-Host", "$"+names.VarPrefix+"_validated_host")
 	if cfg.Nginx.Proxy.ConnectTimeout != "" {
-		mustContain(errs, block, "proxy_connect_timeout "+cfg.Nginx.Proxy.ConnectTimeout+";", "proxy connect timeout")
+		mustHaveNginxDirective(errs, appProxyBlock, 1, "proxy connect timeout", "proxy_connect_timeout", cfg.Nginx.Proxy.ConnectTimeout)
 	}
-	mustContain(errs, block, "proxy_read_timeout "+cfg.Nginx.Proxy.EffectiveReadTimeout()+";", "proxy read timeout")
-	mustContain(errs, block, "proxy_send_timeout "+cfg.Nginx.Proxy.EffectiveSendTimeout()+";", "proxy send timeout")
+	mustHaveNginxDirective(errs, appProxyBlock, 1, "proxy read timeout", "proxy_read_timeout", cfg.Nginx.Proxy.EffectiveReadTimeout())
+	mustHaveNginxDirective(errs, appProxyBlock, 1, "proxy send timeout", "proxy_send_timeout", cfg.Nginx.Proxy.EffectiveSendTimeout())
 	if cfg.Nginx.Proxy.Buffering != nil {
-		mustContain(errs, block, "proxy_buffering "+nginxBool(*cfg.Nginx.Proxy.Buffering)+";", "proxy buffering")
+		mustHaveNginxDirective(errs, appProxyBlock, 1, "proxy buffering", "proxy_buffering", nginxBool(*cfg.Nginx.Proxy.Buffering))
 	}
 	if cfg.Nginx.Proxy.RequestBuffering != nil {
-		mustContain(errs, block, "proxy_request_buffering "+nginxBool(*cfg.Nginx.Proxy.RequestBuffering)+";", "proxy request buffering")
+		mustHaveNginxDirective(errs, appProxyBlock, 1, "proxy request buffering", "proxy_request_buffering", nginxBool(*cfg.Nginx.Proxy.RequestBuffering))
 	}
+}
+
+func validateGoAccessNginx(errs *[]string, text string, httpBlock string, httpsBlock string, cfg appconfig.Config, names Names) {
+	goaccess := cfg.Nginx.GoAccess
+	dashboardPath := cfg.NginxGoAccessDashboardPath()
+	websocketPath := cfg.NginxGoAccessWebSocketPath()
+	if !cfg.Nginx.GoAccess.Enabled {
+		for _, forbidden := range []struct {
+			needle string
+			label  string
+		}{
+			{"log_format " + names.GoAccessNginxLogFormatName, "GoAccess log_format"},
+			{"location = " + dashboardPath + " {\n        access_log off;\n        return 301 https://" + cfg.PrimaryDomain() + dashboardPath + ";", "GoAccess dashboard redirect"},
+			{"alias " + names.GoAccessReportPath + ";", "GoAccess dashboard report alias"},
+			{"location = " + websocketPath + " {\n        access_log off;\n        return 421;", "GoAccess WebSocket block"},
+			{`auth_basic "Meshify GoAccess";`, "GoAccess basic auth"},
+			{"proxy_pass http://" + names.GoAccessWebSocketListen + ";", "GoAccess WebSocket upstream"},
+		} {
+			if strings.Contains(text, forbidden.needle) {
+				*errs = append(*errs, forbidden.label+" must be absent when nginx.goaccess.enabled is false")
+			}
+		}
+		return
+	}
+	if nginxHasDirectiveFields(text, "satisfy", "any") {
+		*errs = append(*errs, "GoAccess Nginx must not render satisfy any")
+	}
+	if goaccess.EffectiveLogFormat() == appconfig.NginxGoAccessLogFormatEnhanced {
+		mustContain(errs, text, goAccessEnhancedLogFormatDirective(names), "GoAccess enhanced log_format")
+		mustContain(errs, text, goAccessCanonicalAccessLogDirective(cfg, names), "GoAccess enhanced canonical access_log")
+	} else {
+		mustContain(errs, text, goAccessCanonicalAccessLogDirective(cfg, names), "GoAccess combined canonical access_log")
+	}
+	validateGoAccessCanonicalAccessLogDirective(errs, "HTTP", httpBlock, cfg, names)
+	validateGoAccessCanonicalAccessLogDirective(errs, "HTTPS", httpsBlock, cfg, names)
+
+	dashboardHeader := "location = " + dashboardPath + " {"
+	websocketHeader := "location = " + websocketPath + " {"
+	httpDashboardBlock := nginxBlockStartingWith(httpBlock, dashboardHeader)
+	httpWebsocketBlock := nginxBlockStartingWith(httpBlock, websocketHeader)
+	dashboardBlock := nginxBlockStartingWith(httpsBlock, dashboardHeader)
+	websocketBlock := nginxBlockStartingWith(httpsBlock, websocketHeader)
+	if httpDashboardBlock == "" {
+		*errs = append(*errs, "HTTP GoAccess dashboard location missing")
+	} else {
+		mustAppearBefore(errs, httpBlock, dashboardHeader, "location / {\n        return 301", "HTTP GoAccess dashboard location before redirect")
+		mustHaveNginxDirectiveLine(errs, httpDashboardBlock, 1, "access_log off;", "HTTP GoAccess dashboard access_log off")
+		mustHaveNginxDirectiveLine(errs, httpDashboardBlock, 1, "return 301 https://"+cfg.PrimaryDomain()+dashboardPath+";", "HTTP GoAccess dashboard primary-domain redirect")
+	}
+	if httpWebsocketBlock == "" {
+		*errs = append(*errs, "HTTP GoAccess WebSocket location missing")
+	} else {
+		mustAppearBefore(errs, httpBlock, websocketHeader, "location / {\n        return 301", "HTTP GoAccess WebSocket location before redirect")
+		mustHaveNginxDirectiveLine(errs, httpWebsocketBlock, 1, "access_log off;", "HTTP GoAccess WebSocket access_log off")
+		mustHaveNginxDirectiveLine(errs, httpWebsocketBlock, 1, "return 421;", "HTTP GoAccess WebSocket block")
+	}
+	if dashboardBlock == "" {
+		*errs = append(*errs, "GoAccess dashboard location missing")
+	} else {
+		mustAppearBefore(errs, httpsBlock, dashboardHeader, "location / {\n        proxy_pass", "GoAccess dashboard location before proxy")
+		validateGoAccessPrimaryDomainRedirectGuard(errs, dashboardBlock, cfg.PrimaryDomain(), dashboardPath)
+		mustHaveNginxDirectiveLine(errs, dashboardBlock, 1, "alias "+names.GoAccessReportPath+";", "GoAccess dashboard report alias")
+		mustHaveNginxDirectiveLine(errs, dashboardBlock, 1, "default_type text/html;", "GoAccess dashboard default_type")
+		mustHaveNginxDirectiveLine(errs, dashboardBlock, 1, "disable_symlinks on;", "GoAccess dashboard disable_symlinks")
+		validateGoAccessAccessControls(errs, dashboardBlock, goaccess, "GoAccess dashboard")
+		mustHaveNginxDirectiveLine(errs, dashboardBlock, 1, "access_log off;", "GoAccess dashboard access_log off")
+	}
+	if websocketBlock == "" {
+		*errs = append(*errs, "GoAccess WebSocket location missing")
+	} else {
+		mustAppearBefore(errs, httpsBlock, websocketHeader, "location / {\n        proxy_pass", "GoAccess WebSocket location before proxy")
+		validateGoAccessWebSocketSecondaryDomainGuard(errs, websocketBlock, cfg.PrimaryDomain())
+		mustHaveNginxDirectiveLine(errs, websocketBlock, 1, "proxy_pass http://"+names.GoAccessWebSocketListen+";", "GoAccess WebSocket loopback upstream")
+		if !nginxHasDirectiveFieldsAtDepth(websocketBlock, 1, "proxy_http_version", "1.1") {
+			*errs = append(*errs, "GoAccess WebSocket HTTP/1.1 proxy missing")
+		}
+		mustHaveNginxDirective(errs, websocketBlock, 1, "GoAccess WebSocket Upgrade header", "proxy_set_header", "Upgrade", "$http_upgrade")
+		mustHaveNginxDirective(errs, websocketBlock, 1, "GoAccess WebSocket Connection header", "proxy_set_header", "Connection", "$"+names.VarPrefix+"_connection_upgrade")
+		mustHaveNginxDirective(errs, websocketBlock, 1, "GoAccess WebSocket read timeout", "proxy_read_timeout", "3600s")
+		validateGoAccessAccessControls(errs, websocketBlock, goaccess, "GoAccess WebSocket")
+		mustHaveNginxDirectiveLine(errs, websocketBlock, 1, "access_log off;", "GoAccess WebSocket access_log off")
+	}
+}
+
+func goAccessEnhancedLogFormatDirective(names Names) string {
+	return "log_format " + names.GoAccessNginxLogFormatName + ` '$remote_addr - $remote_user [$time_iso8601] "$request" $status $body_bytes_sent "$http_referer" "$http_user_agent" "$host" $request_time "$upstream_status" "$upstream_response_time"';`
+}
+
+func goAccessCanonicalAccessLogDirective(cfg appconfig.Config, names Names) string {
+	if cfg.Nginx.GoAccess.EffectiveLogFormat() == appconfig.NginxGoAccessLogFormatEnhanced {
+		return "access_log " + names.GoAccessCanonicalAccessLogPath + " " + names.GoAccessNginxLogFormatName + ";"
+	}
+	return "access_log " + names.GoAccessCanonicalAccessLogPath + " combined;"
+}
+
+func validateGoAccessCanonicalAccessLogDirective(errs *[]string, label string, block string, cfg appconfig.Config, names Names) {
+	expected := goAccessCanonicalAccessLogDirective(cfg, names)
+	directives := nginxTopLevelDirectiveLines(block, "access_log")
+	if len(directives) != 1 || directives[0] != expected {
+		*errs = append(*errs, "GoAccess "+label+" server access_log directives must contain exactly one canonical access_log")
+	}
+}
+
+func validateGoAccessPrimaryDomainRedirectGuard(errs *[]string, block string, primaryDomain string, dashboardPath string) {
+	guardBlock := nginxBlockStartingWith(nginxWithoutComments(block), `if ($host != "`+primaryDomain+`") {`)
+	expectedReturn := "return 301 https://" + primaryDomain + dashboardPath + ";"
+	if guardBlock == "" || !nginxHasDirectiveLineAtDepth(guardBlock, 1, expectedReturn) {
+		*errs = append(*errs, "GoAccess dashboard primary-domain redirect guard missing")
+	}
+}
+
+func validateGoAccessWebSocketSecondaryDomainGuard(errs *[]string, block string, primaryDomain string) {
+	guardBlock := nginxBlockStartingWith(nginxWithoutComments(block), `if ($host != "`+primaryDomain+`") {`)
+	if guardBlock == "" || !nginxHasDirectiveLineAtDepth(guardBlock, 1, "return 421;") {
+		*errs = append(*errs, "GoAccess WebSocket secondary-domain guard missing")
+	}
+}
+
+func validateGoAccessAccessControls(errs *[]string, block string, goaccess appconfig.NginxGoAccessConfig, label string) {
+	mustHaveNginxDirective(errs, block, 1, label+" satisfy all", "satisfy", "all")
+	mustHaveNginxDirectiveLine(errs, block, 1, `auth_basic "Meshify GoAccess";`, label+" basic auth")
+	mustHaveNginxDirectiveLine(errs, block, 1, "auth_basic_user_file "+goaccess.AuthBasicUserFile+";", label+" auth_basic_user_file")
+	if nginxHasDirectiveFieldsAtDepth(block, 1, "auth_basic", "off") {
+		*errs = append(*errs, label+" must not disable basic auth")
+	}
+	if nginxHasDirectiveFields(block, "satisfy", "any") {
+		*errs = append(*errs, label+" must require both basic auth and CIDR allowlist checks")
+	}
+	validateGoAccessAllowDenyDirectives(errs, block, goaccess.AuthCIDRAllowlist, label)
+}
+
+func mustHaveNginxDirective(errs *[]string, block string, depth int, label string, fields ...string) {
+	if !nginxHasDirectiveFieldsAtDepth(block, depth, fields...) {
+		*errs = append(*errs, label+" missing")
+	}
+}
+
+func mustHaveNginxDirectiveLine(errs *[]string, block string, depth int, expected string, label string) {
+	if nginxHasDirectiveLineAtDepth(block, depth, expected) {
+		return
+	}
+	*errs = append(*errs, label+" missing")
+}
+
+func nginxHasDirectiveLineAtDepth(block string, depth int, expected string) bool {
+	for _, directive := range nginxDirectives(block) {
+		if directive.depth == depth && directive.text == expected {
+			return true
+		}
+	}
+	return false
+}
+
+func nginxHasDirectiveFields(block string, want ...string) bool {
+	return nginxHasDirectiveFieldsAtDepth(block, -1, want...)
+}
+
+func nginxHasDirectiveFieldsAtDepth(block string, depth int, want ...string) bool {
+	for _, directive := range nginxDirectives(block) {
+		if depth >= 0 && directive.depth != depth {
+			continue
+		}
+		if len(directive.fields) != len(want) {
+			continue
+		}
+		matches := true
+		for i := range want {
+			if directive.fields[i] != want[i] {
+				matches = false
+				break
+			}
+		}
+		if matches {
+			return true
+		}
+	}
+	return false
+}
+
+func validateGoAccessAllowDenyDirectives(errs *[]string, block string, cidrs []string, label string) {
+	expected := make([]string, 0, len(cidrs)+1)
+	for _, cidr := range cidrs {
+		expected = append(expected, "allow "+cidr+";")
+	}
+	if len(cidrs) > 0 {
+		expected = append(expected, "deny all;")
+	}
+
+	actual := nginxTopLevelDirectiveLines(block, "allow", "deny")
+	if len(actual) != len(expected) {
+		*errs = append(*errs, label+" CIDR allow/deny directives must exactly match nginx.goaccess.auth_cidr_allowlist")
+		return
+	}
+	for i := range expected {
+		if actual[i] != expected[i] {
+			*errs = append(*errs, label+" CIDR allow/deny directives must exactly match nginx.goaccess.auth_cidr_allowlist")
+			return
+		}
+	}
+}
+
+type nginxDirective struct {
+	depth  int
+	text   string
+	fields []string
+}
+
+func nginxTopLevelDirectiveLines(block string, names ...string) []string {
+	directives := make([]string, 0)
+	for _, directive := range nginxDirectives(block) {
+		if directive.depth != 1 || len(directive.fields) == 0 {
+			continue
+		}
+		for _, name := range names {
+			if directive.fields[0] == name {
+				directives = append(directives, directive.text)
+				break
+			}
+		}
+	}
+	return directives
+}
+
+func nginxDirectives(block string) []nginxDirective {
+	var directives []nginxDirective
+	var builder strings.Builder
+	depth := 0
+	inComment := false
+	for _, r := range block {
+		if inComment {
+			if r == '\n' || r == '\r' {
+				inComment = false
+				builder.WriteRune(' ')
+			}
+			continue
+		}
+		switch r {
+		case '#':
+			inComment = true
+		case '{':
+			builder.Reset()
+			depth++
+		case '}':
+			builder.Reset()
+			if depth > 0 {
+				depth--
+			}
+		case ';':
+			fields := strings.Fields(builder.String())
+			if len(fields) > 0 {
+				directives = append(directives, nginxDirective{
+					depth:  depth,
+					text:   strings.Join(fields, " ") + ";",
+					fields: fields,
+				})
+			}
+			builder.Reset()
+		default:
+			builder.WriteRune(r)
+		}
+	}
+	return directives
+}
+
+func nginxWithoutComments(block string) string {
+	var builder strings.Builder
+	inComment := false
+	for _, r := range block {
+		if inComment {
+			if r == '\n' || r == '\r' {
+				inComment = false
+				builder.WriteRune(r)
+			}
+			continue
+		}
+		if r == '#' {
+			inComment = true
+			continue
+		}
+		builder.WriteRune(r)
+	}
+	return builder.String()
 }
 
 func validateStaticLocations(errs *[]string, httpsBlock string, locations []appconfig.NginxStaticLocationConfig) {

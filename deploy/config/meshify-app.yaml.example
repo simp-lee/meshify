@@ -24,11 +24,77 @@ service:
 
 nginx:
   client_max_body_size: "20m"
-  # Uses the modern "http2 on;" directive. Requires Nginx >= 1.25.1.
+  # Uses the modern "http2 on;" directive. Requires Nginx >= 1.25.1
+  # with the http_v2 module. Set false for older distro Nginx packages.
   http2: true
   # Optional per-app Nginx logs. access_log may also be "off".
+  # With GoAccess enabled and access_log empty, Meshify uses
+  # /var/log/meshify/apps/<app-name>/access.log and manages logrotate.
+  # The exact /var/log/meshify/apps/<app-name>/access.log path is still managed.
+  # Other explicit files are the canonical source, but Meshify does not create them,
+  # chown foreign roots, or install Meshify logrotate for them.
+  # External explicit access logs must already be regular non-symlink files owned
+  # by root or www-data, not writable by group or others.
+  # Deploy creates or confirms the GoAccess runtime user before the final readability check.
+  # A 0640 file readable by that Meshify-created group is valid.
+  # GoAccess rejects explicit access_log paths under /home, /root, /run/user,
+  # /tmp, /var/tmp, or /var/log/nginx. The first set is hidden by
+  # ProtectHome/PrivateTmp; /var/log/nginx is commonly owned by distro logrotate.
   access_log: ""
+  # With GoAccess enabled, error_log must not equal the GoAccess canonical
+  # access log or auth_basic_user_file, point to generated app/GoAccess artifacts,
+  # or live under /var/lib/<app-name>, /etc/<app-name>,
+  # /usr/local/lib/meshify/apps/<app-name>, /var/lib/<app-name>/goaccess,
+  # or /var/log/meshify/apps/<app-name>.
   error_log: ""
+
+  # Optional GoAccess access-log dashboard. Keep disabled unless explicitly configured.
+  # When enabled, auth_basic_user_file is required and must point to an existing
+  # regular, non-empty htpasswd file with at least one user:hash credential line.
+  # Credential line user and hash fields must not contain whitespace.
+  # Keep the file root-owned, not group-writable, not accessible by other local users,
+  # and readable by the Nginx runtime user, for example mode 0640 with group www-data.
+  # Every parent directory must be root-owned, not writable by group or others,
+  # and searchable by the Nginx runtime user.
+  # Under /etc/<app-name>, use the direct /etc/<app-name>/goaccess.htpasswd
+  # bootstrap path rather than a nested child path.
+  # Create it on Debian/Ubuntu with:
+  #   # Install the htpasswd command; it is provided by apache2-utils.
+  #   sudo apt install -y apache2-utils
+  #   # Create the app-specific config directory.
+  #   sudo install -d -o root -g root -m 0755 /etc/example-app
+  #   # Create the htpasswd file and the goaccess user for the first time.
+  #   sudo htpasswd -c -m /etc/example-app/goaccess.htpasswd goaccess
+  #   # Keep it root-owned while allowing Nginx's www-data group to read it.
+  #   sudo chown root:www-data /etc/example-app/goaccess.htpasswd
+  #   # Allow root read/write and www-data group read; block other users.
+  #   sudo chmod 0640 /etc/example-app/goaccess.htpasswd
+  # Use -c only for the first user; omit -c when adding or updating users.
+  # GoAccess uses persist true, restore true, and db-path
+  # /var/lib/<app-name>/goaccess/db.
+  # Enabled GoAccess is a real-time HTML dashboard: Nginx serves
+  # /var/lib/<app-name>/goaccess/report.html and Meshify proxies live
+  # WebSocket updates at websocket_path.
+  # auth_cidr_allowlist is an extra source-IP gate; it does not bypass basic auth.
+  # language en requires C.UTF-8; zh-CN requires both C.UTF-8 and zh_CN.UTF-8.
+  # The language option changes only GoAccess UI text, not raw access log fields.
+  # path and websocket_path usually stay unset; Meshify derives them from app.name.
+  goaccess:
+    enabled: false
+    # language: "en" # en | zh-CN
+    # log_format: "enhanced" # enhanced | combined
+    # auth_basic_user_file: "/etc/example-app/goaccess.htpasswd"
+    # auth_cidr_allowlist: [] # source IP must match and basic auth must pass
+    # path: "/_meshify/apps/example-app/goaccess"
+    # websocket_path: "/_meshify/apps/example-app/goaccess/ws"
+    # Leave websocket_listen empty unless you need a fixed override. Explicit values
+    # must be a loopback IP literal such as 127.0.0.1:<port> or [::1]:<port>,
+    # must not reuse Meshify reserved ports, and must not overlap app.listen,
+    # the main Headscale metrics listener, or an existing listener on the same
+    # bind address unless held by this app's managed GoAccess service or managed
+    # app service during deploy handoff.
+    # websocket_listen: "" # defaults to 127.0.0.1:<app-derived-port>
+
   proxy:
     connect_timeout: ""
     read_timeout: "600s"
@@ -43,7 +109,7 @@ nginx:
   # Example:
   #   - path: "/static/"
   #     alias: "/opt/example-app/web/static/"
-  #     expires: "30d"
+  #     # Prefer either expires or cache_control. If both are set, both directives render.
   #     cache_control: "public, max-age=2592000"
   #     try_files: true
   #     gzip_static: true
@@ -79,7 +145,9 @@ tailscale:
   enabled_for_listen: false
 
   # Defaults:
-  # - meshify_config: when login_server is empty, read ./meshify.yaml
+  # - meshify_config: when login_server is empty, read ./meshify.yaml.
+  #   For app-only upstream configs without a main meshify.yaml, set
+  #   login_server explicitly and provide auth_key_file or pre-login the client.
   # - login_server: derived from meshify_config default.server_url
   # - hostname: omitted so Tailscale uses the system hostname
   # - auth_key_file: root-only key file path for external Headscale only

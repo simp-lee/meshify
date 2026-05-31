@@ -3,6 +3,7 @@ package appconfig
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -45,6 +46,21 @@ func TestNewAppliesDefaultsAndRequiresUserInputs(t *testing.T) {
 	if got := cfg.Nginx.Proxy.EffectiveReadTimeout(); got != DefaultNginxProxyReadTimeout {
 		t.Fatalf("nginx.proxy.read_timeout default = %q, want %q", got, DefaultNginxProxyReadTimeout)
 	}
+	if cfg.Nginx.GoAccess.Enabled {
+		t.Fatal("nginx.goaccess.enabled default = true, want false")
+	}
+	if got := cfg.Nginx.GoAccess.EffectiveLanguage(); got != DefaultNginxGoAccessLanguage {
+		t.Fatalf("nginx.goaccess.language effective default = %q, want %q", got, DefaultNginxGoAccessLanguage)
+	}
+	if got := cfg.Nginx.GoAccess.EffectiveLogFormat(); got != DefaultNginxGoAccessLogFormat {
+		t.Fatalf("nginx.goaccess.log_format effective default = %q, want %q", got, DefaultNginxGoAccessLogFormat)
+	}
+	if got := cfg.Nginx.GoAccess.EffectivePath(); got != "/_meshify/apps/<app-name>/goaccess" {
+		t.Fatalf("nginx.goaccess.path effective default = %q, want app-scoped placeholder", got)
+	}
+	if got := cfg.Nginx.GoAccess.EffectiveWebSocketPath(); got != "/_meshify/apps/<app-name>/goaccess/ws" {
+		t.Fatalf("nginx.goaccess.websocket_path effective default = %q, want app-scoped placeholder", got)
+	}
 
 	err := cfg.Validate()
 	if err == nil {
@@ -81,8 +97,18 @@ service:
 nginx:
   client_max_body_size: 100m
   http2: true
-  access_log: /var/log/nginx/example-app.access.log
+  access_log: /var/log/meshify/custom/example-app.access.log
   error_log: /var/log/nginx/example-app.error.log
+  goaccess:
+    enabled: true
+    language: zh-CN
+    log_format: combined
+    path: /_ops/goaccess
+    websocket_path: /_ops/goaccess/ws
+    websocket_listen: 127.0.0.1:39001
+    auth_basic_user_file: /etc/example-app/goaccess.htpasswd
+    auth_cidr_allowlist:
+      - 203.0.113.0/24
   proxy:
     connect_timeout: 30s
     read_timeout: 600s
@@ -92,7 +118,6 @@ nginx:
   static_locations:
     - path: /static/
       alias: /opt/example-app/web/static/
-      expires: 30d
       cache_control: public, max-age=2592000
       try_files: true
       gzip_static: true
@@ -141,6 +166,30 @@ nginx:
 	}
 	if got := cfg.Nginx.Proxy.ConnectTimeout; got != "30s" {
 		t.Fatalf("nginx.proxy.connect_timeout = %q, want 30s", got)
+	}
+	if !cfg.Nginx.GoAccess.Enabled {
+		t.Fatal("nginx.goaccess.enabled = false, want true")
+	}
+	if got := cfg.Nginx.GoAccess.Language; got != NginxGoAccessLanguageSimplifiedChinese {
+		t.Fatalf("nginx.goaccess.language = %q, want zh-CN", got)
+	}
+	if got := cfg.Nginx.GoAccess.LogFormat; got != NginxGoAccessLogFormatCombined {
+		t.Fatalf("nginx.goaccess.log_format = %q, want combined", got)
+	}
+	if got := cfg.Nginx.GoAccess.Path; got != "/_ops/goaccess" {
+		t.Fatalf("nginx.goaccess.path = %q, want /_ops/goaccess", got)
+	}
+	if got := cfg.Nginx.GoAccess.WebSocketPath; got != "/_ops/goaccess/ws" {
+		t.Fatalf("nginx.goaccess.websocket_path = %q, want /_ops/goaccess/ws", got)
+	}
+	if got := cfg.Nginx.GoAccess.WebSocketListen; got != "127.0.0.1:39001" {
+		t.Fatalf("nginx.goaccess.websocket_listen = %q, want 127.0.0.1:39001", got)
+	}
+	if got := cfg.Nginx.GoAccess.AuthBasicUserFile; got != "/etc/example-app/goaccess.htpasswd" {
+		t.Fatalf("nginx.goaccess.auth_basic_user_file = %q, want /etc/example-app/goaccess.htpasswd", got)
+	}
+	if got := cfg.Nginx.GoAccess.AuthCIDRAllowlist; len(got) != 1 || got[0] != "203.0.113.0/24" {
+		t.Fatalf("nginx.goaccess.auth_cidr_allowlist = %#v, want 203.0.113.0/24", got)
 	}
 	if cfg.Nginx.Proxy.Buffering == nil || *cfg.Nginx.Proxy.Buffering {
 		t.Fatalf("nginx.proxy.buffering = %#v, want false", cfg.Nginx.Proxy.Buffering)
@@ -220,6 +269,22 @@ service:
   exec_start: /opt/example-app/example-app
 `)); err == nil {
 		t.Fatal("LoadBytes() unknown field error = nil, want non-nil")
+	}
+
+	if _, err := LoadBytes([]byte(`
+api_version: meshify/app/v1alpha1
+app:
+  name: example-app
+  domains: [abc.com]
+  certificate_email: ops@example.com
+  listen: 127.0.0.1:18001
+service:
+  exec_start: /opt/example-app/example-app
+nginx:
+  goaccess:
+    public: true
+`)); err == nil {
+		t.Fatal("LoadBytes() unknown nginx.goaccess field error = nil, want non-nil")
 	}
 
 	if _, err := LoadBytes([]byte(`
@@ -310,6 +375,15 @@ func TestValidateRejectsUnsafeAppNames(t *testing.T) {
 	cfg.App.Name = "www"
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() with app.name www error = %v", err)
+	}
+
+	for _, name := range []string{"api-goaccess", "meshify-goaccess-api", "mga-api"} {
+		cfg := validListenConfig()
+		cfg.App.Name = name
+		cfg.Service.ExecStart = "/opt/" + name + "/" + name
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate() with existing valid app.name %s error = %v", name, err)
+		}
 	}
 }
 
@@ -491,7 +565,6 @@ func TestValidateNginxStaticLocationRules(t *testing.T) {
 		{
 			Path:         "/static/",
 			Alias:        "/opt/example-app/web/static/",
-			Expires:      "30d",
 			CacheControl: "public, max-age=2592000",
 			TryFiles:     true,
 			GzipStatic:   true,
@@ -505,7 +578,7 @@ func TestValidateNginxStaticLocationRules(t *testing.T) {
 		},
 	}
 	valid.Nginx.ClientMaxBodySize = "100m"
-	valid.Nginx.AccessLog = "/var/log/nginx/example-app.access.log"
+	valid.Nginx.AccessLog = "/var/log/meshify/custom/example-app.access.log"
 	valid.Nginx.ErrorLog = "/var/log/nginx/example-app.error.log"
 	valid.Nginx.Proxy.ConnectTimeout = "30s"
 	valid.Nginx.Proxy.ReadTimeout = "600s"
@@ -556,6 +629,12 @@ func TestValidateNginxStaticLocationRules(t *testing.T) {
 	badExpires.Nginx.StaticLocations = []NginxStaticLocationConfig{{Path: "/static/", Alias: "/opt/example-app/web/static/", Expires: "30 days"}}
 	expectValidationError(t, badExpires, "nginx.static_locations[0].expires must be off, epoch, max, or a simple nginx time")
 
+	existingCacheHeaderPair := validListenConfig()
+	existingCacheHeaderPair.Nginx.StaticLocations = []NginxStaticLocationConfig{{Path: "/static/", Alias: "/opt/example-app/web/static/", Expires: "30d", CacheControl: "public, max-age=2592000"}}
+	if err := existingCacheHeaderPair.Validate(); err != nil {
+		t.Fatalf("Validate() with existing expires/cache_control pair error = %v", err)
+	}
+
 	badDefaultType := validListenConfig()
 	badDefaultType.Nginx.StaticLocations = []NginxStaticLocationConfig{{Path: "/sitemap.xml", Match: "exact", Alias: "/opt/example-app/web/static/sitemap.xml", DefaultType: "application/xml;\nreturn 200"}}
 	expectValidationError(t, badDefaultType, "nginx.static_locations[0].default_type must be a simple MIME type")
@@ -595,6 +674,539 @@ func TestValidateNginxStaticLocationRules(t *testing.T) {
 	badStaticAccessLog := validListenConfig()
 	badStaticAccessLog.Nginx.StaticLocations = []NginxStaticLocationConfig{{Path: "/static/", Alias: "/opt/example-app/web/static/", AccessLog: &staticAccessLogOn}}
 	expectValidationError(t, badStaticAccessLog, "nginx.static_locations[0].access_log only supports false")
+}
+
+func TestValidateNginxGoAccessRules(t *testing.T) {
+	t.Parallel()
+
+	valid := validListenConfig()
+	valid.Nginx.GoAccess.Enabled = true
+	valid.Nginx.GoAccess.AuthBasicUserFile = "/etc/example-app/goaccess.htpasswd"
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("Validate() with enabled GoAccess defaults error = %v", err)
+	}
+	if got := valid.Nginx.GoAccess.EffectiveLanguage(); got != NginxGoAccessLanguageEnglish {
+		t.Fatalf("EffectiveLanguage() = %q, want en", got)
+	}
+	if got := valid.Nginx.GoAccess.EffectiveLogFormat(); got != NginxGoAccessLogFormatEnhanced {
+		t.Fatalf("EffectiveLogFormat() = %q, want enhanced", got)
+	}
+	if got := valid.NginxGoAccessDashboardPath(); got != "/_meshify/apps/example-app/goaccess" {
+		t.Fatalf("NginxGoAccessDashboardPath() = %q, want app-scoped default", got)
+	}
+	if got := valid.NginxGoAccessWebSocketPath(); got != "/_meshify/apps/example-app/goaccess/ws" {
+		t.Fatalf("NginxGoAccessWebSocketPath() = %q, want app-scoped default", got)
+	}
+	if got := DefaultNginxGoAccessWebSocketPort("i3t"); got != 50444 {
+		t.Fatalf("DefaultNginxGoAccessWebSocketPort(i3t) = %d, want 50444 to skip reserved port 50443", got)
+	}
+
+	ipv6Loopback := valid
+	ipv6Loopback.Nginx.GoAccess.WebSocketListen = "[::1]:39001"
+	if err := ipv6Loopback.Validate(); err != nil {
+		t.Fatalf("Validate() with GoAccess IPv6 loopback listen error = %v", err)
+	}
+	if listenHostsOverlap("0.0.0.0", "::1") {
+		t.Fatal("listenHostsOverlap(0.0.0.0, ::1) = true, want address-family-specific non-overlap")
+	}
+	if !listenHostsOverlap("::", "127.0.0.1") {
+		t.Fatal("listenHostsOverlap(::, 127.0.0.1) = false, want conservative dual-stack overlap")
+	}
+	if !listenHostsOverlap("0.0.0.0", "127.0.0.1") || !listenHostsOverlap("::", "::1") {
+		t.Fatal("listenHostsOverlap wildcard same-family checks failed")
+	}
+
+	nonOverlappingLoopbackPorts := valid
+	nonOverlappingLoopbackPorts.App.Listen = "127.0.0.2:39001"
+	nonOverlappingLoopbackPorts.Nginx.GoAccess.WebSocketListen = "127.0.0.1:39001"
+	if err := nonOverlappingLoopbackPorts.Validate(); err != nil {
+		t.Fatalf("Validate() with distinct loopback hosts on same GoAccess/app port error = %v", err)
+	}
+
+	explicitManagedLog := valid
+	explicitManagedLog.Nginx.AccessLog = "/var/log/meshify/apps/example-app/access.log"
+	if err := explicitManagedLog.Validate(); err != nil {
+		t.Fatalf("Validate() with explicit Meshify-managed GoAccess access log error = %v", err)
+	}
+	if !explicitManagedLog.NginxGoAccessManagesCanonicalAccessLog() {
+		t.Fatal("NginxGoAccessManagesCanonicalAccessLog(explicit Meshify log root) = false, want true")
+	}
+	if got := explicitManagedLog.NginxGoAccessCanonicalAccessLogPath(); got != "/var/log/meshify/apps/example-app/access.log" {
+		t.Fatalf("NginxGoAccessCanonicalAccessLogPath() = %q, want explicit managed path", got)
+	}
+
+	explicitCustomLog := valid
+	explicitCustomLog.Nginx.AccessLog = "/var/log/meshify/custom/example-app.access.log"
+	if explicitCustomLog.NginxGoAccessManagesCanonicalAccessLog() {
+		t.Fatal("NginxGoAccessManagesCanonicalAccessLog(custom explicit log) = true, want false")
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*Config)
+		want   string
+	}{
+		{
+			name: "access log off conflict",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.AccessLog = "off"
+			},
+			want: "nginx.access_log must not be off when nginx.goaccess.enabled is true",
+		},
+		{
+			name: "access log hidden by ProtectHome home",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.AccessLog = "/home/app/logs/access.log"
+			},
+			want: "nginx.access_log must not be under /home, /root, /run/user, /tmp, or /var/tmp when nginx.goaccess.enabled is true",
+		},
+		{
+			name: "access log hidden by ProtectHome root",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.AccessLog = "/root/app/access.log"
+			},
+			want: "nginx.access_log must not be under /home, /root, /run/user, /tmp, or /var/tmp when nginx.goaccess.enabled is true",
+		},
+		{
+			name: "access log hidden by ProtectHome run user",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.AccessLog = "/run/user/1000/access.log"
+			},
+			want: "nginx.access_log must not be under /home, /root, /run/user, /tmp, or /var/tmp when nginx.goaccess.enabled is true",
+		},
+		{
+			name: "access log hidden by PrivateTmp tmp",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.AccessLog = "/tmp/access.log"
+			},
+			want: "nginx.access_log must not be under /home, /root, /run/user, /tmp, or /var/tmp when nginx.goaccess.enabled is true",
+		},
+		{
+			name: "access log hidden by PrivateTmp var tmp",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.AccessLog = "/var/tmp/access.log"
+			},
+			want: "nginx.access_log must not be under /home, /root, /run/user, /tmp, or /var/tmp when nginx.goaccess.enabled is true",
+		},
+		{
+			name: "access log under distro nginx logrotate wildcard",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.AccessLog = "/var/log/nginx/example-app.access.log"
+			},
+			want: "nginx.access_log must not be under /var/log/nginx when nginx.goaccess.enabled is true",
+		},
+		{
+			name: "access log under different Meshify app log root",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.AccessLog = "/var/log/meshify/apps/other-app/access.log"
+			},
+			want: "nginx.access_log under /var/log/meshify/apps must stay under the current app log directory",
+		},
+		{
+			name: "access log equals current Meshify app log directory",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.AccessLog = "/var/log/meshify/apps/example-app"
+			},
+			want: "nginx.access_log must be a file under the Meshify-managed GoAccess log directory",
+		},
+		{
+			name: "access log equals Meshify app log marker",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.AccessLog = "/var/log/meshify/apps/example-app/.meshify-managed"
+			},
+			want: "nginx.access_log under the Meshify-managed GoAccess log directory must be the direct access.log file",
+		},
+		{
+			name: "access log equals app var marker",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.AccessLog = "/var/lib/example-app/.meshify-managed"
+			},
+			want: "nginx.access_log must not point to Meshify-managed app var marker path",
+		},
+		{
+			name: "access log under app var root",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.AccessLog = "/var/lib/example-app/runtime.log"
+			},
+			want: "nginx.access_log must not be under Meshify-managed app var root directory",
+		},
+		{
+			name: "access log nested under current Meshify app log directory",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.AccessLog = "/var/log/meshify/apps/example-app/nested/access.log"
+			},
+			want: "nginx.access_log under the Meshify-managed GoAccess log directory must be the direct access.log file",
+		},
+		{
+			name: "error log equals derived canonical access log",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.ErrorLog = "/var/log/meshify/apps/example-app/access.log"
+			},
+			want: "nginx.error_log must not equal the GoAccess canonical access log",
+		},
+		{
+			name: "error log equals explicit canonical access log",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.AccessLog = "/var/log/meshify/custom/example-app.access.log"
+				cfg.Nginx.ErrorLog = "/var/log/meshify/custom/example-app.access.log"
+			},
+			want: "nginx.error_log must not equal the GoAccess canonical access log",
+		},
+		{
+			name: "error log equals auth file",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.ErrorLog = "/etc/example-app/goaccess.htpasswd"
+			},
+			want: "nginx.error_log must not equal nginx.goaccess.auth_basic_user_file",
+		},
+		{
+			name: "error log equals app etc marker",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.ErrorLog = "/etc/example-app/.meshify-managed"
+			},
+			want: "nginx.error_log must not point to Meshify-managed app etc marker path",
+		},
+		{
+			name: "error log under app hook root",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.ErrorLog = "/usr/local/lib/meshify/apps/example-app/error.log"
+			},
+			want: "nginx.error_log must not be under Meshify-managed app hook root directory",
+		},
+		{
+			name: "error log collides with goaccess config",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.ErrorLog = "/etc/example-app/goaccess.conf"
+			},
+			want: "nginx.error_log must not point to Meshify-managed GoAccess config path",
+		},
+		{
+			name: "error log collides with goaccess report",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.ErrorLog = "/var/lib/example-app/goaccess/report.html"
+			},
+			want: "nginx.error_log must not point to Meshify-managed GoAccess report path",
+		},
+		{
+			name: "error log under goaccess report directory",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.ErrorLog = "/var/lib/example-app/goaccess/error.log"
+			},
+			want: "nginx.error_log must not be under Meshify-managed GoAccess report directory",
+		},
+		{
+			name: "error log collides with goaccess db",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.ErrorLog = "/var/lib/example-app/goaccess/db"
+			},
+			want: "nginx.error_log must not point to Meshify-managed GoAccess db path",
+		},
+		{
+			name: "error log under another Meshify app log namespace",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.ErrorLog = "/var/log/meshify/apps/other-app/error.log"
+			},
+			want: "nginx.error_log must not be under Meshify-managed app log namespace",
+		},
+		{
+			name: "access log collides with goaccess config",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.AccessLog = "/etc/example-app/goaccess.conf"
+			},
+			want: "nginx.access_log must not point to Meshify-managed GoAccess config path",
+		},
+		{
+			name: "access log collides with goaccess report",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.AccessLog = "/var/lib/example-app/goaccess/report.html"
+			},
+			want: "nginx.access_log must not point to Meshify-managed GoAccess report path",
+		},
+		{
+			name: "access log under goaccess report directory",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.AccessLog = "/var/lib/example-app/goaccess/access.log"
+			},
+			want: "nginx.access_log must not be under Meshify-managed GoAccess report directory",
+		},
+		{
+			name: "access log equals auth file",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.AccessLog = "/etc/example-app/goaccess.htpasswd"
+			},
+			want: "nginx.access_log must not equal nginx.goaccess.auth_basic_user_file",
+		},
+		{
+			name: "bad language",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.GoAccess.Language = "fr"
+			},
+			want: "nginx.goaccess.language must be one of: en, zh-CN",
+		},
+		{
+			name: "bad log format",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.GoAccess.LogFormat = "json"
+			},
+			want: "nginx.goaccess.log_format must be one of: enhanced, combined",
+		},
+		{
+			name: "bad CIDR",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.GoAccess.AuthCIDRAllowlist = []string{"203.0.113.10"}
+			},
+			want: "nginx.goaccess.auth_cidr_allowlist[0] must be a valid CIDR",
+		},
+		{
+			name: "missing auth file",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.GoAccess.AuthBasicUserFile = ""
+			},
+			want: "nginx.goaccess.auth_basic_user_file is required when nginx.goaccess.enabled is true",
+		},
+		{
+			name: "relative auth file",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.GoAccess.AuthBasicUserFile = "goaccess.htpasswd"
+			},
+			want: "nginx.goaccess.auth_basic_user_file must be an absolute path",
+		},
+		{
+			name: "auth file with directive separator",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.GoAccess.AuthBasicUserFile = "/etc/example-app/goaccess.htpasswd;return"
+			},
+			want: "nginx.goaccess.auth_basic_user_file must not contain",
+		},
+		{
+			name: "auth file with comment marker",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.GoAccess.AuthBasicUserFile = "/etc/example-app/goaccess.htpasswd#comment"
+			},
+			want: "nginx.goaccess.auth_basic_user_file must not contain",
+		},
+		{
+			name: "auth file with nginx variables",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.GoAccess.AuthBasicUserFile = "/etc/example-app/${goaccess}.htpasswd"
+			},
+			want: "nginx.goaccess.auth_basic_user_file must not contain",
+		},
+		{
+			name: "auth file nested under app etc root",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.GoAccess.AuthBasicUserFile = "/etc/example-app/auth/goaccess.htpasswd"
+			},
+			want: "nginx.goaccess.auth_basic_user_file under /etc/example-app must be the direct /etc/example-app/goaccess.htpasswd bootstrap path",
+		},
+		{
+			name: "auth file under app var root",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.GoAccess.AuthBasicUserFile = "/var/lib/example-app/goaccess.htpasswd"
+			},
+			want: "nginx.goaccess.auth_basic_user_file must not be under Meshify-managed app var root directory",
+		},
+		{
+			name: "auth file under app hook root",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.GoAccess.AuthBasicUserFile = "/usr/local/lib/meshify/apps/example-app/goaccess.htpasswd"
+			},
+			want: "nginx.goaccess.auth_basic_user_file must not be under Meshify-managed app hook root directory",
+		},
+		{
+			name: "auth file under goaccess log root",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.GoAccess.AuthBasicUserFile = "/var/log/meshify/apps/example-app/goaccess.htpasswd"
+			},
+			want: "nginx.goaccess.auth_basic_user_file must not be under Meshify-managed GoAccess log directory",
+		},
+		{
+			name: "auth file collides with goaccess config",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.GoAccess.AuthBasicUserFile = "/etc/example-app/goaccess.conf"
+			},
+			want: "nginx.goaccess.auth_basic_user_file must not point to Meshify-managed GoAccess config path",
+		},
+		{
+			name: "auth file collides with goaccess logrotate",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.GoAccess.AuthBasicUserFile = "/etc/logrotate.d/example-app-goaccess"
+			},
+			want: "nginx.goaccess.auth_basic_user_file must not point to Meshify-managed GoAccess logrotate path",
+		},
+		{
+			name: "auth file collides with goaccess report",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.GoAccess.AuthBasicUserFile = "/var/lib/example-app/goaccess/report.html"
+			},
+			want: "nginx.goaccess.auth_basic_user_file must not point to Meshify-managed GoAccess report path",
+		},
+		{
+			name: "auth file under goaccess report directory",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.GoAccess.AuthBasicUserFile = "/var/lib/example-app/goaccess/goaccess.htpasswd"
+			},
+			want: "nginx.goaccess.auth_basic_user_file must not be under Meshify-managed GoAccess report directory",
+		},
+		{
+			name: "auth file collides with goaccess db",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.GoAccess.AuthBasicUserFile = "/var/lib/example-app/goaccess/db"
+			},
+			want: "nginx.goaccess.auth_basic_user_file must not point to Meshify-managed GoAccess db path",
+		},
+		{
+			name: "auth file under goaccess db",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.GoAccess.AuthBasicUserFile = "/var/lib/example-app/goaccess/db/goaccess.htpasswd"
+			},
+			want: "nginx.goaccess.auth_basic_user_file must not be under Meshify-managed GoAccess report directory",
+		},
+		{
+			name: "auth file collides with canonical access log",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.GoAccess.AuthBasicUserFile = "/var/log/meshify/apps/example-app/access.log"
+			},
+			want: "nginx.goaccess.auth_basic_user_file must not point to Meshify-managed GoAccess canonical access log path",
+		},
+		{
+			name: "auth file under another Meshify app log namespace",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.GoAccess.AuthBasicUserFile = "/var/log/meshify/apps/other-app/goaccess.htpasswd"
+			},
+			want: "nginx.goaccess.auth_basic_user_file must not be under Meshify-managed app log namespace",
+		},
+		{
+			name: "auth file collides with TLS private key",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.GoAccess.AuthBasicUserFile = "/etc/example-app/tls/abc.com/privkey.pem"
+			},
+			want: "nginx.goaccess.auth_basic_user_file must not point to Meshify-managed TLS private key path",
+		},
+		{
+			name: "non-loopback websocket listen",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.GoAccess.WebSocketListen = "0.0.0.0:7890"
+			},
+			want: "nginx.goaccess.websocket_listen must use a loopback IP",
+		},
+		{
+			name: "hostname websocket listen",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.GoAccess.WebSocketListen = "localhost:39001"
+			},
+			want: "nginx.goaccess.websocket_listen must use a loopback IP",
+		},
+		{
+			name: "websocket listen reuses app listen port",
+			mutate: func(cfg *Config) {
+				cfg.App.Listen = "127.0.0.1:39001"
+				cfg.Nginx.GoAccess.WebSocketListen = "127.0.0.1:39001"
+			},
+			want: "nginx.goaccess.websocket_listen must not overlap app.listen bind host and port",
+		},
+		{
+			name: "default websocket listen reuses app listen port",
+			mutate: func(cfg *Config) {
+				port := strconv.Itoa(DefaultNginxGoAccessWebSocketPort(cfg.App.Name))
+				cfg.App.Listen = "127.0.0.1:" + port
+				cfg.Nginx.GoAccess.WebSocketListen = ""
+			},
+			want: "nginx.goaccess.websocket_listen must not overlap app.listen bind host and port",
+		},
+		{
+			name: "dashboard root",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.GoAccess.Path = "/"
+			},
+			want: "nginx.goaccess.path must not be /",
+		},
+		{
+			name: "dashboard acme overlap",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.GoAccess.Path = "/.well-known/"
+			},
+			want: "nginx.goaccess.path must not overlap /.well-known/acme-challenge/",
+		},
+		{
+			name: "unsafe dashboard path",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.GoAccess.Path = "/_meshify/goaccess;return"
+			},
+			want: "nginx.goaccess.path must not contain",
+		},
+		{
+			name: "dashboard path with query marker",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.GoAccess.Path = "/_meshify/goaccess?debug=1"
+			},
+			want: "nginx.goaccess.path must be a canonical URL path",
+		},
+		{
+			name: "dashboard path with repeated slashes",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.GoAccess.Path = "/_meshify//goaccess"
+			},
+			want: "nginx.goaccess.path must not contain repeated slashes",
+		},
+		{
+			name: "websocket path with percent encoding",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.GoAccess.WebSocketPath = "/_meshify/goaccess/%77s"
+			},
+			want: "nginx.goaccess.websocket_path must be a canonical URL path",
+		},
+		{
+			name: "websocket path with glob marker",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.GoAccess.WebSocketPath = "/_meshify/goaccess/ws[0]"
+			},
+			want: "nginx.goaccess.websocket_path must be a canonical URL path",
+		},
+		{
+			name: "duplicate websocket path",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.GoAccess.Path = "/_meshify/goaccess"
+				cfg.Nginx.GoAccess.WebSocketPath = "/_meshify/goaccess"
+			},
+			want: "nginx.goaccess.websocket_path must not duplicate nginx.goaccess.path",
+		},
+		{
+			name: "prefix dashboard would swallow websocket",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.GoAccess.Path = "/_meshify/goaccess/"
+				cfg.Nginx.GoAccess.WebSocketPath = "/_meshify/goaccess/ws"
+			},
+			want: "nginx.goaccess.path must not end with /",
+		},
+		{
+			name: "static dashboard overlap",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.StaticLocations = []NginxStaticLocationConfig{{Path: "/_meshify/", Alias: "/opt/example-app/web/static/"}}
+			},
+			want: "nginx.goaccess.path must not overlap nginx.static_locations[0].path",
+		},
+		{
+			name: "static websocket overlap",
+			mutate: func(cfg *Config) {
+				cfg.Nginx.StaticLocations = []NginxStaticLocationConfig{{Path: "/_meshify/apps/example-app/goaccess/ws", Match: "exact", Alias: "/opt/example-app/web/static/ws.html"}}
+			},
+			want: "nginx.goaccess.websocket_path must not overlap nginx.static_locations[0].path",
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := valid
+			tt.mutate(&cfg)
+			expectValidationError(t, cfg, tt.want)
+		})
+	}
+
+	disabledWithNoAuth := validListenConfig()
+	disabledWithNoAuth.Nginx.GoAccess.Path = "/_meshify/apps/example-app/goaccess"
+	expectValidationError(t, disabledWithNoAuth, "nginx.goaccess.enabled must be true when nginx.goaccess fields are set")
 }
 
 func TestValidateTailscaleRules(t *testing.T) {

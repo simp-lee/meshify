@@ -3,6 +3,9 @@ package apprender
 import (
 	"meshify/internal/appconfig"
 	"meshify/internal/components/appsvc"
+	"os"
+	"os/exec"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -26,7 +29,7 @@ func TestStageRuntimeRendersListenModeAssets(t *testing.T) {
 	staticAccessLog := false
 	proxyBuffering := false
 	cfg.Nginx.ClientMaxBodySize = "100m"
-	cfg.Nginx.AccessLog = "/var/log/nginx/example-app.access.log"
+	cfg.Nginx.AccessLog = "/var/log/meshify/custom/example-app.access.log"
 	cfg.Nginx.ErrorLog = "/var/log/nginx/example-app.error.log"
 	cfg.Nginx.Proxy.ConnectTimeout = "30s"
 	cfg.Nginx.Proxy.ReadTimeout = "600s"
@@ -37,7 +40,6 @@ func TestStageRuntimeRendersListenModeAssets(t *testing.T) {
 		{
 			Path:         "/static/",
 			Alias:        "/opt/example-app/web/static/",
-			Expires:      "30d",
 			CacheControl: "public, max-age=2592000",
 			TryFiles:     true,
 			GzipStatic:   true,
@@ -50,8 +52,9 @@ func TestStageRuntimeRendersListenModeAssets(t *testing.T) {
 			DefaultType: "application/xml",
 		},
 		{
-			Path:  "/sitemaps/",
-			Alias: "/opt/example-app/web/static/sitemaps/",
+			Path:    "/sitemaps/",
+			Alias:   "/opt/example-app/web/static/sitemaps/",
+			Expires: "30d",
 		},
 	}
 	staged, err := StageRuntime(cfg)
@@ -91,12 +94,11 @@ func TestStageRuntimeRendersListenModeAssets(t *testing.T) {
 	}
 	nginxText := string(nginxContent)
 	for _, want := range []string{
-		"access_log /var/log/nginx/example-app.access.log;",
+		"access_log /var/log/meshify/custom/example-app.access.log;",
 		"error_log /var/log/nginx/example-app.error.log;",
 		"http2 on;",
 		"client_max_body_size 100m;",
 		"location /static/ {\n        alias /opt/example-app/web/static/;",
-		"expires 30d;",
 		`add_header Cache-Control "public, max-age=2592000";`,
 		"try_files $uri =404;",
 		"gzip_static on;",
@@ -104,6 +106,7 @@ func TestStageRuntimeRendersListenModeAssets(t *testing.T) {
 		"location = /sitemap.xml {\n        alias /opt/example-app/web/static/sitemap.xml;",
 		"default_type application/xml;",
 		"location /sitemaps/ {\n        alias /opt/example-app/web/static/sitemaps/;",
+		"expires 30d;",
 		"proxy_connect_timeout 30s;",
 		"proxy_read_timeout 600s;",
 		"proxy_send_timeout 600s;",
@@ -157,6 +160,322 @@ func TestStageRuntimeRendersUpstreamWithoutService(t *testing.T) {
 			t.Fatalf("nginx upstream not rendered:\n%s", file.Content)
 		}
 	}
+}
+
+func TestStageRuntimeRendersGoAccessAssetsAndNginxLocations(t *testing.T) {
+	t.Parallel()
+
+	cfg := listenConfig()
+	cfg.Nginx.GoAccess.Enabled = true
+	cfg.Nginx.GoAccess.AuthBasicUserFile = "/etc/example-app/goaccess.htpasswd"
+	cfg.Nginx.GoAccess.AuthCIDRAllowlist = []string{"203.0.113.0/24"}
+	staged, err := StageRuntime(cfg)
+	if err != nil {
+		t.Fatalf("StageRuntime() error = %v", err)
+	}
+	if len(staged) != 8 {
+		t.Fatalf("len(staged) = %d, want 8", len(staged))
+	}
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+
+	contentBySource := map[string]string{}
+	for _, file := range staged {
+		contentBySource[file.SourcePath] = string(file.Content)
+		if !strings.Contains(string(file.Content), appsvc.ManagedMarker("example-app")) {
+			t.Fatalf("%s missing managed marker", file.SourcePath)
+		}
+	}
+	nginxText := contentBySource["templates/app/nginx.conf.tmpl"]
+	if nginxText == "" {
+		t.Fatal("nginx content not staged")
+	}
+	if err := appsvc.ValidateRenderedNginx(cfg, names, []byte(nginxText)); err != nil {
+		t.Fatalf("ValidateRenderedNginx() error = %v\n%s", err, nginxText)
+	}
+	for _, want := range []string{
+		"log_format meshify_app_example_app_enhanced",
+		`$request_time "$upstream_status" "$upstream_response_time"`,
+		"access_log /var/log/meshify/apps/example-app/access.log meshify_app_example_app_enhanced;",
+		"location = /_meshify/apps/example-app/goaccess {\n        access_log off;\n        return 301 https://abc.com/_meshify/apps/example-app/goaccess;\n    }",
+		"location = /_meshify/apps/example-app/goaccess/ws {\n        access_log off;\n        return 421;\n    }",
+		"location = /_meshify/apps/example-app/goaccess {",
+		"return 301 https://abc.com/_meshify/apps/example-app/goaccess;",
+		"alias /var/lib/example-app/goaccess/report.html;",
+		"disable_symlinks on;",
+		`auth_basic "Meshify GoAccess";`,
+		"auth_basic_user_file /etc/example-app/goaccess.htpasswd;",
+		"allow 203.0.113.0/24;",
+		"deny all;",
+		"location = /_meshify/apps/example-app/goaccess/ws {",
+		"proxy_pass http://127.0.0.1:",
+		"proxy_read_timeout 3600s;",
+		"access_log off;",
+	} {
+		if !strings.Contains(nginxText, want) {
+			t.Fatalf("GoAccess nginx content missing %q\n%s", want, nginxText)
+		}
+	}
+	httpDashboardIndex := strings.Index(nginxText, "location = /_meshify/apps/example-app/goaccess {\n        access_log off;\n        return 301")
+	httpWebsocketIndex := strings.Index(nginxText, "location = /_meshify/apps/example-app/goaccess/ws {\n        access_log off;\n        return 421;")
+	httpRedirectIndex := strings.Index(nginxText, "location / {\n        return 301")
+	if httpDashboardIndex < 0 || httpWebsocketIndex < 0 || httpRedirectIndex < 0 || httpDashboardIndex > httpRedirectIndex || httpWebsocketIndex > httpRedirectIndex {
+		t.Fatalf("HTTP GoAccess dashboard/ws locations must render before HTTP redirect and disable access logs\n%s", nginxText)
+	}
+	dashboardIndex := strings.Index(nginxText, "location = /_meshify/apps/example-app/goaccess {")
+	websocketIndex := strings.Index(nginxText, "location = /_meshify/apps/example-app/goaccess/ws {")
+	proxyIndex := strings.LastIndex(nginxText, "location / {\n        proxy_pass")
+	if dashboardIndex < 0 || websocketIndex < 0 || proxyIndex < 0 || dashboardIndex > proxyIndex || websocketIndex > proxyIndex {
+		t.Fatalf("GoAccess dashboard/ws locations must render before proxy location\n%s", nginxText)
+	}
+
+	configText := contentBySource["templates/app/goaccess.conf.tmpl"]
+	for _, want := range []string{
+		"log-file /var/log/meshify/apps/example-app/access.log",
+		"output /var/lib/example-app/goaccess/report.html",
+		`log-format %h %^ %^ [%x] "%r" %s %b "%R" "%u" "%v" %T "%^" "%^"`,
+		"datetime-format %Y-%m-%dT%H:%M:%S%z",
+		"real-time-html true",
+		"addr 127.0.0.1",
+		"port ",
+		"ws-url wss://abc.com/_meshify/apps/example-app/goaccess/ws",
+		"origin https://abc.com",
+		"ping-interval 10",
+		"persist true",
+		"restore true",
+		"db-path /var/lib/example-app/goaccess/db",
+		"html-report-title Meshify-GoAccess-example-app",
+		"static-file .css",
+		"static-file .js",
+		"static-file .png",
+		"static-file .svg",
+		"static-file .woff2",
+		"static-file .webp",
+	} {
+		if !strings.Contains(configText, want) {
+			t.Fatalf("goaccess.conf missing %q\n%s", want, configText)
+		}
+	}
+	serviceText := contentBySource["templates/app/goaccess.service.tmpl"]
+	for _, want := range []string{
+		"User=meshify-goaccess-example-app",
+		"Group=meshify-goaccess-example-app",
+		"Environment=LANG=C.UTF-8",
+		"ExecStart=" + appsvc.GoAccessBinaryPath + " --no-global-config --config-file /etc/example-app/goaccess.conf",
+		"UMask=0027",
+		"Restart=on-failure",
+		"ProtectSystem=strict",
+		"ReadWritePaths=/var/lib/example-app/goaccess/report.html /var/lib/example-app/goaccess/db",
+	} {
+		if !strings.Contains(serviceText, want) {
+			t.Fatalf("goaccess.service missing %q\n%s", want, serviceText)
+		}
+	}
+	if strings.Contains(serviceText, "--daemonize") || strings.Contains(serviceText, "--real-time-html") {
+		t.Fatalf("goaccess.service must rely on config file options, not inline runtime flags\n%s", serviceText)
+	}
+
+	logrotateText := contentBySource["templates/app/goaccess-logrotate.tmpl"]
+	for _, want := range []string{
+		"/var/log/meshify/apps/example-app/access.log {",
+		"create 0640 www-data meshify-goaccess-example-app",
+		"systemctl reload nginx.service",
+		"systemctl restart example-app-goaccess.service",
+	} {
+		if !strings.Contains(logrotateText, want) {
+			t.Fatalf("goaccess logrotate missing %q\n%s", want, logrotateText)
+		}
+	}
+	if strings.Contains(logrotateText, "|| true") {
+		t.Fatalf("goaccess logrotate must not swallow active nginx reload failures\n%s", logrotateText)
+	}
+	assertGoAccessLogrotatePostrotateBehavior(t, logrotateText)
+
+	assertEnhancedGoAccessParserMatchesSample(t, configText, `203.0.113.10 - - [2026-05-24T21:00:00+08:00] "GET /api?q=1 HTTP/1.1" 200 123 "https://ref.example/" "curl/8.5.0" "abc.com" 0.123 "200" "0.120"`)
+}
+
+func TestStageRuntimeRendersGoAccessCombinedMode(t *testing.T) {
+	t.Parallel()
+
+	cfg := listenConfig()
+	cfg.Nginx.AccessLog = "/var/log/meshify/custom/example-app.access.log"
+	cfg.Nginx.GoAccess.Enabled = true
+	cfg.Nginx.GoAccess.LogFormat = appconfig.NginxGoAccessLogFormatCombined
+	cfg.Nginx.GoAccess.AuthBasicUserFile = "/etc/example-app/goaccess.htpasswd"
+	staged, err := StageRuntime(cfg)
+	if err != nil {
+		t.Fatalf("StageRuntime() error = %v", err)
+	}
+	contentBySource := map[string]string{}
+	for _, file := range staged {
+		contentBySource[file.SourcePath] = string(file.Content)
+	}
+	nginxText := contentBySource["templates/app/nginx.conf.tmpl"]
+	if strings.Contains(nginxText, "log_format meshify_app_example_app_enhanced") {
+		t.Fatalf("combined mode must not render enhanced log_format\n%s", nginxText)
+	}
+	if !strings.Contains(nginxText, "access_log /var/log/meshify/custom/example-app.access.log combined;") {
+		t.Fatalf("combined mode nginx access_log missing combined format\n%s", nginxText)
+	}
+	configText := contentBySource["templates/app/goaccess.conf.tmpl"]
+	if !strings.Contains(configText, "log-format COMBINED") {
+		t.Fatalf("combined mode goaccess.conf missing COMBINED\n%s", configText)
+	}
+	if _, ok := contentBySource["templates/app/goaccess-logrotate.tmpl"]; ok {
+		t.Fatalf("explicit access log must not stage managed logrotate asset")
+	}
+}
+
+func assertEnhancedGoAccessParserMatchesSample(t *testing.T, configText string, sample string) {
+	t.Helper()
+
+	const wantFormat = `log-format %h %^ %^ [%x] "%r" %s %b "%R" "%u" "%v" %T "%^" "%^"`
+	if !strings.Contains(configText, wantFormat) {
+		t.Fatalf("goaccess.conf missing parser %q\n%s", wantFormat, configText)
+	}
+
+	pattern := regexp.MustCompile(`^(\S+) \S+ \S+ \[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2})\] "([^"]+)" (\d{3}) (\d+) "([^"]*)" "([^"]*)" "([^"]+)" (\d+(?:\.\d+)?) "([^"]*)" "([^"]*)"$`)
+	matches := pattern.FindStringSubmatch(sample)
+	if matches == nil {
+		t.Fatalf("enhanced sample line does not match GoAccess parser field order: %s", sample)
+	}
+	actual := map[string]string{
+		"remote_addr":  matches[1],
+		"datetime":     matches[2],
+		"request":      matches[3],
+		"status":       matches[4],
+		"bytes":        matches[5],
+		"referrer":     matches[6],
+		"user_agent":   matches[7],
+		"host":         matches[8],
+		"request_time": matches[9],
+	}
+	expected := map[string]string{
+		"remote_addr":  "203.0.113.10",
+		"datetime":     "2026-05-24T21:00:00+08:00",
+		"request":      "GET /api?q=1 HTTP/1.1",
+		"status":       "200",
+		"bytes":        "123",
+		"referrer":     "https://ref.example/",
+		"user_agent":   "curl/8.5.0",
+		"host":         "abc.com",
+		"request_time": "0.123",
+	}
+	for field, want := range expected {
+		if actual[field] != want {
+			t.Fatalf("enhanced parser field %s = %q, want %q", field, actual[field], want)
+		}
+	}
+}
+
+func assertGoAccessLogrotatePostrotateBehavior(t *testing.T, logrotateText string) {
+	t.Helper()
+
+	postrotate := extractLogrotatePostrotateScript(t, logrotateText)
+	runPostrotate := func(systemctlScript string) (string, error) {
+		t.Helper()
+		binDir := t.TempDir()
+		systemctlPath := binDir + "/systemctl"
+		if err := os.WriteFile(systemctlPath, []byte(systemctlScript), 0o755); err != nil {
+			t.Fatalf("write fake systemctl: %v", err)
+		}
+		cmd := exec.Command("sh", "-c", "set -eu\n"+postrotate)
+		cmd.Env = append(os.Environ(), "PATH="+binDir)
+		output, err := cmd.CombinedOutput()
+		return string(output), err
+	}
+
+	output, err := runPostrotate(`#!/bin/sh
+if [ "$1" = "is-active" ]; then
+    printf '%s\n' inactive
+    exit 3
+fi
+if [ "$1" = "restart" ] && [ "$2" = "example-app-goaccess.service" ]; then
+    printf '%s\n' goaccess-restarted
+    exit 0
+fi
+printf 'unexpected command: %s\n' "$*" >&2
+exit 99
+`)
+	if err != nil || !strings.Contains(output, "goaccess-restarted") {
+		t.Fatalf("postrotate inactive nginx = err %v output %q, want GoAccess restart\nscript:\n%s", err, output, postrotate)
+	}
+
+	output, err = runPostrotate(`#!/bin/sh
+if [ "$1" = "is-active" ]; then
+    printf '%s\n' failed
+    exit 3
+fi
+if [ "$1" = "restart" ]; then
+    printf '%s\n' unexpected-restart >&2
+    exit 99
+fi
+printf 'unexpected command: %s\n' "$*" >&2
+exit 99
+`)
+	if err == nil || !strings.Contains(output, "failed") || strings.Contains(output, "unexpected-restart") {
+		t.Fatalf("postrotate failed nginx = err %v output %q, want failed state before GoAccess restart", err, output)
+	}
+
+	output, err = runPostrotate(`#!/bin/sh
+if [ "$1" = "is-active" ]; then
+    printf '%s\n' active
+    exit 0
+fi
+if [ "$1" = "reload" ]; then
+    printf '%s\n' reload-failed >&2
+    exit 7
+fi
+if [ "$1" = "restart" ]; then
+    printf '%s\n' unexpected-restart >&2
+    exit 99
+fi
+printf 'unexpected command: %s\n' "$*" >&2
+exit 99
+`)
+	if err == nil || !strings.Contains(output, "reload-failed") || strings.Contains(output, "unexpected-restart") {
+		t.Fatalf("postrotate active reload = err %v output %q, want reload failure before GoAccess restart", err, output)
+	}
+
+	output, err = runPostrotate(`#!/bin/sh
+if [ "$1" = "is-active" ]; then
+    printf '%s\n' active
+    exit 0
+fi
+if [ "$1" = "reload" ] && [ "$2" = "nginx.service" ]; then
+    printf '%s\n' nginx-reloaded
+    exit 0
+fi
+if [ "$1" = "restart" ] && [ "$2" = "example-app-goaccess.service" ]; then
+    printf '%s\n' restart-failed >&2
+    exit 8
+fi
+printf 'unexpected command: %s\n' "$*" >&2
+exit 99
+`)
+	if err == nil || !strings.Contains(output, "nginx-reloaded") || !strings.Contains(output, "restart-failed") {
+		t.Fatalf("postrotate GoAccess restart = err %v output %q, want restart failure after nginx reload", err, output)
+	}
+}
+
+func extractLogrotatePostrotateScript(t *testing.T, logrotateText string) string {
+	t.Helper()
+	start := strings.Index(logrotateText, "\n    postrotate\n")
+	if start < 0 {
+		t.Fatalf("logrotate missing postrotate block:\n%s", logrotateText)
+	}
+	start += len("\n    postrotate\n")
+	end := strings.Index(logrotateText[start:], "\n    endscript")
+	if end < 0 {
+		t.Fatalf("logrotate missing endscript:\n%s", logrotateText)
+	}
+	lines := strings.Split(logrotateText[start:start+end], "\n")
+	for i, line := range lines {
+		lines[i] = strings.TrimPrefix(line, "        ")
+	}
+	return strings.Join(lines, "\n")
 }
 
 func TestStageRuntimeRejectsSystemdUnsafeValues(t *testing.T) {

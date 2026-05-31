@@ -1,6 +1,12 @@
 package appconfig
 
-import "strings"
+import (
+	"hash/fnv"
+	"net"
+	"path/filepath"
+	"strconv"
+	"strings"
+)
 
 func New() Config {
 	cfg := Config{APIVersion: APIVersion}
@@ -66,6 +72,40 @@ func (c Config) ResourceName() string {
 	return strings.TrimSpace(c.App.Name)
 }
 
+func (c Config) NginxGoAccessCanonicalAccessLogPath() string {
+	accessLog := strings.TrimSpace(c.Nginx.AccessLog)
+	if accessLog != "" && accessLog != "off" {
+		return accessLog
+	}
+	return filepath.Join("/var/log/meshify/apps", c.ResourceName(), "access.log")
+}
+
+func (c Config) NginxGoAccessManagesCanonicalAccessLog() bool {
+	if !c.Nginx.GoAccess.Enabled {
+		return false
+	}
+	accessLog := strings.TrimSpace(c.Nginx.AccessLog)
+	if accessLog == "" {
+		return true
+	}
+	cleanAccessLog := filepath.Clean(accessLog)
+	return cleanAccessLog == filepath.Join("/var/log/meshify/apps", c.ResourceName(), "access.log")
+}
+
+func (c Config) NginxGoAccessDashboardPath() string {
+	if value := strings.TrimSpace(c.Nginx.GoAccess.Path); value != "" {
+		return value
+	}
+	return filepath.Join("/_meshify/apps", c.ResourceName(), DefaultNginxGoAccessPathSuffix)
+}
+
+func (c Config) NginxGoAccessWebSocketPath() string {
+	if value := strings.TrimSpace(c.Nginx.GoAccess.WebSocketPath); value != "" {
+		return value
+	}
+	return filepath.Join(c.NginxGoAccessDashboardPath(), DefaultNginxGoAccessWebSocketPathSuffix)
+}
+
 func (c Config) ServiceBinary() string {
 	fields := strings.Fields(c.Service.ExecStart)
 	if len(fields) == 0 {
@@ -97,6 +137,55 @@ func (n NginxConfig) EffectiveClientMaxBodySize() string {
 		return value
 	}
 	return DefaultNginxClientMaxBodySize
+}
+
+func (g NginxGoAccessConfig) EffectiveLanguage() string {
+	if value := strings.TrimSpace(g.Language); value != "" {
+		return value
+	}
+	return DefaultNginxGoAccessLanguage
+}
+
+func (g NginxGoAccessConfig) EffectiveLogFormat() string {
+	if value := strings.TrimSpace(g.LogFormat); value != "" {
+		return value
+	}
+	return DefaultNginxGoAccessLogFormat
+}
+
+func (g NginxGoAccessConfig) EffectivePath() string {
+	if value := strings.TrimSpace(g.Path); value != "" {
+		return value
+	}
+	return filepath.Join("/_meshify/apps", "<app-name>", DefaultNginxGoAccessPathSuffix)
+}
+
+func (g NginxGoAccessConfig) EffectiveWebSocketPath() string {
+	if value := strings.TrimSpace(g.WebSocketPath); value != "" {
+		return value
+	}
+	return filepath.Join(g.EffectivePath(), DefaultNginxGoAccessWebSocketPathSuffix)
+}
+
+func EffectiveNginxGoAccessWebSocketListen(appName string, cfg NginxGoAccessConfig) string {
+	if value := strings.TrimSpace(cfg.WebSocketListen); value != "" {
+		return value
+	}
+	port := DefaultNginxGoAccessWebSocketPort(strings.TrimSpace(appName))
+	return net.JoinHostPort(NginxGoAccessDefaultWebSocketHost, strconv.Itoa(port))
+}
+
+func DefaultNginxGoAccessWebSocketPort(appName string) int {
+	hash := fnv.New32a()
+	_, _ = hash.Write([]byte(appName))
+	offset := int(hash.Sum32() % NginxGoAccessWebSocketPortSpan)
+	for {
+		port := NginxGoAccessWebSocketPortBase + offset
+		if !isReservedMeshifyPort(port) {
+			return port
+		}
+		offset = (offset + 1) % NginxGoAccessWebSocketPortSpan
+	}
 }
 
 func (p NginxProxyConfig) EffectiveReadTimeout() string {

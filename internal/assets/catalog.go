@@ -41,6 +41,9 @@ type Asset struct {
 var catalog = []Asset{
 	{SourcePath: "config/meshify-app.yaml.example", Role: RoleConfigExample, ContentMode: ContentModeCopy},
 	{SourcePath: "config/meshify.yaml.example", Role: RoleConfigExample, ContentMode: ContentModeCopy},
+	{SourcePath: "templates/app/goaccess-logrotate.tmpl", Role: RoleRuntime, ContentMode: ContentModeRender},
+	{SourcePath: "templates/app/goaccess.conf.tmpl", Role: RoleRuntime, ContentMode: ContentModeRender},
+	{SourcePath: "templates/app/goaccess.service.tmpl", Role: RoleRuntime, ContentMode: ContentModeRender},
 	{SourcePath: "templates/app/install-cert-and-reload-nginx.sh.tmpl", Role: RoleRuntime, ContentMode: ContentModeRender},
 	{SourcePath: "templates/app/lego-renew.service.tmpl", Role: RoleRuntime, ContentMode: ContentModeRender},
 	{SourcePath: "templates/app/lego-renew.timer.tmpl", Role: RoleRuntime, ContentMode: ContentModeRender},

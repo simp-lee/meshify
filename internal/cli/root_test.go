@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"meshify/internal/appconfig"
 	"meshify/internal/apprender"
@@ -27,6 +28,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -69,7 +71,7 @@ func TestExecute_HelpOutput(t *testing.T) {
 		"meshify init",
 		"meshify deploy",
 		"meshify verify",
-		"app      管理附加 app 部署。",
+		"app      Manage additional app deployments.",
 		"status   Show config readiness and persisted deploy context.",
 	} {
 		if !strings.Contains(stdout, want) {
@@ -78,7 +80,7 @@ func TestExecute_HelpOutput(t *testing.T) {
 	}
 }
 
-func TestExecute_AppHelpOutputIsChineseReadable(t *testing.T) {
+func TestExecute_AppHelpOutputIsEnglishReadable(t *testing.T) {
 	t.Parallel()
 
 	stdout, stderr, err := runCLI(t, "app", "--help")
@@ -89,12 +91,12 @@ func TestExecute_AppHelpOutputIsChineseReadable(t *testing.T) {
 		t.Fatalf("stderr = %q, want empty", stderr)
 	}
 	for _, want := range []string{
-		"meshify app 管理附加 Go 服务和 tailnet upstream。",
-		"用法:",
-		"命令:",
-		"生成可编辑的 app 示例配置。",
-		"按配置部署一个 app。",
-		"校验 app 配置和 runtime 模板。",
+		"meshify app manages additional Go services and tailnet upstreams.",
+		"Usage:",
+		"Commands:",
+		"Generate an editable app example config.",
+		"Deploy an app from config.",
+		"Validate app config and runtime templates.",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("stdout = %q, want substring %q", stdout, want)
@@ -170,7 +172,7 @@ func TestExecute_AppInitWritesExampleConfig(t *testing.T) {
 	if stderr != "" {
 		t.Fatalf("stderr = %q, want empty", stderr)
 	}
-	if !strings.Contains(stdout, "meshify app init: 已写入 app 示例配置") {
+	if !strings.Contains(stdout, "meshify app init: App example config written") {
 		t.Fatalf("stdout = %q, want app init summary", stdout)
 	}
 	loaded, err := appconfig.LoadFile(configPath)
@@ -218,8 +220,8 @@ func TestExecute_AppVerifyJSON(t *testing.T) {
 	if response.Command != "app verify" || response.Status != "static-passed" {
 		t.Fatalf("response = %#v, want app verify static-passed", response)
 	}
-	if !strings.Contains(response.Summary, "app 静态检查通过") {
-		t.Fatalf("summary = %q, want Chinese app verify summary", response.Summary)
+	if !strings.Contains(response.Summary, "app static checks passed") {
+		t.Fatalf("summary = %q, want app verify summary", response.Summary)
 	}
 	scope, ok := fieldValue(response.Fields, "verification scope")
 	if !ok || !strings.Contains(scope, "static-only") {
@@ -282,7 +284,7 @@ func TestExecute_AppDeployPreflightBlockReturnsErrorWithJSON(t *testing.T) {
 	if response.Command != "app deploy" || response.Status != "blocked" {
 		t.Fatalf("response = %#v, want app deploy blocked", response)
 	}
-	if got, ok := fieldValue(response.Fields, "check permissions"); !ok || !strings.Contains(got, "root 权限") || !strings.Contains(got, "deploy") {
+	if got, ok := fieldValue(response.Fields, "check permissions"); !ok || !strings.Contains(got, "root privileges") || !strings.Contains(got, "deploy") {
 		t.Fatalf("permissions field = %q, %v; fields = %#v", got, ok, response.Fields)
 	}
 	if !strings.Contains(err.Error(), response.Summary) {
@@ -375,7 +377,7 @@ func TestExecute_AppDeployReadsAuthKeyFileOnlyWhenLoginNeeded(t *testing.T) {
 	})
 	stubPassingAppDeployPreflight(t)
 	detectAppTailscaleAuthKeyFileStateFn = func(appconfig.Config) (bool, bool, string) {
-		return true, true, "tailscale.auth_key_file 已通过 root-only 校验"
+		return true, true, "tailscale.auth_key_file passed root-only validation"
 	}
 
 	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
@@ -401,7 +403,7 @@ func TestExecute_AppDeployReadsAuthKeyFileOnlyWhenLoginNeeded(t *testing.T) {
 		t.Fatalf("stderr = %q, want empty", stderr)
 	}
 	response := mustDecodeResponse(t, stdout)
-	if response.Summary != "Tailscale client 前置条件失败" {
+	if response.Summary != "Tailscale client prerequisite failed" {
 		t.Fatalf("summary = %q, want Tailscale failure", response.Summary)
 	}
 	details, ok := fieldValue(response.Fields, "details")
@@ -450,6 +452,251 @@ func TestExecute_AppDeployBlocksInvalidServiceEnvFileBeforeHostMutation(t *testi
 	}
 	if len(runner.commands) != 0 {
 		t.Fatalf("host commands = %#v, want no host mutation before service.env_file readiness passes", runner.commands)
+	}
+}
+
+func TestExecute_AppDeployBlocksAppListenConflictBeforeHostMutation(t *testing.T) {
+	configPath := writeReviewAppConfig(t)
+	stubPassingAppDeployPreflight(t)
+	detectAppListenPortStateFn = func(appconfig.Config) (bool, bool, string) {
+		return true, false, "app.listen 127.0.0.1:18001 is already used by other-service"
+	}
+
+	runner := &scriptedHostRunner{}
+	previousExecutor := newHostExecutorFn
+	t.Cleanup(func() {
+		newHostExecutorFn = previousExecutor
+	})
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want non-nil")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Command != "app deploy" || response.Status != "blocked" {
+		t.Fatalf("response = %#v, want app deploy blocked", response)
+	}
+	if got, ok := fieldValue(response.Fields, "check app-listen"); !ok || !strings.Contains(got, "other-service") {
+		t.Fatalf("app-listen field = %q, %v; fields = %#v", got, ok, response.Fields)
+	}
+	if len(runner.commands) != 0 {
+		t.Fatalf("host commands = %#v, want no host mutation before app.listen readiness passes", runner.commands)
+	}
+}
+
+func TestDetectAppGoAccessAuthFileStateAllowsSecureNonWorldReadableFileWithoutRuntimeUser(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(filepath.Dir(dir), 0o755); err != nil {
+		t.Fatalf("Chmod(temp parent dir) error = %v", err)
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatalf("Chmod(temp dir) error = %v", err)
+	}
+	hiddenDir := filepath.Join(dir, "hidden")
+	if err := os.Mkdir(hiddenDir, 0o700); err != nil {
+		t.Fatalf("Mkdir(hiddenDir) error = %v", err)
+	}
+	authFile := filepath.Join(hiddenDir, "goaccess.htpasswd")
+	if err := os.WriteFile(authFile, []byte("user:hash\n"), 0o640); err != nil {
+		t.Fatalf("WriteFile(authFile) error = %v", err)
+	}
+	cfg := goAccessEnabledAppConfig()
+	cfg.Nginx.GoAccess.AuthBasicUserFile = authFile
+
+	previousLstat := lstatAppServicePathFn
+	t.Cleanup(func() {
+		lstatAppServicePathFn = previousLstat
+	})
+	safeDirs := ancestorDirs(dir)
+	lstatAppServicePathFn = func(path string) (os.FileInfo, error) {
+		info, err := os.Lstat(path)
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := safeDirs[path]; ok {
+			return rootOwnedModeFileInfo{name: info.Name(), mode: os.ModeDir | 0o755}, nil
+		}
+		if path == authFile {
+			return rootOwnedModeFileInfo{name: info.Name(), mode: 0o640, size: info.Size(), gid: 33}, nil
+		}
+		return rootOwnedFileInfo{FileInfo: info}, nil
+	}
+
+	checked, ready, detail := detectAppGoAccessAuthFileState(cfg)
+	if !checked || !ready {
+		t.Fatalf("detectAppGoAccessAuthFileState() = checked %t ready %t detail %q, want ready", checked, ready, detail)
+	}
+	if strings.Contains(detail, "Nginx runtime user www-data") || strings.Contains(detail, "runtime readability check") {
+		t.Fatalf("detail = %q, must not claim preflight completed Nginx runtime readability", detail)
+	}
+}
+
+func TestExecute_AppDeployBlocksMalformedGoAccessAuthBeforeHostMutation(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(filepath.Dir(dir), 0o755); err != nil {
+		t.Fatalf("Chmod(temp parent dir) error = %v", err)
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatalf("Chmod(temp dir) error = %v", err)
+	}
+	authFile := filepath.Join(dir, "goaccess.htpasswd")
+	if err := os.WriteFile(authFile, []byte("user: hash\n"), 0o640); err != nil {
+		t.Fatalf("WriteFile(authFile) error = %v", err)
+	}
+	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
+		cfg.Nginx.GoAccess.Enabled = true
+		cfg.Nginx.GoAccess.AuthBasicUserFile = authFile
+	})
+	stubPassingAppDeployPreflight(t)
+	detectAppGoAccessAuthFileStateFn = detectAppGoAccessAuthFileState
+
+	previousLstat := lstatAppServicePathFn
+	previousExecutor := newHostExecutorFn
+	runner := &scriptedHostRunner{}
+	t.Cleanup(func() {
+		lstatAppServicePathFn = previousLstat
+		newHostExecutorFn = previousExecutor
+	})
+	safeDirs := ancestorDirs(dir)
+	lstatAppServicePathFn = func(path string) (os.FileInfo, error) {
+		info, err := os.Lstat(path)
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := safeDirs[path]; ok {
+			return rootOwnedModeFileInfo{name: info.Name(), mode: os.ModeDir | 0o755}, nil
+		}
+		return rootOwnedModeFileInfo{name: info.Name(), mode: info.Mode(), size: info.Size(), gid: 33}, nil
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want GoAccess auth preflight failure")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Command != "app deploy" || response.Status != "blocked" {
+		t.Fatalf("response = %#v, want app deploy blocked", response)
+	}
+	if got, ok := fieldValue(response.Fields, "check goaccess-auth-file"); !ok || !strings.Contains(got, "must contain at least one user:hash credential line") {
+		t.Fatalf("goaccess-auth-file field = %q, %v; fields = %#v", got, ok, response.Fields)
+	}
+	if len(runner.commands) != 0 {
+		t.Fatalf("host commands = %#v, want no host mutation before malformed GoAccess auth passes preflight", runner.commands)
+	}
+}
+
+func TestExecute_AppDeployExplicitGoAccessLogReadabilityGuardRunsAfterUserCreation(t *testing.T) {
+	const logFile = "/var/log/meshify/custom/review-app.access.log"
+	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
+		cfg.Nginx.AccessLog = logFile
+		cfg.Nginx.ErrorLog = "/var/log/meshify/custom/review-app.error.log"
+		cfg.Nginx.GoAccess.Enabled = true
+		cfg.Nginx.GoAccess.AuthBasicUserFile = "/etc/review-app/goaccess.htpasswd"
+	})
+	cfg, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	staged := stagedRuntimeWithTempHostPaths(t, cfg)
+	stubPassingAppDeployPreflight(t)
+	detectAppGoAccessLogFileStateFn = detectAppGoAccessLogFileState
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+
+	previousLstat := lstatAppServicePathFn
+	previousStage := stageAppRuntimeFilesFn
+	previousInstaller := newAppFileInstallerFn
+	previousExecutor := newHostExecutorFn
+	events := []string{}
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		switch command.DisplayName {
+		case "guard-goaccess-user", "ensure-goaccess-user", "guard-goaccess-log-readable":
+			events = append(events, command.DisplayName)
+		}
+		if command.DisplayName == "guard-goaccess-log-readable" {
+			return host.Result{}, fmt.Errorf("GoAccess user %s cannot read canonical access log %s", names.GoAccessSystemUser, logFile)
+		}
+		if event := appDeployOrderEvent(command); event != "" {
+			events = append(events, event)
+		}
+		actual := unwrapMaybeSudoHostCommand(command)
+		if actual.Name == "apt-get" && len(actual.Args) > 0 && actual.Args[0] == "install" {
+			events = append(events, "apt-install")
+		}
+		return host.Result{}, nil
+	}}
+	t.Cleanup(func() {
+		lstatAppServicePathFn = previousLstat
+		stageAppRuntimeFilesFn = previousStage
+		newAppFileInstallerFn = previousInstaller
+		newHostExecutorFn = previousExecutor
+	})
+	lstatAppServicePathFn = func(path string) (os.FileInfo, error) {
+		switch path {
+		case logFile:
+			return rootOwnedModeFileInfo{name: "review-app.access.log", mode: 0o640, size: 1}, nil
+		case "/var/log/meshify/custom":
+			return rootOwnedModeFileInfo{name: "custom", mode: os.ModeDir | 0o755}, nil
+		case "/var/log/meshify":
+			return rootOwnedModeFileInfo{name: "meshify", mode: os.ModeDir | 0o755}, nil
+		case "/var/log":
+			return rootOwnedModeFileInfo{name: "log", mode: os.ModeDir | 0o755}, nil
+		case "/var":
+			return rootOwnedModeFileInfo{name: "var", mode: os.ModeDir | 0o755}, nil
+		case "/":
+			return rootOwnedModeFileInfo{name: "/", mode: os.ModeDir | 0o755}, nil
+		default:
+			return nil, os.ErrNotExist
+		}
+	}
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return staged, nil
+	}
+	newAppFileInstallerFn = func(host.Executor, host.PrivilegeStrategy) appStagedFileInstaller {
+		return recordingAppInstaller{
+			events:  &events,
+			results: []host.FileInstallResult{{HostPath: "/etc/nginx/sites-available/review-app.conf", Changed: true}},
+		}
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want GoAccess log readability guard failure")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Command != "app deploy" || response.Status != "failed" {
+		t.Fatalf("response = %#v, want app deploy failed", response)
+	}
+	if !strings.Contains(response.Summary, "GoAccess canonical access log readability check failed") {
+		t.Fatalf("summary = %q, want GoAccess log readability guard failure", response.Summary)
+	}
+	if got, ok := fieldValue(response.Fields, "details"); !ok || !strings.Contains(got, names.GoAccessSystemUser) {
+		t.Fatalf("details = %q, %v; fields = %#v", got, ok, response.Fields)
+	}
+	assertEventBefore(t, events, "guard-goaccess-user", "ensure-goaccess-user")
+	assertEventBefore(t, events, "ensure-goaccess-user", "guard-goaccess-log-readable")
+	if slices.Contains(events, "apt-install") || slices.Contains(events, "install-files") {
+		t.Fatalf("events = %v, want failure before dependency install or runtime file install", events)
 	}
 }
 
@@ -589,6 +836,90 @@ func TestExecute_AppDeployRejectsCustomHeadscaleMetricsPortConflict(t *testing.T
 	}
 }
 
+func TestExecute_AppRejectsGoAccessHeadscaleMetricsPortConflict(t *testing.T) {
+	tests := []struct {
+		name           string
+		command        string
+		configureMain  func(*config.Config)
+		configureApp   func(*appconfig.Config)
+		wantPortString string
+	}{
+		{
+			name:    "verify explicit websocket port",
+			command: "verify",
+			configureMain: func(cfg *config.Config) {
+				cfg.Advanced.Headscale.MetricsPort = 39001
+			},
+			configureApp: func(cfg *appconfig.Config) {
+				cfg.Nginx.GoAccess.WebSocketListen = "127.0.0.1:39001"
+			},
+			wantPortString: "39001",
+		},
+		{
+			name:    "deploy explicit websocket port",
+			command: "deploy",
+			configureMain: func(cfg *config.Config) {
+				cfg.Advanced.Headscale.MetricsPort = 39001
+			},
+			configureApp: func(cfg *appconfig.Config) {
+				cfg.Nginx.GoAccess.WebSocketListen = "127.0.0.1:39001"
+			},
+			wantPortString: "39001",
+		},
+		{
+			name:    "verify default websocket port",
+			command: "verify",
+			configureMain: func(cfg *config.Config) {
+				cfg.Advanced.Headscale.MetricsPort = appconfig.DefaultNginxGoAccessWebSocketPort("review-app")
+			},
+			wantPortString: strconv.Itoa(appconfig.DefaultNginxGoAccessWebSocketPort("review-app")),
+		},
+		{
+			name:    "deploy default websocket port",
+			command: "deploy",
+			configureMain: func(cfg *config.Config) {
+				cfg.Advanced.Headscale.MetricsPort = appconfig.DefaultNginxGoAccessWebSocketPort("review-app")
+			},
+			wantPortString: strconv.Itoa(appconfig.DefaultNginxGoAccessWebSocketPort("review-app")),
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			baseDir := t.TempDir()
+			mainConfigPath := filepath.Join(baseDir, "meshify.yaml")
+			mainCfg := config.ExampleConfig()
+			tc.configureMain(&mainCfg)
+			if err := mainCfg.WriteFile(mainConfigPath); err != nil {
+				t.Fatalf("WriteFile(main config) error = %v", err)
+			}
+			configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
+				cfg.Tailscale.MeshifyConfig = mainConfigPath
+				cfg.Nginx.GoAccess.Enabled = true
+				cfg.Nginx.GoAccess.AuthBasicUserFile = "/etc/review-app/goaccess.htpasswd"
+				if tc.configureApp != nil {
+					tc.configureApp(cfg)
+				}
+			})
+
+			stdout, stderr, err := runCLI(t, "app", tc.command, "--config", configPath, "--format", "json")
+			if err == nil {
+				t.Fatal("Execute() error = nil, want non-nil")
+			}
+			if stderr != "" {
+				t.Fatalf("stderr = %q, want empty", stderr)
+			}
+			response := mustDecodeResponse(t, stdout)
+			if response.Command != "app "+tc.command || response.Status != "invalid-config" {
+				t.Fatalf("response = %#v, want app %s invalid-config", response, tc.command)
+			}
+			details, ok := fieldValue(response.Fields, "details")
+			if !ok || !strings.Contains(details, "nginx.goaccess.websocket_listen") || !strings.Contains(details, "metrics port "+tc.wantPortString) {
+				t.Fatalf("details = %q, %v; fields = %#v", details, ok, response.Fields)
+			}
+		})
+	}
+}
+
 func TestExecute_AppDeployStaticFailureReturnsErrorWithJSON(t *testing.T) {
 	configPath := writeReviewAppConfig(t)
 	stubPassingAppDeployPreflight(t)
@@ -616,7 +947,7 @@ func TestExecute_AppDeployStaticFailureReturnsErrorWithJSON(t *testing.T) {
 	if response.Command != "app deploy" || response.Status != "failed" {
 		t.Fatalf("response = %#v, want app deploy failed", response)
 	}
-	if !strings.Contains(response.Summary, "app verify 发现") {
+	if !strings.Contains(response.Summary, "app verify found") {
 		t.Fatalf("summary = %q, want static verify failure", response.Summary)
 	}
 }
@@ -683,8 +1014,42 @@ func TestExecute_AppDeployOwnershipBlockReturnsErrorWithJSON(t *testing.T) {
 	if response.Command != "app deploy" || response.Status != "blocked" {
 		t.Fatalf("response = %#v, want app deploy blocked", response)
 	}
-	if !strings.Contains(response.Summary, "目标文件存在") {
+	if !strings.Contains(response.Summary, "Target file exists") {
 		t.Fatalf("summary = %q, want ownership block", response.Summary)
+	}
+}
+
+func TestGuardAppOwnershipRejectsSymlinkBeforeReadingManagedContent(t *testing.T) {
+	cfg := appconfig.New()
+	cfg.App.Name = "review-app"
+	dir := t.TempDir()
+	target := filepath.Join(dir, "managed.conf")
+	if err := os.WriteFile(target, []byte("# "+appsvc.ManagedMarker(cfg.App.Name)+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(target) error = %v", err)
+	}
+	link := filepath.Join(dir, "link.conf")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("Symlink() error = %v", err)
+	}
+
+	err := guardAppOwnership(host.OSFileSystem{}, cfg, []apprender.StagedFile{{HostPath: link}})
+	if err == nil || !strings.Contains(err.Error(), "is a symlink") {
+		t.Fatalf("guardAppOwnership() error = %v, want symlink refusal", err)
+	}
+}
+
+func TestGuardAppOwnershipRejectsNonRegularTargetBeforeReading(t *testing.T) {
+	cfg := appconfig.New()
+	cfg.App.Name = "review-app"
+	dir := t.TempDir()
+	target := filepath.Join(dir, "managed.conf")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatalf("Mkdir(target) error = %v", err)
+	}
+
+	err := guardAppOwnership(host.OSFileSystem{}, cfg, []apprender.StagedFile{{HostPath: target}})
+	if err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("guardAppOwnership() error = %v, want non-regular refusal", err)
 	}
 }
 
@@ -727,7 +1092,7 @@ func TestExecute_AppDeployHostFailureReturnsErrorWithJSON(t *testing.T) {
 	if response.Command != "app deploy" || response.Status != "failed" {
 		t.Fatalf("response = %#v, want app deploy failed", response)
 	}
-	if response.Summary != "安装 app 宿主机依赖失败" {
+	if response.Summary != "Failed to install app host dependencies" {
 		t.Fatalf("summary = %q, want host dependency failure", response.Summary)
 	}
 	if !strings.Contains(err.Error(), "apt update failed") {
@@ -834,7 +1199,7 @@ func TestExecute_AppDeploySurfacesPreflightWarningsOnSuccess(t *testing.T) {
 		t.Fatalf("response = %#v, want applied", response)
 	}
 	warning, ok := fieldValue(response.Fields, "preflight warning dns:app.example.com")
-	if !ok || !strings.Contains(warning, "未能确认") {
+	if !ok || !strings.Contains(warning, "could not confirm") {
 		t.Fatalf("preflight warning field = %q, %v; fields = %#v", warning, ok, response.Fields)
 	}
 	if !slices.ContainsFunc(response.NextSteps, func(step string) bool {
@@ -874,7 +1239,7 @@ func TestExecute_AppDeployBlocksHTTP01WhenHostAlignmentIsUnproven(t *testing.T) 
 		t.Fatalf("response = %#v, want blocked", response)
 	}
 	dnsCheck, ok := fieldValue(response.Fields, "check dns:app.example.com")
-	if !ok || !strings.Contains(dnsCheck, "未能确认") {
+	if !ok || !strings.Contains(dnsCheck, "could not confirm") {
 		t.Fatalf("dns check = %q, %v; fields = %#v", dnsCheck, ok, response.Fields)
 	}
 	if len(runner.commands) != 0 {
@@ -938,7 +1303,7 @@ func TestExecute_AppDeployFileInstallFailureReportsModifiedPaths(t *testing.T) {
 		t.Fatalf("stderr = %q, want empty", stderr)
 	}
 	response := mustDecodeResponse(t, stdout)
-	if response.Summary != "写入 app runtime 文件失败" {
+	if response.Summary != "Failed to write app runtime files" {
 		t.Fatalf("summary = %q, want file install failure", response.Summary)
 	}
 	paths, ok := fieldValue(response.Fields, "modified paths")
@@ -988,7 +1353,7 @@ func TestExecute_AppDeployPostInstallFailureReportsModifiedPaths(t *testing.T) {
 		t.Fatalf("stderr = %q, want empty", stderr)
 	}
 	response := mustDecodeResponse(t, stdout)
-	if response.Summary != "systemd daemon-reload 失败" {
+	if response.Summary != "systemd daemon-reload failed" {
 		t.Fatalf("summary = %q, want daemon-reload failure", response.Summary)
 	}
 	paths, ok := fieldValue(response.Fields, "modified paths")
@@ -1095,7 +1460,7 @@ func TestExecute_AppDeployCertificateFailureReportsCommandEffects(t *testing.T) 
 		t.Fatalf("stderr = %q, want empty", stderr)
 	}
 	response := mustDecodeResponse(t, stdout)
-	if response.Summary != "申请 app TLS 证书失败" {
+	if response.Summary != "Failed to issue app TLS certificate" {
 		t.Fatalf("summary = %q, want certificate failure", response.Summary)
 	}
 	paths, ok := fieldValue(response.Fields, "modified paths")
@@ -1256,7 +1621,7 @@ func TestExecute_AppDeployEnabledSiteGuardBlocksForeignPath(t *testing.T) {
 		t.Fatalf("stderr = %q, want empty", stderr)
 	}
 	response := mustDecodeResponse(t, stdout)
-	if response.Status != "blocked" || response.Summary != "Nginx enabled site 已存在且不属于当前 app" {
+	if response.Status != "blocked" || response.Summary != "Nginx enabled site exists and does not belong to this app" {
 		t.Fatalf("response = %#v, want pre-write enabled-site block", response)
 	}
 	if details, ok := fieldValue(response.Fields, "details"); !ok || !strings.Contains(details, "foreign enabled site") {
@@ -1316,7 +1681,7 @@ func TestExecute_AppDeployTLSOwnershipGuardBlocksBeforeRuntimeInstall(t *testing
 		t.Fatalf("stderr = %q, want empty", stderr)
 	}
 	response := mustDecodeResponse(t, stdout)
-	if response.Summary != "app TLS 证书目录所有权检查失败" {
+	if response.Summary != "app TLS certificate directory ownership check failed" {
 		t.Fatalf("summary = %q, want TLS ownership failure", response.Summary)
 	}
 	if installerCalled {
@@ -1372,7 +1737,7 @@ func TestExecute_AppDeployServiceAccessGuardBlocksBeforeRuntimeInstall(t *testin
 		t.Fatalf("stderr = %q, want empty", stderr)
 	}
 	response := mustDecodeResponse(t, stdout)
-	if response.Summary != "app service 用户访问检查失败" {
+	if response.Summary != "app service user access check failed" {
 		t.Fatalf("summary = %q, want service access failure", response.Summary)
 	}
 	if installerCalled {
@@ -1428,7 +1793,7 @@ func TestExecute_AppDeployRootDirectoryGuardBlocksBeforeRuntimeInstall(t *testin
 		t.Fatalf("stderr = %q, want empty", stderr)
 	}
 	response := mustDecodeResponse(t, stdout)
-	if response.Summary != "app 目录根所有权检查失败" {
+	if response.Summary != "app root directory ownership check failed" {
 		t.Fatalf("summary = %q, want app root ownership failure", response.Summary)
 	}
 	if installerCalled {
@@ -1488,7 +1853,7 @@ func TestExecute_AppDeployBlocksNginxDomainConflictBeforeRuntimeInstall(t *testi
 		t.Fatalf("stderr = %q, want empty", stderr)
 	}
 	response := mustDecodeResponse(t, stdout)
-	if response.Summary != "Nginx server_name 冲突" {
+	if response.Summary != "Nginx server_name conflict" {
 		t.Fatalf("summary = %q, want server_name conflict", response.Summary)
 	}
 	if installerCalled {
@@ -1539,7 +1904,7 @@ func TestExecute_AppDeployBlocksNginxDefaultServerConflictBeforeRuntimeInstall(t
 		t.Fatalf("stderr = %q, want empty", stderr)
 	}
 	response := mustDecodeResponse(t, stdout)
-	if response.Summary != "Nginx default_server 冲突" {
+	if response.Summary != "Nginx default_server conflict" {
 		t.Fatalf("summary = %q, want default_server conflict", response.Summary)
 	}
 	if installerCalled {
@@ -1712,6 +2077,1729 @@ func TestExecute_AppDeployHappyPathOrder(t *testing.T) {
 	}
 }
 
+func TestExecute_AppDeployGoAccessExplicitLogChecksReadableBeforeDirectoryWrites(t *testing.T) {
+	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
+		cfg.Nginx.AccessLog = "/var/log/meshify/custom/review-app.access.log"
+		cfg.Nginx.GoAccess.Enabled = true
+		cfg.Nginx.GoAccess.AuthBasicUserFile = "/etc/review-app/goaccess.htpasswd"
+	})
+	cfg, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	staged := stagedRuntimeWithTempHostPaths(t, cfg)
+	stubPassingAppDeployPreflight(t)
+	detectAppGoAccessLogFileStateFn = func(appconfig.Config) (bool, bool, string) {
+		return true, true, "explicit GoAccess access log is readable"
+	}
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+
+	events := []string{}
+	rootGuardSawAuthBootstrap := false
+	previousStage := stageAppRuntimeFilesFn
+	previousInstaller := newAppFileInstallerFn
+	previousExecutor := newHostExecutorFn
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		switch command.DisplayName {
+		case "guard-goaccess-auth-file-metadata", "guard-goaccess-auth-file", "guard-goaccess-user", "ensure-goaccess-user", "guard-goaccess-log-readable", "guard-goaccess-websocket-port-assignment", "ensure-goaccess-report-directory", "ensure-goaccess-db-directory", "ensure-goaccess-report-file", "guard-goaccess-runtime-access":
+			events = append(events, command.DisplayName)
+		}
+		if event := appDeployOrderEvent(command); event != "" {
+			events = append(events, event)
+		}
+		if command.DisplayName == "guard-app-root-directories" && slices.Contains(command.Args, cfg.Nginx.GoAccess.AuthBasicUserFile) {
+			rootGuardSawAuthBootstrap = true
+		}
+		actual := unwrapMaybeSudoHostCommand(command)
+		if actual.Name == appsvc.GoAccessBinaryPath {
+			switch strings.Join(actual.Args, " ") {
+			case "--version":
+				return host.Result{Stdout: "GoAccess test\n"}, nil
+			case "--help":
+				return host.Result{Stdout: strings.Join(allGoAccessRequiredOptions(), "\n") + "\n"}, nil
+			default:
+				t.Fatalf("unexpected GoAccess command args %#v", actual.Args)
+			}
+		}
+		if actual.Name == "systemctl" {
+			switch strings.Join(actual.Args, " ") {
+			case "enable --now nginx.service":
+				events = append(events, "systemctl-enable-now nginx.service")
+			case "enable " + names.GoAccessServiceUnit:
+				events = append(events, "systemctl-enable "+names.GoAccessServiceUnit)
+			case "restart " + names.GoAccessServiceUnit:
+				events = append(events, "systemctl-restart "+names.GoAccessServiceUnit)
+			}
+		}
+		if actual.Name == "apt-get" && len(actual.Args) > 0 && actual.Args[0] == "install" {
+			events = append(events, "apt-install")
+		}
+		return host.Result{}, nil
+	}}
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+		newAppFileInstallerFn = previousInstaller
+		newHostExecutorFn = previousExecutor
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return staged, nil
+	}
+	newAppFileInstallerFn = func(host.Executor, host.PrivilegeStrategy) appStagedFileInstaller {
+		return recordingAppInstaller{
+			events:  &events,
+			results: []host.FileInstallResult{{HostPath: "/etc/nginx/sites-available/review-app.conf", Changed: true}},
+		}
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err != nil {
+		t.Fatalf("Execute() error = %v\nstdout=%s", err, stdout)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Status != "applied" {
+		t.Fatalf("response = %#v, want applied", response)
+	}
+	assertEventBefore(t, events, "guard-goaccess-auth-file-metadata", "guard-goaccess-user")
+	assertEventBefore(t, events, "guard-goaccess-user", "ensure-goaccess-user")
+	assertEventBefore(t, events, "ensure-goaccess-user", "guard-goaccess-log-readable")
+	assertEventBefore(t, events, "guard-goaccess-log-readable", "apt-install")
+	assertEventBefore(t, events, "apt-install", "guard-goaccess-auth-file")
+	assertEventBefore(t, events, "guard-goaccess-auth-file", "systemctl-enable-now nginx.service")
+	assertEventBefore(t, events, "systemctl-enable-now nginx.service", "guard-goaccess-websocket-port-assignment")
+	assertEventBefore(t, events, "guard-goaccess-websocket-port-assignment", "install-files")
+	assertEventBefore(t, events, "guard-goaccess-log-readable", "ensure-goaccess-report-directory")
+	assertEventBefore(t, events, "guard-goaccess-log-readable", "install-files")
+	assertEventBefore(t, events, "install-files", "guard-goaccess-runtime-access")
+	assertEventBefore(t, events, "guard-goaccess-runtime-access", "systemctl-enable "+names.GoAccessServiceUnit)
+	assertEventBefore(t, events, "systemctl-enable "+names.GoAccessServiceUnit, "systemctl-restart "+names.GoAccessServiceUnit)
+	if !rootGuardSawAuthBootstrap {
+		t.Fatalf("GoAccess deploy root guard did not receive auth bootstrap path %q", cfg.Nginx.GoAccess.AuthBasicUserFile)
+	}
+	if got, ok := fieldValue(response.Fields, "goaccess dashboard"); !ok || got != "https://app.example.com/_meshify/apps/review-app/goaccess" {
+		t.Fatalf("goaccess dashboard = %q, %v; fields = %#v", got, ok, response.Fields)
+	}
+	if got, ok := fieldValue(response.Fields, "goaccess service"); !ok || got != names.GoAccessServiceUnit {
+		t.Fatalf("goaccess service = %q, %v; fields = %#v", got, ok, response.Fields)
+	}
+	if got, ok := fieldValue(response.Fields, "canonical access log"); !ok || got != cfg.Nginx.AccessLog {
+		t.Fatalf("canonical access log = %q, %v; fields = %#v", got, ok, response.Fields)
+	}
+	if !slices.ContainsFunc(response.NextSteps, func(step string) bool {
+		return strings.Contains(step, "https://app.example.com/_meshify/apps/review-app/goaccess") &&
+			strings.Contains(step, "GoAccess dashboard")
+	}) {
+		t.Fatalf("next steps = %#v, want GoAccess dashboard verification step", response.NextSteps)
+	}
+	if !slices.ContainsFunc(response.NextSteps, func(step string) bool {
+		return strings.Contains(step, "nginx.error_log") &&
+			strings.Contains(step, "GoAccess dashboard does not parse Nginx error logs")
+	}) {
+		t.Fatalf("next steps = %#v, want GoAccess error-log guidance", response.NextSteps)
+	}
+	if !slices.ContainsFunc(response.NextSteps, func(step string) bool {
+		return strings.Contains(step, "tail -f "+cfg.Nginx.AccessLog)
+	}) {
+		t.Fatalf("next steps = %#v, want explicit access log troubleshooting command", response.NextSteps)
+	}
+	if !slices.ContainsFunc(response.NextSteps, func(step string) bool {
+		return strings.Contains(step, "tail -f "+cfg.Nginx.ErrorLog) &&
+			strings.Contains(step, "journalctl -u "+names.ServiceUnit+" -e")
+	}) {
+		t.Fatalf("next steps = %#v, want error log and app service troubleshooting commands", response.NextSteps)
+	}
+}
+
+func TestAppRuntimeHostChecksMentionTailscaleOnlyWhenRequired(t *testing.T) {
+	cfg := appconfig.ExampleConfig()
+
+	step := appRuntimeHostChecksStep(cfg)
+	if strings.Contains(step, "tailscale status") {
+		t.Fatalf("appRuntimeHostChecksStep() = %q, want no tailscale status for listen app without tailnet access", step)
+	}
+
+	cfg.Tailscale.EnabledForListen = true
+	step = appRuntimeHostChecksStep(cfg)
+	if !strings.Contains(step, "tailscale status") {
+		t.Fatalf("appRuntimeHostChecksStep() = %q, want tailscale status for listen app with tailnet access", step)
+	}
+
+	cfg.Tailscale.EnabledForListen = false
+	cfg.App.Listen = ""
+	cfg.App.Upstream = "100.64.10.20:18001"
+	cfg.Service.ExecStart = ""
+	cfg.Service.WorkingDirectory = ""
+	step = appDeployRuntimeVerifyStep("meshify-app.yaml", cfg)
+	if !strings.Contains(step, "tailscale status") {
+		t.Fatalf("appDeployRuntimeVerifyStep() = %q, want tailscale status for upstream app", step)
+	}
+}
+
+func TestAppGoAccessTroubleshootingCommandsUseModeSpecificBackend(t *testing.T) {
+	cfg := goAccessEnabledAppConfig()
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+
+	listenCommands := appGoAccessTroubleshootingCommands(cfg, names)
+	if !strings.Contains(listenCommands, "journalctl -u "+names.ServiceUnit+" -e") {
+		t.Fatalf("appGoAccessTroubleshootingCommands() = %q, want local service journal for listen mode", listenCommands)
+	}
+	if strings.Contains(listenCommands, "curl -I http://") {
+		t.Fatalf("appGoAccessTroubleshootingCommands() = %q, want no upstream curl for listen mode", listenCommands)
+	}
+	if strings.Contains(listenCommands, "tailscale status") {
+		t.Fatalf("appGoAccessTroubleshootingCommands() = %q, want no Tailscale command for listen mode without tailnet access", listenCommands)
+	}
+
+	cfg.Tailscale.EnabledForListen = true
+	tailnetListenCommands := appGoAccessTroubleshootingCommands(cfg, names)
+	if !strings.Contains(tailnetListenCommands, "tailscale status") {
+		t.Fatalf("appGoAccessTroubleshootingCommands() = %q, want Tailscale command for listen mode with tailnet access", tailnetListenCommands)
+	}
+
+	cfg.Tailscale.EnabledForListen = false
+	cfg.App.Listen = ""
+	cfg.App.Upstream = "100.64.10.20:18001"
+	cfg.Service.ExecStart = ""
+	cfg.Service.WorkingDirectory = ""
+	names, err = appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+	upstreamCommands := appGoAccessTroubleshootingCommands(cfg, names)
+	if strings.Contains(upstreamCommands, "journalctl -u "+names.ServiceUnit+" -e") {
+		t.Fatalf("appGoAccessTroubleshootingCommands() = %q, want no local service journal for upstream mode", upstreamCommands)
+	}
+	if !strings.Contains(upstreamCommands, "curl -I http://100.64.10.20:18001") {
+		t.Fatalf("appGoAccessTroubleshootingCommands() = %q, want fixed upstream curl check", upstreamCommands)
+	}
+	if !strings.Contains(upstreamCommands, "tailscale status") {
+		t.Fatalf("appGoAccessTroubleshootingCommands() = %q, want Tailscale command for upstream mode", upstreamCommands)
+	}
+
+	nextStep := appGoAccessFailureNextStep(cfg)
+	if !strings.Contains(nextStep, "fixed tailnet upstream reachability") || strings.Contains(nextStep, "business service logs") {
+		t.Fatalf("appGoAccessFailureNextStep() = %q, want upstream-specific troubleshooting guidance", nextStep)
+	}
+}
+
+func TestExecute_AppDeployGoAccessManagedLogGuardsBeforeNginxMutations(t *testing.T) {
+	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
+		cfg.Nginx.AccessLog = "/var/log/meshify/apps/review-app/access.log"
+		cfg.Nginx.GoAccess.Enabled = true
+		cfg.Nginx.GoAccess.AuthBasicUserFile = "/etc/review-app/goaccess.htpasswd"
+	})
+	cfg, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	staged := stagedRuntimeWithTempHostPaths(t, cfg)
+	stubPassingAppDeployPreflight(t)
+
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+
+	events := []string{}
+	previousStage := stageAppRuntimeFilesFn
+	previousInstaller := newAppFileInstallerFn
+	previousExecutor := newHostExecutorFn
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		switch command.DisplayName {
+		case "guard-goaccess-auth-file-metadata", "guard-goaccess-auth-file", "guard-goaccess-user", "ensure-goaccess-user", "guard-goaccess-log-directory", "guard-goaccess-websocket-port-assignment", "ensure-goaccess-log-directory", "guard-goaccess-managed-log-readable", "guard-goaccess-runtime-access":
+			events = append(events, command.DisplayName)
+		}
+		if event := appDeployOrderEvent(command); event != "" {
+			events = append(events, event)
+		}
+		actual := unwrapMaybeSudoHostCommand(command)
+		if actual.Name == appsvc.GoAccessBinaryPath {
+			switch strings.Join(actual.Args, " ") {
+			case "--version":
+				return host.Result{Stdout: "GoAccess test\n"}, nil
+			case "--help":
+				return host.Result{Stdout: strings.Join(allGoAccessRequiredOptions(), "\n") + "\n"}, nil
+			default:
+				t.Fatalf("unexpected GoAccess command args %#v", actual.Args)
+			}
+		}
+		if actual.Name == "apt-get" && len(actual.Args) > 0 && actual.Args[0] == "install" {
+			events = append(events, "apt-install")
+		}
+		if actual.Name == "systemctl" && strings.Join(actual.Args, " ") == "enable --now nginx.service" {
+			events = append(events, "systemctl-enable-now nginx.service")
+		}
+		return host.Result{}, nil
+	}}
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+		newAppFileInstallerFn = previousInstaller
+		newHostExecutorFn = previousExecutor
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return staged, nil
+	}
+	newAppFileInstallerFn = func(host.Executor, host.PrivilegeStrategy) appStagedFileInstaller {
+		return recordingAppInstaller{
+			events:  &events,
+			results: []host.FileInstallResult{{HostPath: "/etc/nginx/sites-available/review-app.conf", Changed: true}},
+		}
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err != nil {
+		t.Fatalf("Execute() error = %v\nstdout=%s", err, stdout)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Status != "applied" {
+		t.Fatalf("response = %#v, want applied", response)
+	}
+	assertEventBefore(t, events, "guard-goaccess-auth-file-metadata", "guard-goaccess-user")
+	assertEventBefore(t, events, "guard-goaccess-user", "guard-goaccess-log-directory")
+	assertEventBefore(t, events, "guard-goaccess-log-directory", "apt-install")
+	assertEventBefore(t, events, "apt-install", "guard-goaccess-auth-file")
+	assertEventBefore(t, events, "guard-goaccess-auth-file", "ensure-goaccess-user")
+	assertEventBefore(t, events, "ensure-goaccess-user", "systemctl-enable-now nginx.service")
+	assertEventBefore(t, events, "systemctl-enable-now nginx.service", "guard-goaccess-websocket-port-assignment")
+	assertEventBefore(t, events, "guard-goaccess-websocket-port-assignment", "install-files")
+	assertEventBefore(t, events, "guard-goaccess-log-directory", "install-files")
+	assertEventBefore(t, events, "ensure-goaccess-log-directory", "guard-goaccess-managed-log-readable")
+	assertEventBefore(t, events, "guard-goaccess-managed-log-readable", "install-files")
+	assertEventBefore(t, events, "install-files", "guard-goaccess-runtime-access")
+	if got, ok := fieldValue(response.Fields, "canonical access log"); !ok || got != names.GoAccessCanonicalAccessLogPath {
+		t.Fatalf("canonical access log = %q, %v; fields = %#v", got, ok, response.Fields)
+	}
+}
+
+func TestExecute_AppDeployGoAccessManagedLogGuardBlocksBeforeTailscaleMutation(t *testing.T) {
+	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
+		cfg.App.Listen = ""
+		cfg.App.Upstream = "100.64.10.20:18001"
+		cfg.Service.ExecStart = ""
+		cfg.Service.WorkingDirectory = ""
+		cfg.Tailscale.LoginServer = "https://hs.example.com"
+		cfg.Nginx.GoAccess.Enabled = true
+		cfg.Nginx.GoAccess.AuthBasicUserFile = "/etc/review-app/goaccess.htpasswd"
+	})
+	cfg, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	staged := stagedRuntimeWithTempHostPaths(t, cfg)
+	stubPassingAppDeployPreflight(t)
+
+	events := []string{}
+	installerCalled := false
+	previousStage := stageAppRuntimeFilesFn
+	previousInstaller := newAppFileInstallerFn
+	previousExecutor := newHostExecutorFn
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		if event := appDeployOrderEvent(command); event != "" {
+			events = append(events, event)
+		}
+		if command.DisplayName == "guard-goaccess-log-directory" {
+			events = append(events, command.DisplayName)
+			return host.Result{Stderr: "managed log marker mismatch", ExitCode: 1}, errors.New("managed log marker mismatch")
+		}
+		actual := unwrapMaybeSudoHostCommand(command)
+		if actual.Name == "tailscale" {
+			events = append(events, "tailscale-command")
+		}
+		return host.Result{}, nil
+	}}
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+		newAppFileInstallerFn = previousInstaller
+		newHostExecutorFn = previousExecutor
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return staged, nil
+	}
+	newAppFileInstallerFn = func(host.Executor, host.PrivilegeStrategy) appStagedFileInstaller {
+		installerCalled = true
+		return stubFileInstaller{}
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want GoAccess managed log guard failure")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Summary != "GoAccess log directory ownership check failed" {
+		t.Fatalf("summary = %q, want GoAccess log guard failure", response.Summary)
+	}
+	if !slices.Contains(events, "guard-goaccess-log-directory") {
+		t.Fatalf("events = %v, want GoAccess log directory guard", events)
+	}
+	if slices.Contains(events, "tailscale-status") || slices.Contains(events, "tailscale-command") {
+		t.Fatalf("events = %v, want no Tailscale command before GoAccess log guard passes", events)
+	}
+	if installerCalled {
+		t.Fatal("app file installer was called before GoAccess log guard passed")
+	}
+}
+
+func TestExecute_AppDeployRejectsGoAccessAccessLogHiddenBySystemdIsolation(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "meshify-app.yaml")
+	cfg := appconfig.New()
+	cfg.App.Name = "review-app"
+	cfg.App.Domains = []string{"app.example.com"}
+	cfg.App.CertificateEmail = "ops@example.com"
+	cfg.App.Listen = "127.0.0.1:18001"
+	cfg.Service.ExecStart = "/bin/true --listen 127.0.0.1:18001"
+	cfg.Service.WorkingDirectory = "/tmp"
+	cfg.Nginx.AccessLog = "/var/log/meshify/custom/review-app.access.log"
+	cfg.Nginx.GoAccess.Enabled = true
+	cfg.Nginx.GoAccess.AuthBasicUserFile = "/etc/review-app/goaccess.htpasswd"
+	data, err := cfg.ExportYAML()
+	if err != nil {
+		t.Fatalf("ExportYAML() error = %v", err)
+	}
+	data = bytes.Replace(data, []byte("/var/log/meshify/custom/review-app.access.log"), []byte("/tmp/review-app.access.log"), 1)
+	if err := os.WriteFile(configPath, data, 0o600); err != nil {
+		t.Fatalf("WriteFile(config) error = %v", err)
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatalf("Execute() error = nil, want invalid config failure\nstdout=%s", stdout)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Status != "invalid-config" {
+		t.Fatalf("response.Status = %q, want invalid-config; response = %#v", response.Status, response)
+	}
+	if got, ok := fieldValue(response.Fields, "details"); !ok || !strings.Contains(got, "PrivateTmp=true") || !strings.Contains(got, "/tmp") {
+		t.Fatalf("details = %q, %v; fields = %#v", got, ok, response.Fields)
+	}
+}
+
+func TestExecute_AppDeployDisabledGoAccessRemovesStaleRuntime(t *testing.T) {
+	configPath := writeReviewAppConfig(t)
+	cfg, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	staged := stagedRuntimeWithTempHostPaths(t, cfg)
+	stubPassingAppDeployPreflight(t)
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+	goAccessUnitPath := "/etc/systemd/system/" + names.GoAccessServiceUnit
+
+	events := []string{}
+	goAccessRuntimeRemoveCommandDisablesUnit := false
+	previousStage := stageAppRuntimeFilesFn
+	previousInstaller := newAppFileInstallerFn
+	previousExecutor := newHostExecutorFn
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		if event := appDeployOrderEvent(command); event != "" {
+			events = append(events, event)
+		}
+		actual := unwrapMaybeSudoHostCommand(command)
+		if actual.Name == "sh" && len(actual.Args) >= 3 && actual.Args[2] == "meshify-app-remove-goaccess-runtime" {
+			goAccessRuntimeRemoveCommandDisablesUnit = strings.Contains(actual.Args[1], `systemctl disable --now "$unit"`)
+			return host.Result{Stdout: strings.Join([]string{goAccessUnitPath, names.GoAccessConfigPath, names.GoAccessLogrotatePath}, "\n") + "\n"}, nil
+		}
+		if actual.Name == "systemctl" {
+			switch strings.Join(actual.Args, " ") {
+			case "enable " + names.GoAccessServiceUnit, "restart " + names.GoAccessServiceUnit:
+				t.Fatalf("disabled GoAccess deploy must not activate %s", names.GoAccessServiceUnit)
+			}
+		}
+		return host.Result{}, nil
+	}}
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+		newAppFileInstallerFn = previousInstaller
+		newHostExecutorFn = previousExecutor
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return staged, nil
+	}
+	newAppFileInstallerFn = func(host.Executor, host.PrivilegeStrategy) appStagedFileInstaller {
+		return recordingAppInstaller{
+			events:  &events,
+			results: []host.FileInstallResult{{HostPath: "/etc/nginx/sites-available/review-app.conf", Changed: true}},
+		}
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err != nil {
+		t.Fatalf("Execute() error = %v\nstdout=%s", err, stdout)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Status != "applied" {
+		t.Fatalf("response = %#v, want applied", response)
+	}
+	if !goAccessRuntimeRemoveCommandDisablesUnit {
+		t.Fatalf("disabled GoAccess deploy used stale runtime removal command without systemctl disable --now for %s", names.GoAccessServiceUnit)
+	}
+	assertEventBefore(t, events, "guard-goaccess-runtime-removal", "apt-install")
+	assertEventBefore(t, events, "install-files", "nginx-enable")
+	assertEventBefore(t, events, "nginx-reload", "remove-goaccess-runtime")
+	assertEventBefore(t, events, "remove-goaccess-runtime", "lego-migrate")
+	assertEventBefore(t, events, "remove-goaccess-runtime", "systemctl-enable review-app.service")
+	assertEventBefore(t, events, "remove-goaccess-runtime", "systemctl-restart review-app.service")
+	assertEventBefore(t, events, "remove-goaccess-runtime", "systemctl-enable review-app-lego-renew.timer")
+	paths, ok := fieldValue(response.Fields, "modified paths")
+	if !ok {
+		t.Fatalf("fields = %#v, want modified paths", response.Fields)
+	}
+	for _, want := range []string{goAccessUnitPath, names.GoAccessConfigPath, names.GoAccessLogrotatePath} {
+		if !strings.Contains(paths, want) {
+			t.Fatalf("modified paths = %q, want %s", paths, want)
+		}
+	}
+	actions, ok := fieldValue(response.Fields, "host actions")
+	if !ok || !strings.Contains(actions, "removed stale GoAccess runtime") {
+		t.Fatalf("host actions = %q, %v; fields = %#v", actions, ok, response.Fields)
+	}
+}
+
+func TestExecute_AppDeployDisabledGoAccessStopsManagedListenerBeforeAppPortReuse(t *testing.T) {
+	configPath := writeReviewAppConfig(t)
+	cfg, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	staged := stagedRuntimeWithTempHostPaths(t, cfg)
+	stubPassingAppDeployPreflight(t)
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+
+	events := []string{}
+	previousStage := stageAppRuntimeFilesFn
+	previousInstaller := newAppFileInstallerFn
+	previousExecutor := newHostExecutorFn
+	previousDetectBlockers := detectAppGoAccessAppListenBlockersFn
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		if event := appDeployOrderEvent(command); event != "" {
+			events = append(events, event)
+		}
+		actual := unwrapMaybeSudoHostCommand(command)
+		if actual.Name == "systemctl" && strings.Join(actual.Args, " ") == "stop "+names.GoAccessServiceUnit {
+			events = append(events, "systemctl-stop "+names.GoAccessServiceUnit)
+		}
+		return host.Result{}, nil
+	}}
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+		newAppFileInstallerFn = previousInstaller
+		newHostExecutorFn = previousExecutor
+		detectAppGoAccessAppListenBlockersFn = previousDetectBlockers
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return staged, nil
+	}
+	newAppFileInstallerFn = func(host.Executor, host.PrivilegeStrategy) appStagedFileInstaller {
+		return recordingAppInstaller{
+			events:  &events,
+			results: []host.FileInstallResult{{HostPath: "/etc/nginx/sites-available/review-app.conf", Changed: true}},
+		}
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+	detectAppGoAccessAppListenBlockersFn = func(got appconfig.Config, gotNames appsvc.Names) ([]preflight.PortBinding, bool) {
+		if got.Nginx.GoAccess.Enabled || got.App.Listen != cfg.App.Listen || gotNames.GoAccessServiceUnit != names.GoAccessServiceUnit {
+			t.Fatalf("detectAppGoAccessAppListenBlockersFn got enabled %t app.listen %q unit %q, want disabled %q %q", got.Nginx.GoAccess.Enabled, got.App.Listen, gotNames.GoAccessServiceUnit, cfg.App.Listen, names.GoAccessServiceUnit)
+		}
+		return []preflight.PortBinding{{Port: 18001, Protocol: "tcp", InUse: true, LocalAddress: "127.0.0.1", Process: "goaccess", PID: 123}}, true
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err != nil {
+		t.Fatalf("Execute() error = %v\nstdout=%s", err, stdout)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Status != "applied" {
+		t.Fatalf("response = %#v, want applied", response)
+	}
+	stopEvent := "systemctl-stop " + names.GoAccessServiceUnit
+	assertEventBefore(t, events, "install-files", stopEvent)
+	assertEventBefore(t, events, "systemd-daemon-reload", stopEvent)
+	assertEventBefore(t, events, "nginx-enable", "nginx-test")
+	assertEventBefore(t, events, "nginx-test", stopEvent)
+	assertEventBefore(t, events, stopEvent, "systemctl-enable review-app.service")
+	assertEventBefore(t, events, stopEvent, "systemctl-restart review-app.service")
+	assertEventBefore(t, events, "systemctl-restart review-app.service", "nginx-reload")
+	assertEventBefore(t, events, stopEvent, "remove-goaccess-runtime")
+	actions, ok := fieldValue(response.Fields, "host actions")
+	if !ok || !strings.Contains(actions, "stopped GoAccess systemd service before app listener reuse") {
+		t.Fatalf("host actions = %q, %v; fields = %#v", actions, ok, response.Fields)
+	}
+}
+
+func TestExecute_AppDeployDisabledGoAccessRejectsForeignRuntimeCandidates(t *testing.T) {
+	configPath := writeReviewAppConfig(t)
+	cfg, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	staged := stagedRuntimeWithTempHostPaths(t, cfg)
+	stubPassingAppDeployPreflight(t)
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+
+	events := []string{}
+	guardCommandSeen := false
+	previousStage := stageAppRuntimeFilesFn
+	previousInstaller := newAppFileInstallerFn
+	previousExecutor := newHostExecutorFn
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		if event := appDeployOrderEvent(command); event != "" {
+			events = append(events, event)
+		}
+		actual := unwrapMaybeSudoHostCommand(command)
+		if actual.Name == "sh" && len(actual.Args) >= 3 && actual.Args[2] == "meshify-app-guard-goaccess-runtime-removal" {
+			guardCommandSeen = true
+			return host.Result{Stderr: names.GoAccessConfigPath + " exists but is not a Meshify-managed GoAccess config\n", ExitCode: 1}, errors.New("foreign GoAccess runtime")
+		}
+		if actual.Name == "systemctl" {
+			switch strings.Join(actual.Args, " ") {
+			case "enable " + names.GoAccessServiceUnit, "restart " + names.GoAccessServiceUnit:
+				t.Fatalf("disabled GoAccess deploy must not activate %s", names.GoAccessServiceUnit)
+			}
+		}
+		return host.Result{}, nil
+	}}
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+		newAppFileInstallerFn = previousInstaller
+		newHostExecutorFn = previousExecutor
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return staged, nil
+	}
+	newAppFileInstallerFn = func(host.Executor, host.PrivilegeStrategy) appStagedFileInstaller {
+		return recordingAppInstaller{
+			events:  &events,
+			results: []host.FileInstallResult{{HostPath: "/etc/nginx/sites-available/review-app.conf", Changed: true}},
+		}
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want foreign GoAccess runtime failure")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	if !guardCommandSeen {
+		t.Fatal("disabled GoAccess deploy did not run stale runtime cleanup guard")
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Status != "failed" || response.Summary != "GoAccess stale runtime removal check failed" {
+		t.Fatalf("response = %#v, want stale GoAccess cleanup guard failure", response)
+	}
+	details, ok := fieldValue(response.Fields, "details")
+	if !ok || !strings.Contains(details, "foreign GoAccess runtime") {
+		t.Fatalf("details = %q, %v; fields = %#v", details, ok, response.Fields)
+	}
+	for _, unwanted := range []string{
+		"apt-install",
+		"install-command",
+		"systemctl-enable-now nginx.service",
+		"systemd-daemon-reload",
+		"install-files",
+		"nginx-enable",
+		"nginx-reload",
+		"remove-goaccess-runtime",
+		"lego-migrate",
+		"lego-run",
+		"systemctl-enable review-app.service",
+		"systemctl-restart review-app.service",
+		"systemctl-enable review-app-lego-renew.timer",
+		"systemctl-start review-app-lego-renew.timer",
+	} {
+		if slices.Contains(events, unwanted) {
+			t.Fatalf("events = %v, want no %q after stale GoAccess cleanup failure", events, unwanted)
+		}
+	}
+}
+
+func TestExecute_AppDeployGoAccessStopsManagedListenerBeforeAppPortReuse(t *testing.T) {
+	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
+		cfg.Nginx.GoAccess.Enabled = true
+		cfg.Nginx.GoAccess.AuthBasicUserFile = "/etc/review-app/goaccess.htpasswd"
+		cfg.Nginx.GoAccess.WebSocketListen = "127.0.0.1:39091"
+	})
+	cfg, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	staged := stagedRuntimeWithTempHostPaths(t, cfg)
+	stubPassingAppDeployPreflight(t)
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+
+	events := []string{}
+	previousStage := stageAppRuntimeFilesFn
+	previousInstaller := newAppFileInstallerFn
+	previousExecutor := newHostExecutorFn
+	previousDetectBlockers := detectAppGoAccessAppListenBlockersFn
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		if event := appDeployOrderEvent(command); event != "" {
+			events = append(events, event)
+		}
+		actual := unwrapMaybeSudoHostCommand(command)
+		if actual.Name == appsvc.GoAccessBinaryPath {
+			switch strings.Join(actual.Args, " ") {
+			case "--version":
+				return host.Result{Stdout: "GoAccess test\n"}, nil
+			case "--help":
+				return host.Result{Stdout: strings.Join(allGoAccessRequiredOptions(), "\n") + "\n"}, nil
+			default:
+				t.Fatalf("unexpected GoAccess command args %#v", actual.Args)
+			}
+		}
+		if actual.Name == "systemctl" {
+			switch strings.Join(actual.Args, " ") {
+			case "stop " + names.GoAccessServiceUnit:
+				events = append(events, "systemctl-stop "+names.GoAccessServiceUnit)
+			case "enable " + names.GoAccessServiceUnit:
+				events = append(events, "systemctl-enable "+names.GoAccessServiceUnit)
+			case "restart " + names.GoAccessServiceUnit:
+				events = append(events, "systemctl-restart "+names.GoAccessServiceUnit)
+			}
+		}
+		return host.Result{}, nil
+	}}
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+		newAppFileInstallerFn = previousInstaller
+		newHostExecutorFn = previousExecutor
+		detectAppGoAccessAppListenBlockersFn = previousDetectBlockers
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return staged, nil
+	}
+	newAppFileInstallerFn = func(host.Executor, host.PrivilegeStrategy) appStagedFileInstaller {
+		return recordingAppInstaller{
+			events:  &events,
+			results: []host.FileInstallResult{{HostPath: "/etc/nginx/sites-available/review-app.conf", Changed: true}},
+		}
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+	detectAppGoAccessAppListenBlockersFn = func(got appconfig.Config, gotNames appsvc.Names) ([]preflight.PortBinding, bool) {
+		if got.App.Listen != cfg.App.Listen || gotNames.GoAccessServiceUnit != names.GoAccessServiceUnit {
+			t.Fatalf("detectAppGoAccessAppListenBlockersFn got app.listen %q unit %q, want %q %q", got.App.Listen, gotNames.GoAccessServiceUnit, cfg.App.Listen, names.GoAccessServiceUnit)
+		}
+		return []preflight.PortBinding{{Port: 18001, Protocol: "tcp", InUse: true, LocalAddress: "127.0.0.1", Process: "goaccess", PID: 123}}, true
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err != nil {
+		t.Fatalf("Execute() error = %v\nstdout=%s", err, stdout)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Status != "applied" {
+		t.Fatalf("response = %#v, want applied", response)
+	}
+	stopEvent := "systemctl-stop " + names.GoAccessServiceUnit
+	assertEventBefore(t, events, "install-files", stopEvent)
+	assertEventBefore(t, events, "systemd-daemon-reload", stopEvent)
+	assertEventBefore(t, events, "nginx-enable", "nginx-test")
+	assertEventBefore(t, events, "nginx-test", stopEvent)
+	assertEventBefore(t, events, stopEvent, "systemctl-enable review-app.service")
+	assertEventBefore(t, events, stopEvent, "systemctl-restart review-app.service")
+	assertEventBefore(t, events, "systemctl-restart review-app.service", "nginx-reload")
+	assertEventBefore(t, events, stopEvent, "systemctl-restart "+names.GoAccessServiceUnit)
+	actions, ok := fieldValue(response.Fields, "host actions")
+	if !ok || !strings.Contains(actions, "stopped GoAccess systemd service before app listener reuse") {
+		t.Fatalf("host actions = %q, %v; fields = %#v", actions, ok, response.Fields)
+	}
+}
+
+func TestExecute_AppDeployDoesNotStopManagedGoAccessListenerBeforeWriteFailure(t *testing.T) {
+	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
+		cfg.Nginx.GoAccess.Enabled = true
+		cfg.Nginx.GoAccess.AuthBasicUserFile = "/etc/review-app/goaccess.htpasswd"
+		cfg.Nginx.GoAccess.WebSocketListen = "127.0.0.1:39091"
+	})
+	cfg, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	staged := stagedRuntimeWithTempHostPaths(t, cfg)
+	stubPassingAppDeployPreflight(t)
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+
+	events := []string{}
+	previousStage := stageAppRuntimeFilesFn
+	previousInstaller := newAppFileInstallerFn
+	previousExecutor := newHostExecutorFn
+	previousDetectBlockers := detectAppGoAccessAppListenBlockersFn
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		if event := appDeployOrderEvent(command); event != "" {
+			events = append(events, event)
+		}
+		actual := unwrapMaybeSudoHostCommand(command)
+		if actual.Name == appsvc.GoAccessBinaryPath {
+			switch strings.Join(actual.Args, " ") {
+			case "--version":
+				return host.Result{Stdout: "GoAccess test\n"}, nil
+			case "--help":
+				return host.Result{Stdout: strings.Join(allGoAccessRequiredOptions(), "\n") + "\n"}, nil
+			default:
+				t.Fatalf("unexpected GoAccess command args %#v", actual.Args)
+			}
+		}
+		if actual.Name == "systemctl" && strings.Join(actual.Args, " ") == "stop "+names.GoAccessServiceUnit {
+			events = append(events, "systemctl-stop "+names.GoAccessServiceUnit)
+		}
+		return host.Result{}, nil
+	}}
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+		newAppFileInstallerFn = previousInstaller
+		newHostExecutorFn = previousExecutor
+		detectAppGoAccessAppListenBlockersFn = previousDetectBlockers
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return staged, nil
+	}
+	newAppFileInstallerFn = func(host.Executor, host.PrivilegeStrategy) appStagedFileInstaller {
+		return recordingAppInstaller{
+			events: &events,
+			err:    errors.New("write failed"),
+		}
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+	detectAppGoAccessAppListenBlockersFn = func(got appconfig.Config, gotNames appsvc.Names) ([]preflight.PortBinding, bool) {
+		if got.App.Listen != cfg.App.Listen || gotNames.GoAccessServiceUnit != names.GoAccessServiceUnit {
+			t.Fatalf("detectAppGoAccessAppListenBlockersFn got app.listen %q unit %q, want %q %q", got.App.Listen, gotNames.GoAccessServiceUnit, cfg.App.Listen, names.GoAccessServiceUnit)
+		}
+		return []preflight.PortBinding{{Port: 18001, Protocol: "tcp", InUse: true, LocalAddress: "127.0.0.1", Process: "goaccess", PID: 123}}, true
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want write failure")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Status != "failed" || response.Summary != "Failed to write app runtime files" {
+		t.Fatalf("response = %#v, want write failure", response)
+	}
+	assertEventsAbsent(t, events,
+		"systemctl-stop "+names.GoAccessServiceUnit,
+		"systemctl-restart review-app.service",
+		"systemctl-enable "+names.GoAccessServiceUnit,
+		"systemctl-restart "+names.GoAccessServiceUnit,
+	)
+}
+
+func TestExecute_AppDeployRefreshesManagedAppListenerBeforeGoAccessPortReuse(t *testing.T) {
+	tests := []struct {
+		name         string
+		handoffEvent string
+		configure    func(*appconfig.Config)
+	}{{
+		name:         "listen port move",
+		handoffEvent: "systemctl-restart review-app.service",
+		configure: func(cfg *appconfig.Config) {
+			cfg.App.Listen = "127.0.0.1:18002"
+			cfg.Service.ExecStart = "/bin/true --listen 127.0.0.1:18002"
+			cfg.Nginx.GoAccess.WebSocketListen = "127.0.0.1:18001"
+		},
+	}, {
+		name:         "upstream conversion",
+		handoffEvent: "remove-stale-service",
+		configure: func(cfg *appconfig.Config) {
+			cfg.App.Listen = ""
+			cfg.App.Upstream = "100.64.10.20:18002"
+			cfg.Service.ExecStart = ""
+			cfg.Service.WorkingDirectory = ""
+			cfg.Tailscale.LoginServer = "https://hs.example.com"
+			cfg.Nginx.GoAccess.WebSocketListen = "127.0.0.1:18001"
+		},
+	}}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
+				cfg.Nginx.GoAccess.Enabled = true
+				cfg.Nginx.GoAccess.AuthBasicUserFile = "/etc/review-app/goaccess.htpasswd"
+				tt.configure(cfg)
+			})
+			cfg, err := appconfig.LoadFile(configPath)
+			if err != nil {
+				t.Fatalf("LoadFile() error = %v", err)
+			}
+			staged := stagedRuntimeWithTempHostPaths(t, cfg)
+			stubPassingAppDeployPreflight(t)
+			names, err := appsvc.NewNames(cfg)
+			if err != nil {
+				t.Fatalf("NewNames() error = %v", err)
+			}
+
+			events := []string{}
+			previousStage := stageAppRuntimeFilesFn
+			previousInstaller := newAppFileInstallerFn
+			previousExecutor := newHostExecutorFn
+			previousDetectBlockers := detectAppGoAccessAppPortBlockersFn
+			runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+				if event := appDeployOrderEvent(command); event != "" {
+					events = append(events, event)
+				}
+				actual := unwrapMaybeSudoHostCommand(command)
+				if actual.Name == appsvc.GoAccessBinaryPath {
+					switch strings.Join(actual.Args, " ") {
+					case "--version":
+						return host.Result{Stdout: "GoAccess test\n"}, nil
+					case "--help":
+						return host.Result{Stdout: strings.Join(allGoAccessRequiredOptions(), "\n") + "\n"}, nil
+					default:
+						t.Fatalf("unexpected GoAccess command args %#v", actual.Args)
+					}
+				}
+				if actual.Name == "tailscale" {
+					switch strings.Join(actual.Args, " ") {
+					case "version":
+						return host.Result{Command: command, Stdout: "1.80.0\n"}, nil
+					case "status --json":
+						return host.Result{Command: command, Stdout: `{"BackendState":"Running","Self":{"Online":true}}`}, nil
+					case "debug prefs":
+						return host.Result{Command: command, Stdout: `{"ControlURL":"https://hs.example.com","RouteAll":false,"CorpDNS":false,"ShieldsUp":true}`}, nil
+					}
+				}
+				if actual.Name == "cat" && len(actual.Args) == 1 && actual.Args[0] == "/var/lib/meshify/tailscale-client.json" {
+					return host.Result{Command: command, Stdout: `{"login_server":"https://hs.example.com","accept_dns":false,"accept_routes":false,"shields_up":true,"managed_by":"meshify"}`}, nil
+				}
+				return host.Result{}, nil
+			}}
+			t.Cleanup(func() {
+				stageAppRuntimeFilesFn = previousStage
+				newAppFileInstallerFn = previousInstaller
+				newHostExecutorFn = previousExecutor
+				detectAppGoAccessAppPortBlockersFn = previousDetectBlockers
+			})
+			stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+				return staged, nil
+			}
+			newAppFileInstallerFn = func(host.Executor, host.PrivilegeStrategy) appStagedFileInstaller {
+				return recordingAppInstaller{
+					events:  &events,
+					results: []host.FileInstallResult{{HostPath: "/etc/nginx/sites-available/review-app.conf", Changed: true}},
+				}
+			}
+			newHostExecutorFn = func(env map[string]string) host.Executor {
+				return host.NewExecutor(runner, env)
+			}
+			detectAppGoAccessAppPortBlockersFn = func(got appconfig.Config, gotNames appsvc.Names) ([]preflight.PortBinding, bool) {
+				if gotNames.ServiceUnit != names.ServiceUnit || got.Nginx.GoAccess.WebSocketListen != cfg.Nginx.GoAccess.WebSocketListen {
+					t.Fatalf("detectAppGoAccessAppPortBlockersFn got unit %q listen %q, want %q %q", gotNames.ServiceUnit, got.Nginx.GoAccess.WebSocketListen, names.ServiceUnit, cfg.Nginx.GoAccess.WebSocketListen)
+				}
+				return []preflight.PortBinding{{Port: 18001, Protocol: "tcp", InUse: true, LocalAddress: "127.0.0.1", Process: "review-app", PID: 123}}, true
+			}
+
+			stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+			if err != nil {
+				t.Fatalf("Execute() error = %v\nstdout=%s", err, stdout)
+			}
+			if stderr != "" {
+				t.Fatalf("stderr = %q, want empty", stderr)
+			}
+			response := mustDecodeResponse(t, stdout)
+			if response.Status != "applied" {
+				t.Fatalf("response = %#v, want applied", response)
+			}
+			if slices.Contains(events, "systemctl-stop review-app.service") {
+				t.Fatalf("events = %v, did not expect an explicit app stop before GoAccess listener reuse", events)
+			}
+			assertEventBefore(t, events, "install-files", tt.handoffEvent)
+			assertEventBefore(t, events, "http01-bootstrap", tt.handoffEvent)
+			assertEventBefore(t, events, "nginx-enable", "nginx-test")
+			assertEventBefore(t, events, "nginx-test", tt.handoffEvent)
+			assertEventBefore(t, events, tt.handoffEvent, "nginx-reload")
+			assertEventBefore(t, events, tt.handoffEvent, "systemctl-restart "+names.GoAccessServiceUnit)
+		})
+	}
+}
+
+func TestExecute_AppDeployDoesNotStopManagedAppListenerBeforeWriteFailure(t *testing.T) {
+	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
+		cfg.Nginx.GoAccess.Enabled = true
+		cfg.Nginx.GoAccess.AuthBasicUserFile = "/etc/review-app/goaccess.htpasswd"
+		cfg.App.Listen = "127.0.0.1:18002"
+		cfg.Service.ExecStart = "/bin/true --listen 127.0.0.1:18002"
+		cfg.Nginx.GoAccess.WebSocketListen = "127.0.0.1:18001"
+	})
+	cfg, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	staged := stagedRuntimeWithTempHostPaths(t, cfg)
+	stubPassingAppDeployPreflight(t)
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+
+	events := []string{}
+	previousStage := stageAppRuntimeFilesFn
+	previousInstaller := newAppFileInstallerFn
+	previousExecutor := newHostExecutorFn
+	previousDetectBlockers := detectAppGoAccessAppPortBlockersFn
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		if event := appDeployOrderEvent(command); event != "" {
+			events = append(events, event)
+		}
+		actual := unwrapMaybeSudoHostCommand(command)
+		if actual.Name == appsvc.GoAccessBinaryPath {
+			switch strings.Join(actual.Args, " ") {
+			case "--version":
+				return host.Result{Stdout: "GoAccess test\n"}, nil
+			case "--help":
+				return host.Result{Stdout: strings.Join(allGoAccessRequiredOptions(), "\n") + "\n"}, nil
+			default:
+				t.Fatalf("unexpected GoAccess command args %#v", actual.Args)
+			}
+		}
+		return host.Result{}, nil
+	}}
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+		newAppFileInstallerFn = previousInstaller
+		newHostExecutorFn = previousExecutor
+		detectAppGoAccessAppPortBlockersFn = previousDetectBlockers
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return staged, nil
+	}
+	newAppFileInstallerFn = func(host.Executor, host.PrivilegeStrategy) appStagedFileInstaller {
+		return recordingAppInstaller{
+			events: &events,
+			err:    errors.New("write failed"),
+		}
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+	detectAppGoAccessAppPortBlockersFn = func(got appconfig.Config, gotNames appsvc.Names) ([]preflight.PortBinding, bool) {
+		if gotNames.ServiceUnit != names.ServiceUnit || got.Nginx.GoAccess.WebSocketListen != cfg.Nginx.GoAccess.WebSocketListen {
+			t.Fatalf("detectAppGoAccessAppPortBlockersFn got unit %q listen %q, want %q %q", gotNames.ServiceUnit, got.Nginx.GoAccess.WebSocketListen, names.ServiceUnit, cfg.Nginx.GoAccess.WebSocketListen)
+		}
+		return []preflight.PortBinding{{Port: 18001, Protocol: "tcp", InUse: true, LocalAddress: "127.0.0.1", Process: "review-app", PID: 123}}, true
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want write failure")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Status != "failed" || response.Summary != "Failed to write app runtime files" {
+		t.Fatalf("response = %#v, want write failure", response)
+	}
+	assertEventsAbsent(t, events,
+		"systemctl-stop review-app.service",
+		"systemctl-restart review-app.service",
+		"systemctl-enable review-app-goaccess.service",
+		"systemctl-restart review-app-goaccess.service",
+	)
+}
+
+func TestExecute_AppDeployGoAccessFailsEarlyWhenManagedListenerDetectionIncomplete(t *testing.T) {
+	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
+		cfg.Nginx.GoAccess.Enabled = true
+		cfg.Nginx.GoAccess.AuthBasicUserFile = "/etc/review-app/goaccess.htpasswd"
+	})
+	cfg, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	staged := stagedRuntimeWithTempHostPaths(t, cfg)
+	stubPassingAppDeployPreflight(t)
+
+	events := []string{}
+	previousStage := stageAppRuntimeFilesFn
+	previousInstaller := newAppFileInstallerFn
+	previousExecutor := newHostExecutorFn
+	previousDetectBlockers := detectAppGoAccessAppListenBlockersFn
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		if event := appDeployOrderEvent(command); event != "" {
+			events = append(events, event)
+		}
+		return host.Result{}, nil
+	}}
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+		newAppFileInstallerFn = previousInstaller
+		newHostExecutorFn = previousExecutor
+		detectAppGoAccessAppListenBlockersFn = previousDetectBlockers
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return staged, nil
+	}
+	newAppFileInstallerFn = func(host.Executor, host.PrivilegeStrategy) appStagedFileInstaller {
+		return recordingAppInstaller{
+			events:  &events,
+			results: []host.FileInstallResult{{HostPath: "/etc/nginx/sites-available/review-app.conf", Changed: true}},
+		}
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+	detectAppGoAccessAppListenBlockersFn = func(appconfig.Config, appsvc.Names) ([]preflight.PortBinding, bool) {
+		return nil, false
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want GoAccess listener detection failure")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Status != "failed" || response.Summary != "GoAccess current listener check failed" {
+		t.Fatalf("response = %#v, want GoAccess current listener check failure", response)
+	}
+	assertEventsAbsent(t, events,
+		"apt-install",
+		"install-command",
+		"systemctl-enable-now nginx.service",
+		"systemd-daemon-reload",
+		"install-files",
+		"lego-migrate",
+		"lego-run",
+		"nginx-enable",
+		"nginx-reload",
+		"systemctl-enable review-app.service",
+		"systemctl-restart review-app.service",
+		"systemctl-enable review-app-goaccess.service",
+		"systemctl-restart review-app-goaccess.service",
+		"systemctl-enable review-app-lego-renew.timer",
+		"systemctl-start review-app-lego-renew.timer",
+	)
+}
+
+func TestExecute_AppDeployGoAccessStopFailureBlocksAfterNginxValidationBeforeCutover(t *testing.T) {
+	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
+		cfg.Nginx.GoAccess.Enabled = true
+		cfg.Nginx.GoAccess.AuthBasicUserFile = "/etc/review-app/goaccess.htpasswd"
+	})
+	cfg, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	staged := stagedRuntimeWithTempHostPaths(t, cfg)
+	stubPassingAppDeployPreflight(t)
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+
+	events := []string{}
+	previousStage := stageAppRuntimeFilesFn
+	previousInstaller := newAppFileInstallerFn
+	previousExecutor := newHostExecutorFn
+	previousDetectBlockers := detectAppGoAccessAppListenBlockersFn
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		if event := appDeployOrderEvent(command); event != "" {
+			events = append(events, event)
+		}
+		actual := unwrapMaybeSudoHostCommand(command)
+		if actual.Name == "systemctl" && strings.Join(actual.Args, " ") == "stop "+names.GoAccessServiceUnit {
+			events = append(events, "systemctl-stop "+names.GoAccessServiceUnit)
+			return host.Result{Stderr: "stop failed\n", ExitCode: 1}, errors.New("stop failed")
+		}
+		if actual.Name == appsvc.GoAccessBinaryPath {
+			switch strings.Join(actual.Args, " ") {
+			case "--version":
+				return host.Result{Stdout: "GoAccess test\n"}, nil
+			case "--help":
+				return host.Result{Stdout: strings.Join(allGoAccessRequiredOptions(), "\n") + "\n"}, nil
+			default:
+				t.Fatalf("unexpected GoAccess command args %#v", actual.Args)
+			}
+		}
+		return host.Result{}, nil
+	}}
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+		newAppFileInstallerFn = previousInstaller
+		newHostExecutorFn = previousExecutor
+		detectAppGoAccessAppListenBlockersFn = previousDetectBlockers
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return staged, nil
+	}
+	newAppFileInstallerFn = func(host.Executor, host.PrivilegeStrategy) appStagedFileInstaller {
+		return recordingAppInstaller{
+			events:  &events,
+			results: []host.FileInstallResult{{HostPath: "/etc/nginx/sites-available/review-app.conf", Changed: true}},
+		}
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+	detectAppGoAccessAppListenBlockersFn = func(appconfig.Config, appsvc.Names) ([]preflight.PortBinding, bool) {
+		return []preflight.PortBinding{{Port: 18001, Protocol: "tcp", InUse: true, LocalAddress: "127.0.0.1", Process: "goaccess", PID: 123}}, true
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want GoAccess stop failure")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Status != "failed" || response.Summary != "Failed to stop current GoAccess service before app listener reuse" {
+		t.Fatalf("response = %#v, want GoAccess stop failure", response)
+	}
+	details, ok := fieldValue(response.Fields, "details")
+	if !ok || !strings.Contains(details, "stop failed") {
+		t.Fatalf("details = %q, %v; fields = %#v", details, ok, response.Fields)
+	}
+	assertEventBefore(t, events, "nginx-enable", "nginx-test")
+	assertEventBefore(t, events, "nginx-test", "systemctl-stop "+names.GoAccessServiceUnit)
+	assertEventsAbsent(t, events,
+		"lego-migrate",
+		"lego-run",
+		"nginx-reload",
+		"systemctl-enable review-app.service",
+		"systemctl-restart review-app.service",
+		"systemctl-enable review-app-goaccess.service",
+		"systemctl-restart review-app-goaccess.service",
+		"systemctl-enable review-app-lego-renew.timer",
+		"systemctl-start review-app-lego-renew.timer",
+	)
+}
+
+func TestExecute_AppDeployDoesNotStopManagedGoAccessListenerBeforeNginxTestFailure(t *testing.T) {
+	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
+		cfg.Nginx.GoAccess.Enabled = true
+		cfg.Nginx.GoAccess.AuthBasicUserFile = "/etc/review-app/goaccess.htpasswd"
+	})
+	cfg, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	staged := stagedRuntimeWithTempHostPaths(t, cfg)
+	stubPassingAppDeployPreflight(t)
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+
+	events := []string{}
+	previousStage := stageAppRuntimeFilesFn
+	previousInstaller := newAppFileInstallerFn
+	previousExecutor := newHostExecutorFn
+	previousDetectBlockers := detectAppGoAccessAppListenBlockersFn
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		if event := appDeployOrderEvent(command); event != "" {
+			events = append(events, event)
+		}
+		actual := unwrapMaybeSudoHostCommand(command)
+		if actual.Name == appsvc.GoAccessBinaryPath {
+			switch strings.Join(actual.Args, " ") {
+			case "--version":
+				return host.Result{Stdout: "GoAccess test\n"}, nil
+			case "--help":
+				return host.Result{Stdout: strings.Join(allGoAccessRequiredOptions(), "\n") + "\n"}, nil
+			default:
+				t.Fatalf("unexpected GoAccess command args %#v", actual.Args)
+			}
+		}
+		if actual.Name == "nginx" && strings.Join(actual.Args, " ") == "-t" {
+			return host.Result{Stderr: "nginx config failed\n", ExitCode: 1}, errors.New("nginx config failed")
+		}
+		if actual.Name == "systemctl" && strings.Join(actual.Args, " ") == "stop "+names.GoAccessServiceUnit {
+			events = append(events, "systemctl-stop "+names.GoAccessServiceUnit)
+		}
+		return host.Result{}, nil
+	}}
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+		newAppFileInstallerFn = previousInstaller
+		newHostExecutorFn = previousExecutor
+		detectAppGoAccessAppListenBlockersFn = previousDetectBlockers
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return staged, nil
+	}
+	newAppFileInstallerFn = func(host.Executor, host.PrivilegeStrategy) appStagedFileInstaller {
+		return recordingAppInstaller{
+			events:  &events,
+			results: []host.FileInstallResult{{HostPath: "/etc/nginx/sites-available/review-app.conf", Changed: true}},
+		}
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+	detectAppGoAccessAppListenBlockersFn = func(appconfig.Config, appsvc.Names) ([]preflight.PortBinding, bool) {
+		return []preflight.PortBinding{{Port: 18001, Protocol: "tcp", InUse: true, LocalAddress: "127.0.0.1", Process: "goaccess", PID: 123}}, true
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want Nginx test failure")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Status != "failed" || response.Summary != "Failed to enable app Nginx site" {
+		t.Fatalf("response = %#v, want Nginx activation failure", response)
+	}
+	assertEventBefore(t, events, "nginx-enable", "nginx-test")
+	assertEventsAbsent(t, events,
+		"systemctl-stop "+names.GoAccessServiceUnit,
+		"systemctl-enable review-app.service",
+		"systemctl-restart review-app.service",
+		"nginx-reload",
+		"lego-migrate",
+		"lego-run",
+		"systemctl-enable review-app-goaccess.service",
+		"systemctl-restart review-app-goaccess.service",
+	)
+}
+
+func TestExecute_AppDeployGoAccessListenerHandoffSurvivesCertificateFailure(t *testing.T) {
+	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
+		cfg.Nginx.GoAccess.Enabled = true
+		cfg.Nginx.GoAccess.AuthBasicUserFile = "/etc/review-app/goaccess.htpasswd"
+	})
+	cfg, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	staged := stagedRuntimeWithTempHostPaths(t, cfg)
+	stubPassingAppDeployPreflight(t)
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+
+	events := []string{}
+	previousStage := stageAppRuntimeFilesFn
+	previousInstaller := newAppFileInstallerFn
+	previousExecutor := newHostExecutorFn
+	previousDetectBlockers := detectAppGoAccessAppListenBlockersFn
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		if event := appDeployOrderEvent(command); event != "" {
+			events = append(events, event)
+		}
+		actual := unwrapMaybeSudoHostCommand(command)
+		if actual.Name == appsvc.GoAccessBinaryPath {
+			switch strings.Join(actual.Args, " ") {
+			case "--version":
+				return host.Result{Stdout: "GoAccess test\n"}, nil
+			case "--help":
+				return host.Result{Stdout: strings.Join(allGoAccessRequiredOptions(), "\n") + "\n"}, nil
+			default:
+				t.Fatalf("unexpected GoAccess command args %#v", actual.Args)
+			}
+		}
+		if actual.Name == "systemctl" && strings.Join(actual.Args, " ") == "stop "+names.GoAccessServiceUnit {
+			events = append(events, "systemctl-stop "+names.GoAccessServiceUnit)
+		}
+		if actual.Name == "sh" && len(actual.Args) >= 3 && actual.Args[2] == "meshify-app-lego-issue-or-renew" {
+			return host.Result{Stderr: "certificate failed\n", ExitCode: 1}, errors.New("certificate failed")
+		}
+		return host.Result{}, nil
+	}}
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+		newAppFileInstallerFn = previousInstaller
+		newHostExecutorFn = previousExecutor
+		detectAppGoAccessAppListenBlockersFn = previousDetectBlockers
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return staged, nil
+	}
+	newAppFileInstallerFn = func(host.Executor, host.PrivilegeStrategy) appStagedFileInstaller {
+		return recordingAppInstaller{
+			events:  &events,
+			results: []host.FileInstallResult{{HostPath: "/etc/nginx/sites-available/review-app.conf", Changed: true}},
+		}
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+	detectAppGoAccessAppListenBlockersFn = func(appconfig.Config, appsvc.Names) ([]preflight.PortBinding, bool) {
+		return []preflight.PortBinding{{Port: 18001, Protocol: "tcp", InUse: true, LocalAddress: "127.0.0.1", Process: "goaccess", PID: 123}}, true
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want certificate failure")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Status != "failed" || response.Summary != "Failed to issue app TLS certificate" {
+		t.Fatalf("response = %#v, want certificate failure", response)
+	}
+	stopEvent := "systemctl-stop " + names.GoAccessServiceUnit
+	assertEventBefore(t, events, "nginx-test", stopEvent)
+	assertEventBefore(t, events, stopEvent, "systemctl-enable review-app.service")
+	assertEventBefore(t, events, stopEvent, "systemctl-restart review-app.service")
+	assertEventBefore(t, events, "systemctl-restart review-app.service", "nginx-reload")
+	assertEventBefore(t, events, "nginx-reload", "lego-migrate")
+	assertEventBefore(t, events, "lego-migrate", "lego-run")
+	assertEventsAbsent(t, events,
+		"systemctl-enable review-app-goaccess.service",
+		"systemctl-restart review-app-goaccess.service",
+		"systemctl-enable review-app-lego-renew.timer",
+		"systemctl-start review-app-lego-renew.timer",
+	)
+}
+
+func TestExecute_AppDeployGoAccessServiceFailureBlocksRenewTimer(t *testing.T) {
+	tests := []struct {
+		name        string
+		failCommand string
+		wantSummary string
+		wantAbsent  []string
+	}{
+		{
+			name:        "enable",
+			failCommand: "enable review-app-goaccess.service",
+			wantSummary: "Failed to enable GoAccess service",
+			wantAbsent:  []string{"systemctl-restart review-app-goaccess.service"},
+		},
+		{
+			name:        "restart",
+			failCommand: "restart review-app-goaccess.service",
+			wantSummary: "Failed to restart GoAccess service",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
+				cfg.Nginx.GoAccess.Enabled = true
+				cfg.Nginx.GoAccess.AuthBasicUserFile = "/etc/review-app/goaccess.htpasswd"
+			})
+			cfg, err := appconfig.LoadFile(configPath)
+			if err != nil {
+				t.Fatalf("LoadFile() error = %v", err)
+			}
+			staged := stagedRuntimeWithTempHostPaths(t, cfg)
+			stubPassingAppDeployPreflight(t)
+
+			events := []string{}
+			previousStage := stageAppRuntimeFilesFn
+			previousInstaller := newAppFileInstallerFn
+			previousExecutor := newHostExecutorFn
+			runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+				if event := appDeployOrderEvent(command); event != "" {
+					events = append(events, event)
+				}
+				actual := unwrapMaybeSudoHostCommand(command)
+				if actual.Name == appsvc.GoAccessBinaryPath {
+					switch strings.Join(actual.Args, " ") {
+					case "--version":
+						return host.Result{Stdout: "GoAccess test\n"}, nil
+					case "--help":
+						return host.Result{Stdout: strings.Join(allGoAccessRequiredOptions(), "\n") + "\n"}, nil
+					default:
+						t.Fatalf("unexpected GoAccess command args %#v", actual.Args)
+					}
+				}
+				if actual.Name == "systemctl" && strings.Join(actual.Args, " ") == tt.failCommand {
+					return host.Result{Stderr: tt.failCommand + " failed\n", ExitCode: 1}, errors.New(tt.failCommand + " failed")
+				}
+				return host.Result{}, nil
+			}}
+			t.Cleanup(func() {
+				stageAppRuntimeFilesFn = previousStage
+				newAppFileInstallerFn = previousInstaller
+				newHostExecutorFn = previousExecutor
+			})
+			stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+				return staged, nil
+			}
+			newAppFileInstallerFn = func(host.Executor, host.PrivilegeStrategy) appStagedFileInstaller {
+				return recordingAppInstaller{
+					events:  &events,
+					results: []host.FileInstallResult{{HostPath: "/etc/nginx/sites-available/review-app.conf", Changed: true}},
+				}
+			}
+			newHostExecutorFn = func(env map[string]string) host.Executor {
+				return host.NewExecutor(runner, env)
+			}
+
+			stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+			if err == nil {
+				t.Fatalf("Execute() error = nil, want %s", tt.wantSummary)
+			}
+			if stderr != "" {
+				t.Fatalf("stderr = %q, want empty", stderr)
+			}
+			response := mustDecodeResponse(t, stdout)
+			if response.Status != "failed" || response.Summary != tt.wantSummary {
+				t.Fatalf("response = %#v, want %s", response, tt.wantSummary)
+			}
+			assertEventsAbsent(t, events,
+				"systemctl-enable review-app-lego-renew.timer",
+				"systemctl-start review-app-lego-renew.timer",
+			)
+			assertEventsAbsent(t, events, tt.wantAbsent...)
+		})
+	}
+}
+
+func TestExecute_AppDeployExplicitGoAccessLogRemovesStaleManagedLogrotate(t *testing.T) {
+	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
+		cfg.Nginx.AccessLog = "/var/log/meshify/custom/review-app.access.log"
+		cfg.Nginx.GoAccess.Enabled = true
+		cfg.Nginx.GoAccess.AuthBasicUserFile = "/etc/review-app/goaccess.htpasswd"
+	})
+	cfg, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	staged := stagedRuntimeWithTempHostPaths(t, cfg)
+	stubPassingAppDeployPreflight(t)
+	detectAppGoAccessLogFileStateFn = func(appconfig.Config) (bool, bool, string) {
+		return true, true, "explicit GoAccess access log is readable"
+	}
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+
+	events := []string{}
+	previousStage := stageAppRuntimeFilesFn
+	previousInstaller := newAppFileInstallerFn
+	previousExecutor := newHostExecutorFn
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		if event := appDeployOrderEvent(command); event != "" {
+			events = append(events, event)
+		}
+		actual := unwrapMaybeSudoHostCommand(command)
+		if actual.Name == appsvc.GoAccessBinaryPath {
+			switch strings.Join(actual.Args, " ") {
+			case "--version":
+				return host.Result{Stdout: "GoAccess test\n"}, nil
+			case "--help":
+				return host.Result{Stdout: strings.Join(allGoAccessRequiredOptions(), "\n") + "\n"}, nil
+			default:
+				t.Fatalf("unexpected GoAccess command args %#v", actual.Args)
+			}
+		}
+		if actual.Name == "sh" && len(actual.Args) >= 3 {
+			switch actual.Args[2] {
+			case "meshify-app-remove-goaccess-logrotate":
+				return host.Result{Stdout: names.GoAccessLogrotatePath + "\n"}, nil
+			case "meshify-app-remove-goaccess-runtime":
+				t.Fatalf("explicit-log GoAccess deploy must not remove active GoAccess service/config")
+			}
+		}
+		return host.Result{}, nil
+	}}
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+		newAppFileInstallerFn = previousInstaller
+		newHostExecutorFn = previousExecutor
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return staged, nil
+	}
+	newAppFileInstallerFn = func(host.Executor, host.PrivilegeStrategy) appStagedFileInstaller {
+		return recordingAppInstaller{
+			events: &events,
+			results: []host.FileInstallResult{
+				{HostPath: "/etc/nginx/sites-available/review-app.conf", Changed: true},
+			},
+		}
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err != nil {
+		t.Fatalf("Execute() error = %v\nstdout=%s", err, stdout)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Status != "applied" {
+		t.Fatalf("response = %#v, want applied", response)
+	}
+	assertEventBefore(t, events, "install-files", "systemd-daemon-reload")
+	assertEventBefore(t, events, "guard-goaccess-logrotate-removal", "apt-install")
+	if slices.Contains(events, "remove-goaccess-logrotate") {
+		assertEventBefore(t, events, "nginx-reload", "remove-goaccess-logrotate")
+		assertEventBefore(t, events, "remove-goaccess-logrotate", "lego-migrate")
+	} else {
+		t.Fatalf("events = %v, want stale logrotate removal", events)
+	}
+	if slices.Contains(events, "remove-goaccess-runtime") {
+		t.Fatalf("events = %v, did not expect stale runtime removal", events)
+	}
+	paths, ok := fieldValue(response.Fields, "modified paths")
+	if !ok || !strings.Contains(paths, names.GoAccessLogrotatePath) {
+		t.Fatalf("modified paths = %q, %v; want removed stale logrotate path", paths, ok)
+	}
+	actions, ok := fieldValue(response.Fields, "host actions")
+	if !ok || !strings.Contains(actions, "removed stale GoAccess logrotate") {
+		t.Fatalf("host actions = %q, %v; want stale GoAccess logrotate removal", actions, ok)
+	}
+}
+
+func TestExecute_AppDeployExplicitGoAccessLogRejectsForeignStaleLogrotateBeforeHostMutations(t *testing.T) {
+	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
+		cfg.Nginx.AccessLog = "/var/log/meshify/custom/review-app.access.log"
+		cfg.Nginx.GoAccess.Enabled = true
+		cfg.Nginx.GoAccess.AuthBasicUserFile = "/etc/review-app/goaccess.htpasswd"
+	})
+	cfg, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	staged := stagedRuntimeWithTempHostPaths(t, cfg)
+	stubPassingAppDeployPreflight(t)
+	detectAppGoAccessLogFileStateFn = func(appconfig.Config) (bool, bool, string) {
+		return true, true, "explicit GoAccess access log is readable"
+	}
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+
+	events := []string{}
+	guardCommandSeen := false
+	previousStage := stageAppRuntimeFilesFn
+	previousInstaller := newAppFileInstallerFn
+	previousExecutor := newHostExecutorFn
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		if event := appDeployOrderEvent(command); event != "" {
+			events = append(events, event)
+		}
+		actual := unwrapMaybeSudoHostCommand(command)
+		if actual.Name == "sh" && len(actual.Args) >= 3 && actual.Args[2] == "meshify-app-guard-goaccess-logrotate-removal" {
+			guardCommandSeen = true
+			return host.Result{Stderr: names.GoAccessLogrotatePath + " exists but is not a Meshify-managed GoAccess logrotate file\n", ExitCode: 1}, errors.New("foreign GoAccess logrotate")
+		}
+		return host.Result{}, nil
+	}}
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+		newAppFileInstallerFn = previousInstaller
+		newHostExecutorFn = previousExecutor
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return staged, nil
+	}
+	newAppFileInstallerFn = func(host.Executor, host.PrivilegeStrategy) appStagedFileInstaller {
+		return recordingAppInstaller{
+			events:  &events,
+			results: []host.FileInstallResult{{HostPath: "/etc/nginx/sites-available/review-app.conf", Changed: true}},
+		}
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want stale GoAccess logrotate guard failure")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	if !guardCommandSeen {
+		t.Fatal("explicit-log GoAccess deploy did not run stale logrotate cleanup guard")
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Status != "failed" || response.Summary != "GoAccess stale logrotate removal check failed" {
+		t.Fatalf("response = %#v, want stale GoAccess logrotate guard failure", response)
+	}
+	details, ok := fieldValue(response.Fields, "details")
+	if !ok || !strings.Contains(details, "foreign GoAccess logrotate") {
+		t.Fatalf("details = %q, %v; fields = %#v", details, ok, response.Fields)
+	}
+	assertEventsAbsent(t, events,
+		"apt-install",
+		"install-command",
+		"systemctl-enable-now nginx.service",
+		"systemd-daemon-reload",
+		"install-files",
+		"nginx-enable",
+		"nginx-reload",
+		"remove-goaccess-logrotate",
+		"lego-migrate",
+		"lego-run",
+		"systemctl-enable review-app.service",
+		"systemctl-restart review-app.service",
+		"systemctl-enable review-app-goaccess.service",
+		"systemctl-restart review-app-goaccess.service",
+		"systemctl-enable review-app-lego-renew.timer",
+		"systemctl-start review-app-lego-renew.timer",
+	)
+}
+
 func TestExecute_AppDeployChecksTailscaleBeforeAppHostMutations(t *testing.T) {
 	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
 		cfg.App.Listen = ""
@@ -1769,7 +3857,7 @@ func TestExecute_AppDeployChecksTailscaleBeforeAppHostMutations(t *testing.T) {
 		t.Fatalf("stderr = %q, want empty", stderr)
 	}
 	response := mustDecodeResponse(t, stdout)
-	if response.Summary != "Tailscale client 前置条件失败" {
+	if response.Summary != "Tailscale client prerequisite failed" {
 		t.Fatalf("summary = %q, want Tailscale failure", response.Summary)
 	}
 	if installerCalled {
@@ -1779,6 +3867,88 @@ func TestExecute_AppDeployChecksTailscaleBeforeAppHostMutations(t *testing.T) {
 		actual := unwrapMaybeSudoHostCommand(command)
 		if actual.Name == "apt-get" || actual.Name == "mkdir" {
 			t.Fatalf("commands = %#v, want no app host dependency or directory mutation before Tailscale failure", runner.commands)
+		}
+	}
+}
+
+func TestExecute_AppDeployChecksTailscaleBeforePortHandoffStops(t *testing.T) {
+	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
+		cfg.Tailscale.EnabledForListen = true
+		cfg.Tailscale.LoginServer = "https://hs.example.com"
+		cfg.Nginx.GoAccess.Enabled = true
+		cfg.Nginx.GoAccess.AuthBasicUserFile = "/etc/review-app/goaccess.htpasswd"
+	})
+	cfg, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	staged := stagedRuntimeWithTempHostPaths(t, cfg)
+	stubPassingAppDeployPreflight(t)
+
+	installerCalled := false
+	previousStage := stageAppRuntimeFilesFn
+	previousInstaller := newAppFileInstallerFn
+	previousExecutor := newHostExecutorFn
+	previousDetectListenBlockers := detectAppGoAccessAppListenBlockersFn
+	previousDetectPortBlockers := detectAppGoAccessAppPortBlockersFn
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		actual := unwrapMaybeSudoHostCommand(command)
+		if actual.Name == "tailscale" {
+			switch strings.Join(actual.Args, " ") {
+			case "version":
+				return host.Result{Command: command, Stdout: "1.80.0\n"}, nil
+			case "status --json":
+				return host.Result{Command: command, Stdout: `{"BackendState":"Running","Self":{"Online":true}}`}, nil
+			case "debug prefs":
+				return host.Result{Command: command, Stdout: `{"ControlURL":"https://other.example.com","RouteAll":false,"CorpDNS":false,"ShieldsUp":true}`}, nil
+			}
+		}
+		return host.Result{Command: command}, nil
+	}}
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+		newAppFileInstallerFn = previousInstaller
+		newHostExecutorFn = previousExecutor
+		detectAppGoAccessAppListenBlockersFn = previousDetectListenBlockers
+		detectAppGoAccessAppPortBlockersFn = previousDetectPortBlockers
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return staged, nil
+	}
+	newAppFileInstallerFn = func(host.Executor, host.PrivilegeStrategy) appStagedFileInstaller {
+		installerCalled = true
+		return stubFileInstaller{}
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+	detectAppGoAccessAppListenBlockersFn = func(appconfig.Config, appsvc.Names) ([]preflight.PortBinding, bool) {
+		t.Fatal("detectAppGoAccessAppListenBlockersFn called before Tailscale prerequisite succeeded")
+		return nil, true
+	}
+	detectAppGoAccessAppPortBlockersFn = func(appconfig.Config, appsvc.Names) ([]preflight.PortBinding, bool) {
+		t.Fatal("detectAppGoAccessAppPortBlockersFn called before Tailscale prerequisite succeeded")
+		return nil, true
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want non-nil")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Summary != "Tailscale client prerequisite failed" {
+		t.Fatalf("summary = %q, want Tailscale failure", response.Summary)
+	}
+	if installerCalled {
+		t.Fatal("app file installer was called before Tailscale correctness was proven")
+	}
+	for _, command := range runner.commands {
+		actual := unwrapMaybeSudoHostCommand(command)
+		if actual.Name == "systemctl" && len(actual.Args) > 0 && actual.Args[0] == "stop" {
+			t.Fatalf("commands = %#v, want no systemctl stop before Tailscale failure", runner.commands)
 		}
 	}
 }
@@ -1959,7 +4129,7 @@ func TestExecute_AppDeployMasksLocalHeadscalePreauthKeyWhenPreauthCreationFails(
 		t.Fatalf("failure output leaked local Headscale preauth key:\nstdout=%s\nerr=%v", stdout, err)
 	}
 	response := mustDecodeResponse(t, stdout)
-	if response.Summary != "Tailscale client 前置条件失败" {
+	if response.Summary != "Tailscale client prerequisite failed" {
 		t.Fatalf("summary = %q, want Tailscale failure", response.Summary)
 	}
 	details, ok := fieldValue(response.Fields, "details")
@@ -2032,7 +4202,7 @@ func TestExecute_AppDeployMasksLocalHeadscalePreauthKeyWhenTailscaleUpFails(t *t
 		t.Fatalf("failure output leaked local Headscale preauth key:\nstdout=%s\nerr=%v", stdout, err)
 	}
 	response := mustDecodeResponse(t, stdout)
-	if response.Summary != "Tailscale client 前置条件失败" {
+	if response.Summary != "Tailscale client prerequisite failed" {
 		t.Fatalf("summary = %q, want Tailscale failure", response.Summary)
 	}
 	details, ok := fieldValue(response.Fields, "details")
@@ -2094,6 +4264,12 @@ func appDeployOrderEvent(command host.Command) string {
 	}
 	actual := unwrapMaybeSudoHostCommand(command)
 	switch actual.Name {
+	case "apt-get":
+		if len(actual.Args) > 0 && actual.Args[0] == "install" {
+			return "apt-install"
+		}
+	case "install":
+		return "install-command"
 	case "tailscale":
 		if len(actual.Args) > 0 && actual.Args[0] == "status" {
 			return "tailscale-status"
@@ -2102,10 +4278,18 @@ func appDeployOrderEvent(command host.Command) string {
 		switch strings.Join(actual.Args, " ") {
 		case "daemon-reload":
 			return "systemd-daemon-reload"
+		case "enable --now nginx.service":
+			return "systemctl-enable-now nginx.service"
 		case "enable review-app.service":
 			return "systemctl-enable review-app.service"
+		case "stop review-app.service":
+			return "systemctl-stop review-app.service"
 		case "restart review-app.service":
 			return "systemctl-restart review-app.service"
+		case "enable review-app-goaccess.service":
+			return "systemctl-enable review-app-goaccess.service"
+		case "restart review-app-goaccess.service":
+			return "systemctl-restart review-app-goaccess.service"
 		case "enable review-app-lego-renew.timer":
 			return "systemctl-enable review-app-lego-renew.timer"
 		case "start review-app-lego-renew.timer":
@@ -2120,6 +4304,14 @@ func appDeployOrderEvent(command host.Command) string {
 				return "http01-bootstrap"
 			case "meshify-app-remove-stale-service":
 				return "remove-stale-service"
+			case "meshify-app-remove-goaccess-runtime":
+				return "remove-goaccess-runtime"
+			case "meshify-app-remove-goaccess-logrotate":
+				return "remove-goaccess-logrotate"
+			case "meshify-app-guard-goaccess-runtime-removal":
+				return "guard-goaccess-runtime-removal"
+			case "meshify-app-guard-goaccess-logrotate-removal":
+				return "guard-goaccess-logrotate-removal"
 			case "meshify-lego-v5-migration-gate":
 				return "lego-migrate"
 			case "meshify-app-lego-issue-or-renew":
@@ -2153,14 +4345,25 @@ func assertEventBefore(t *testing.T, events []string, before string, after strin
 	}
 }
 
+func assertEventsAbsent(t *testing.T, events []string, absent ...string) {
+	t.Helper()
+
+	for _, event := range absent {
+		if slices.Contains(events, event) {
+			t.Fatalf("events = %v, did not expect %q", events, event)
+		}
+	}
+}
+
 type recordingAppInstaller struct {
 	events  *[]string
 	results []host.FileInstallResult
+	err     error
 }
 
 func (installer recordingAppInstaller) Install(_ []render.StagedFile) ([]host.FileInstallResult, error) {
 	*installer.events = append(*installer.events, "install-files")
-	return append([]host.FileInstallResult(nil), installer.results...), nil
+	return append([]host.FileInstallResult(nil), installer.results...), installer.err
 }
 
 func stagedRuntimeWithTempHostPaths(t *testing.T, cfg appconfig.Config) []apprender.StagedFile {
@@ -2201,6 +4404,14 @@ func (fileSystem readOnlyAppFileSystem) Stat(string) (fs.FileInfo, error) {
 	return nil, os.ErrNotExist
 }
 
+func (fileSystem readOnlyAppFileSystem) Lstat(name string) (fs.FileInfo, error) {
+	content, ok := fileSystem.files[name]
+	if ok {
+		return rootOwnedModeFileInfo{name: filepath.Base(name), mode: 0o644, size: int64(len(content))}, nil
+	}
+	return nil, os.ErrNotExist
+}
+
 func stubPassingAppDeployPreflight(t *testing.T) {
 	t.Helper()
 
@@ -2208,9 +4419,16 @@ func stubPassingAppDeployPreflight(t *testing.T) {
 	previousDetectAppDNS := detectAppDNSFn
 	previousDetectAppCurrentPublicIPs := detectAppCurrentPublicIPsFn
 	previousDetectAppPortBindings := detectAppPortBindingsFn
+	previousDetectAppListenPortState := detectAppListenPortStateFn
 	previousDetectAppDNSCredentialState := detectAppDNSCredentialStateFn
 	previousDetectAppServiceEnvFileState := detectAppServiceEnvFileStateFn
 	previousDetectAppTailscaleAuthKeyFileState := detectAppTailscaleAuthKeyFileStateFn
+	previousDetectAppGoAccessAuthFileState := detectAppGoAccessAuthFileStateFn
+	previousDetectAppGoAccessPortState := detectAppGoAccessPortStateFn
+	previousDetectAppGoAccessAppListenBlockers := detectAppGoAccessAppListenBlockersFn
+	previousDetectAppGoAccessAppPortBlockers := detectAppGoAccessAppPortBlockersFn
+	previousDetectAppGoAccessLocaleState := detectAppGoAccessLocaleStateFn
+	previousDetectAppGoAccessLogFileState := detectAppGoAccessLogFileStateFn
 	previousStatAppServiceBinary := statAppServiceBinaryFn
 	previousEnsureAppNginxCompatibility := ensureAppNginxCompatibilityFn
 	previousAppHostFileSystem := newAppHostFileSystemFn
@@ -2219,9 +4437,16 @@ func stubPassingAppDeployPreflight(t *testing.T) {
 		detectAppDNSFn = previousDetectAppDNS
 		detectAppCurrentPublicIPsFn = previousDetectAppCurrentPublicIPs
 		detectAppPortBindingsFn = previousDetectAppPortBindings
+		detectAppListenPortStateFn = previousDetectAppListenPortState
 		detectAppDNSCredentialStateFn = previousDetectAppDNSCredentialState
 		detectAppServiceEnvFileStateFn = previousDetectAppServiceEnvFileState
 		detectAppTailscaleAuthKeyFileStateFn = previousDetectAppTailscaleAuthKeyFileState
+		detectAppGoAccessAuthFileStateFn = previousDetectAppGoAccessAuthFileState
+		detectAppGoAccessPortStateFn = previousDetectAppGoAccessPortState
+		detectAppGoAccessAppListenBlockersFn = previousDetectAppGoAccessAppListenBlockers
+		detectAppGoAccessAppPortBlockersFn = previousDetectAppGoAccessAppPortBlockers
+		detectAppGoAccessLocaleStateFn = previousDetectAppGoAccessLocaleState
+		detectAppGoAccessLogFileStateFn = previousDetectAppGoAccessLogFileState
 		statAppServiceBinaryFn = previousStatAppServiceBinary
 		ensureAppNginxCompatibilityFn = previousEnsureAppNginxCompatibility
 		newAppHostFileSystemFn = previousAppHostFileSystem
@@ -2243,6 +4468,9 @@ func stubPassingAppDeployPreflight(t *testing.T) {
 			{Port: 443, Protocol: "tcp"},
 		}
 	}
+	detectAppListenPortStateFn = func(appconfig.Config) (bool, bool, string) {
+		return true, true, "app.listen ok"
+	}
 	detectAppDNSCredentialStateFn = func(appconfig.Config) (bool, bool, string) {
 		return false, false, ""
 	}
@@ -2250,6 +4478,24 @@ func stubPassingAppDeployPreflight(t *testing.T) {
 		return false, false, ""
 	}
 	detectAppTailscaleAuthKeyFileStateFn = func(appconfig.Config) (bool, bool, string) {
+		return false, false, ""
+	}
+	detectAppGoAccessAuthFileStateFn = func(appconfig.Config) (bool, bool, string) {
+		return true, true, "goaccess auth ok"
+	}
+	detectAppGoAccessPortStateFn = func(appconfig.Config) (bool, bool, string) {
+		return true, true, "goaccess port ok"
+	}
+	detectAppGoAccessAppListenBlockersFn = func(appconfig.Config, appsvc.Names) ([]preflight.PortBinding, bool) {
+		return nil, true
+	}
+	detectAppGoAccessAppPortBlockersFn = func(appconfig.Config, appsvc.Names) ([]preflight.PortBinding, bool) {
+		return nil, true
+	}
+	detectAppGoAccessLocaleStateFn = func(appconfig.Config) (bool, bool, string) {
+		return true, true, "goaccess locale ok"
+	}
+	detectAppGoAccessLogFileStateFn = func(appconfig.Config) (bool, bool, string) {
 		return false, false, ""
 	}
 	statAppServiceBinaryFn = func(string) (os.FileInfo, error) {
@@ -2261,6 +4507,1162 @@ func stubPassingAppDeployPreflight(t *testing.T) {
 	newAppHostFileSystemFn = func(host.Executor, host.PrivilegeStrategy) host.FileSystem {
 		return readOnlyAppFileSystem{}
 	}
+}
+
+func TestDetectAppGoAccessPortStateAllowsCurrentManagedService(t *testing.T) {
+	cfg := goAccessEnabledAppConfig()
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+	withFakeSSOutput(t, fakeSSListenLine(names.GoAccessWebSocketPort, "goaccess"))
+
+	previous := isAppGoAccessManagedPortBindingFn
+	t.Cleanup(func() { isAppGoAccessManagedPortBindingFn = previous })
+	isAppGoAccessManagedPortBindingFn = func(got appsvc.Names, binding preflight.PortBinding) (bool, bool) {
+		return got.GoAccessServiceUnit == names.GoAccessServiceUnit && binding.Process == "goaccess", true
+	}
+
+	checked, ready, detail := detectAppGoAccessPortState(cfg)
+	if !checked || !ready {
+		t.Fatalf("detectAppGoAccessPortState() = checked %v ready %v detail %q, want managed service pass", checked, ready, detail)
+	}
+	if !strings.Contains(detail, names.GoAccessServiceUnit) {
+		t.Fatalf("detail = %q, want managed service unit", detail)
+	}
+}
+
+func TestDetectAppGoAccessPortStateAllowsCurrentManagedAppService(t *testing.T) {
+	cfg := goAccessEnabledAppConfig()
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+	withFakeSSOutput(t, fakeSSListenLine(names.GoAccessWebSocketPort, "review-app"))
+	withFakeSystemctlMainPID(t, "123")
+
+	checked, ready, detail := detectAppGoAccessPortState(cfg)
+	if !checked || !ready {
+		t.Fatalf("detectAppGoAccessPortState() = checked %v ready %v detail %q, want managed app service pass", checked, ready, detail)
+	}
+	if !strings.Contains(detail, "current managed app or GoAccess service") {
+		t.Fatalf("detail = %q, want managed app handoff detail", detail)
+	}
+}
+
+func TestDetectAppGoAccessPortStateAllowsManagedAppServiceNamedGoAccessBeforeGoAccessOwnership(t *testing.T) {
+	cfg := goAccessEnabledAppConfig()
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+	withFakeSSOutput(t, fakeSSListenLine(names.GoAccessWebSocketPort, "goaccess"))
+
+	previousApp := isAppManagedPortBindingFn
+	previousGoAccess := isAppGoAccessManagedPortBindingFn
+	t.Cleanup(func() {
+		isAppManagedPortBindingFn = previousApp
+		isAppGoAccessManagedPortBindingFn = previousGoAccess
+	})
+	isAppManagedPortBindingFn = func(got appsvc.Names, binding preflight.PortBinding) (bool, bool) {
+		return got.ServiceUnit == names.ServiceUnit && binding.Process == "goaccess" && binding.PID == 123, true
+	}
+	isAppGoAccessManagedPortBindingFn = func(appsvc.Names, preflight.PortBinding) (bool, bool) {
+		return false, false
+	}
+
+	checked, ready, detail := detectAppGoAccessPortState(cfg)
+	if !checked || !ready {
+		t.Fatalf("detectAppGoAccessPortState() = checked %v ready %v detail %q, want managed app service pass before GoAccess ownership failure", checked, ready, detail)
+	}
+}
+
+func TestDetectAppListenPortStateAllowsCurrentManagedAppServiceWithGoAccessDisabled(t *testing.T) {
+	cfg := goAccessEnabledAppConfig()
+	cfg.Nginx.GoAccess = appconfig.NginxGoAccessConfig{}
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+	withFakeSSOutput(t, fakeSSListenLine(18001, "review-app"))
+	withFakeSystemctlMainPID(t, "123")
+
+	checked, ready, detail := detectAppListenPortState(cfg)
+	if !checked || !ready {
+		t.Fatalf("detectAppListenPortState() = checked %v ready %v detail %q, want current app service pass", checked, ready, detail)
+	}
+	if !strings.Contains(detail, names.ServiceUnit) && !strings.Contains(detail, "current managed app") {
+		t.Fatalf("detail = %q, want managed app service detail", detail)
+	}
+}
+
+func TestDetectAppListenPortStateAllowsManagedAppServiceNamedGoAccessBeforeGoAccessOwnership(t *testing.T) {
+	cfg := goAccessEnabledAppConfig()
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+	withFakeSSOutput(t, fakeSSListenLine(18001, "goaccess"))
+
+	previousApp := isAppManagedPortBindingFn
+	previousGoAccess := isAppGoAccessManagedPortBindingFn
+	t.Cleanup(func() {
+		isAppManagedPortBindingFn = previousApp
+		isAppGoAccessManagedPortBindingFn = previousGoAccess
+	})
+	isAppManagedPortBindingFn = func(got appsvc.Names, binding preflight.PortBinding) (bool, bool) {
+		return got.ServiceUnit == names.ServiceUnit && binding.Process == "goaccess" && binding.PID == 123, true
+	}
+	isAppGoAccessManagedPortBindingFn = func(appsvc.Names, preflight.PortBinding) (bool, bool) {
+		return false, false
+	}
+
+	checked, ready, detail := detectAppListenPortState(cfg)
+	if !checked || !ready {
+		t.Fatalf("detectAppListenPortState() = checked %v ready %v detail %q, want managed app service pass before GoAccess ownership failure", checked, ready, detail)
+	}
+}
+
+func TestDetectAppListenPortStateAllowsCurrentManagedGoAccessService(t *testing.T) {
+	cfg := goAccessEnabledAppConfig()
+	cfg.Nginx.GoAccess.WebSocketListen = "127.0.0.1:18002"
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+	withFakeSSOutput(t, fakeSSListenLine(18001, "goaccess"))
+	withFakeSystemctlMainPID(t, "123")
+
+	previousApp := isAppManagedPortBindingFn
+	t.Cleanup(func() { isAppManagedPortBindingFn = previousApp })
+	isAppManagedPortBindingFn = func(appsvc.Names, preflight.PortBinding) (bool, bool) {
+		return false, true
+	}
+
+	checked, ready, detail := detectAppListenPortState(cfg)
+	if !checked || !ready {
+		t.Fatalf("detectAppListenPortState() = checked %v ready %v detail %q, want current GoAccess service pass", checked, ready, detail)
+	}
+	if !strings.Contains(detail, "current managed app or GoAccess service") && !strings.Contains(detail, names.GoAccessServiceUnit) {
+		t.Fatalf("detail = %q, want managed GoAccess service detail", detail)
+	}
+}
+
+func TestDetectAppListenPortStateRejectsUnmanagedListener(t *testing.T) {
+	cfg := goAccessEnabledAppConfig()
+	cfg.Nginx.GoAccess = appconfig.NginxGoAccessConfig{}
+	withFakeSSOutput(t, fakeSSListenLine(18001, "other-service"))
+
+	previous := isAppManagedPortBindingFn
+	t.Cleanup(func() { isAppManagedPortBindingFn = previous })
+	isAppManagedPortBindingFn = func(appsvc.Names, preflight.PortBinding) (bool, bool) {
+		return false, true
+	}
+
+	checked, ready, detail := detectAppListenPortState(cfg)
+	if !checked || ready {
+		t.Fatalf("detectAppListenPortState() = checked %v ready %v detail %q, want unmanaged listener failure", checked, ready, detail)
+	}
+	if !strings.Contains(detail, "other-service") {
+		t.Fatalf("detail = %q, want conflicting process", detail)
+	}
+}
+
+func TestDetectAppGoAccessAppPortBlockersFindsManagedAppServiceForUpstream(t *testing.T) {
+	cfg := goAccessEnabledAppConfig()
+	cfg.App.Listen = ""
+	cfg.App.Upstream = "100.64.10.20:18001"
+	cfg.Service.ExecStart = ""
+	cfg.Service.WorkingDirectory = ""
+	cfg.Nginx.GoAccess.WebSocketListen = "127.0.0.1:18001"
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+	withFakeSSOutput(t, fakeSSListenLine(names.GoAccessWebSocketPort, "review-app"))
+	withFakeSystemctlMainPID(t, "123")
+
+	blockers, detected := detectAppGoAccessAppPortBlockers(cfg, names)
+	if !detected || len(blockers) != 1 {
+		t.Fatalf("detectAppGoAccessAppPortBlockers() = %#v detected %v, want one managed app blocker", blockers, detected)
+	}
+	if blockers[0].Port != names.GoAccessWebSocketPort || blockers[0].Process != "review-app" || blockers[0].PID != 123 {
+		t.Fatalf("blocker = %#v, want managed app listener on GoAccess WebSocket port", blockers[0])
+	}
+}
+
+func TestDetectAppGoAccessAppPortBlockersFindsManagedAppServiceNamedGoAccess(t *testing.T) {
+	cfg := goAccessEnabledAppConfig()
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+	withFakeSSOutput(t, fakeSSListenLine(names.GoAccessWebSocketPort, "goaccess"))
+
+	previousApp := isAppManagedPortBindingFn
+	previousGoAccess := isAppGoAccessManagedPortBindingFn
+	t.Cleanup(func() {
+		isAppManagedPortBindingFn = previousApp
+		isAppGoAccessManagedPortBindingFn = previousGoAccess
+	})
+	isAppManagedPortBindingFn = func(got appsvc.Names, binding preflight.PortBinding) (bool, bool) {
+		return got.ServiceUnit == names.ServiceUnit && binding.Process == "goaccess" && binding.PID == 123, true
+	}
+	isAppGoAccessManagedPortBindingFn = func(appsvc.Names, preflight.PortBinding) (bool, bool) {
+		return false, false
+	}
+
+	blockers, detected := detectAppGoAccessAppPortBlockers(cfg, names)
+	if !detected || len(blockers) != 1 {
+		t.Fatalf("detectAppGoAccessAppPortBlockers() = %#v detected %v, want one managed app blocker before GoAccess ownership failure", blockers, detected)
+	}
+	if blockers[0].Port != names.GoAccessWebSocketPort || blockers[0].Process != "goaccess" || blockers[0].PID != 123 {
+		t.Fatalf("blocker = %#v, want managed app listener named goaccess on GoAccess WebSocket port", blockers[0])
+	}
+}
+
+func TestDetectAppGoAccessAppPortBlockersAllowsManagedGoAccessService(t *testing.T) {
+	cfg := goAccessEnabledAppConfig()
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+	withFakeSSOutput(t, fakeSSListenLine(names.GoAccessWebSocketPort, "goaccess"))
+
+	previous := isAppGoAccessManagedPortBindingFn
+	t.Cleanup(func() { isAppGoAccessManagedPortBindingFn = previous })
+	isAppGoAccessManagedPortBindingFn = func(got appsvc.Names, binding preflight.PortBinding) (bool, bool) {
+		return got.GoAccessServiceUnit == names.GoAccessServiceUnit && binding.Process == "goaccess", true
+	}
+
+	blockers, detected := detectAppGoAccessAppPortBlockers(cfg, names)
+	if !detected || len(blockers) != 0 {
+		t.Fatalf("detectAppGoAccessAppPortBlockers() = %#v detected %v, want managed GoAccess listener allowed", blockers, detected)
+	}
+}
+
+func TestDetectAppGoAccessAppPortBlockersFailsOnUnmanagedListener(t *testing.T) {
+	cfg := goAccessEnabledAppConfig()
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+	withFakeSSOutput(t, fakeSSListenLine(names.GoAccessWebSocketPort, "other-service"))
+
+	previous := isAppManagedPortBindingFn
+	t.Cleanup(func() { isAppManagedPortBindingFn = previous })
+	isAppManagedPortBindingFn = func(appsvc.Names, preflight.PortBinding) (bool, bool) {
+		return false, true
+	}
+
+	blockers, detected := detectAppGoAccessAppPortBlockers(cfg, names)
+	if detected || len(blockers) != 0 {
+		t.Fatalf("detectAppGoAccessAppPortBlockers() = %#v detected %v, want unmanaged listener failure", blockers, detected)
+	}
+}
+
+func TestDetectAppGoAccessAppListenBlockersFindsManagedListener(t *testing.T) {
+	cfg := goAccessEnabledAppConfig()
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+	withFakeSSOutput(t, fakeSSListenLine(18001, "goaccess"))
+	withFakeSystemctlMainPID(t, "123")
+
+	previousApp := isAppManagedPortBindingFn
+	t.Cleanup(func() { isAppManagedPortBindingFn = previousApp })
+	isAppManagedPortBindingFn = func(appsvc.Names, preflight.PortBinding) (bool, bool) {
+		return false, true
+	}
+
+	blockers, detected := detectAppGoAccessAppListenBlockers(cfg, names)
+	if !detected || len(blockers) != 1 {
+		t.Fatalf("detectAppGoAccessAppListenBlockers() = %#v detected %v, want one managed blocker", blockers, detected)
+	}
+	if blockers[0].Port != 18001 || blockers[0].Process != "goaccess" || blockers[0].PID != 123 {
+		t.Fatalf("blocker = %#v, want managed GoAccess listener on app.listen", blockers[0])
+	}
+}
+
+func TestDetectAppGoAccessAppListenBlockersFindsDisabledGoAccessManagedListener(t *testing.T) {
+	cfg := goAccessEnabledAppConfig()
+	cfg.Nginx.GoAccess = appconfig.NginxGoAccessConfig{}
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+	withFakeSSOutput(t, fakeSSListenLine(18001, "goaccess"))
+	withFakeSystemctlMainPID(t, "123")
+
+	previousApp := isAppManagedPortBindingFn
+	t.Cleanup(func() { isAppManagedPortBindingFn = previousApp })
+	isAppManagedPortBindingFn = func(appsvc.Names, preflight.PortBinding) (bool, bool) {
+		return false, true
+	}
+
+	blockers, detected := detectAppGoAccessAppListenBlockers(cfg, names)
+	if !detected || len(blockers) != 1 {
+		t.Fatalf("detectAppGoAccessAppListenBlockers() = %#v detected %v, want disabled GoAccess managed blocker", blockers, detected)
+	}
+	if blockers[0].Port != 18001 || blockers[0].Process != "goaccess" || blockers[0].PID != 123 {
+		t.Fatalf("blocker = %#v, want managed GoAccess listener on app.listen", blockers[0])
+	}
+}
+
+func TestDetectAppGoAccessAppListenBlockersAllowsManagedAppListener(t *testing.T) {
+	cfg := goAccessEnabledAppConfig()
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+	withFakeSSOutput(t, fakeSSListenLine(18001, "review-app"))
+	withFakeSystemctlMainPID(t, "123")
+
+	blockers, detected := detectAppGoAccessAppListenBlockers(cfg, names)
+	if !detected || len(blockers) != 0 {
+		t.Fatalf("detectAppGoAccessAppListenBlockers() = %#v detected %v, want current app service allowed", blockers, detected)
+	}
+}
+
+func TestDetectAppGoAccessAppListenBlockersAllowsManagedAppListenerNamedGoAccess(t *testing.T) {
+	cfg := goAccessEnabledAppConfig()
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+	withFakeSSOutput(t, fakeSSListenLine(18001, "goaccess"))
+
+	previousApp := isAppManagedPortBindingFn
+	previousGoAccess := isAppGoAccessManagedPortBindingFn
+	t.Cleanup(func() {
+		isAppManagedPortBindingFn = previousApp
+		isAppGoAccessManagedPortBindingFn = previousGoAccess
+	})
+	isAppManagedPortBindingFn = func(got appsvc.Names, binding preflight.PortBinding) (bool, bool) {
+		return got.ServiceUnit == names.ServiceUnit && binding.Process == "goaccess" && binding.PID == 123, true
+	}
+	isAppGoAccessManagedPortBindingFn = func(appsvc.Names, preflight.PortBinding) (bool, bool) {
+		return false, false
+	}
+
+	blockers, detected := detectAppGoAccessAppListenBlockers(cfg, names)
+	if !detected || len(blockers) != 0 {
+		t.Fatalf("detectAppGoAccessAppListenBlockers() = %#v detected %v, want managed app listener allowed before GoAccess ownership failure", blockers, detected)
+	}
+}
+
+func TestDetectAppGoAccessAppListenBlockersFailsOnUnconfirmedGoAccessListener(t *testing.T) {
+	cfg := goAccessEnabledAppConfig()
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+	withFakeSSOutput(t, fakeSSListenLine(18001, "goaccess"))
+
+	previous := isAppGoAccessManagedPortBindingFn
+	t.Cleanup(func() { isAppGoAccessManagedPortBindingFn = previous })
+	isAppGoAccessManagedPortBindingFn = func(appsvc.Names, preflight.PortBinding) (bool, bool) {
+		return false, false
+	}
+
+	blockers, detected := detectAppGoAccessAppListenBlockers(cfg, names)
+	if detected || len(blockers) != 0 {
+		t.Fatalf("detectAppGoAccessAppListenBlockers() = %#v detected %v, want unconfirmed goaccess listener failure", blockers, detected)
+	}
+}
+
+func TestDetectAppGoAccessAppListenBlockersFailsOnUnmanagedListener(t *testing.T) {
+	cfg := goAccessEnabledAppConfig()
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+	withFakeSSOutput(t, fakeSSListenLine(18001, "other-service"))
+
+	blockers, detected := detectAppGoAccessAppListenBlockers(cfg, names)
+	if detected || len(blockers) != 0 {
+		t.Fatalf("detectAppGoAccessAppListenBlockers() = %#v detected %v, want unmanaged overlapping listener failure", blockers, detected)
+	}
+}
+
+func TestDetectAppGoAccessAppListenBlockersFailsOnUnknownOverlappingListener(t *testing.T) {
+	cfg := goAccessEnabledAppConfig()
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+	withFakeSSOutput(t, fakeSSListenLineWithoutProcessForAddress("127.0.0.1", 18001))
+
+	blockers, detected := detectAppGoAccessAppListenBlockers(cfg, names)
+	if detected || len(blockers) != 0 {
+		t.Fatalf("detectAppGoAccessAppListenBlockers() = %#v detected %v, want unknown overlapping listener failure", blockers, detected)
+	}
+}
+
+func TestDetectAppGoAccessAppListenBlockersIgnoresNonOverlappingListener(t *testing.T) {
+	cfg := goAccessEnabledAppConfig()
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+	withFakeSSOutput(t, fakeSSListenLineForAddress("[::1]", 18001, "goaccess"))
+
+	previous := isAppGoAccessManagedPortBindingFn
+	t.Cleanup(func() { isAppGoAccessManagedPortBindingFn = previous })
+	isAppGoAccessManagedPortBindingFn = func(appsvc.Names, preflight.PortBinding) (bool, bool) {
+		t.Fatal("managed binding check must not run for a non-overlapping listener")
+		return false, true
+	}
+
+	blockers, detected := detectAppGoAccessAppListenBlockers(cfg, names)
+	if !detected || len(blockers) != 0 {
+		t.Fatalf("detectAppGoAccessAppListenBlockers() = %#v detected %v, want no blocker", blockers, detected)
+	}
+}
+
+func TestDetectAppGoAccessPortStatePrefersManagedDuplicateSSLineWithProcessDetails(t *testing.T) {
+	cfg := goAccessEnabledAppConfig()
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+	withFakeSSOutput(t,
+		fakeSSListenLineWithoutProcessForAddress("127.0.0.1", names.GoAccessWebSocketPort)+
+			fakeSSListenLine(names.GoAccessWebSocketPort, "goaccess"),
+	)
+
+	previous := isAppGoAccessManagedPortBindingFn
+	t.Cleanup(func() { isAppGoAccessManagedPortBindingFn = previous })
+	isAppGoAccessManagedPortBindingFn = func(got appsvc.Names, binding preflight.PortBinding) (bool, bool) {
+		return got.GoAccessServiceUnit == names.GoAccessServiceUnit && binding.Process == "goaccess", true
+	}
+
+	checked, ready, detail := detectAppGoAccessPortState(cfg)
+	if !checked || !ready {
+		t.Fatalf("detectAppGoAccessPortState() = checked %v ready %v detail %q, want managed service pass", checked, ready, detail)
+	}
+}
+
+func TestDetectAppGoAccessPortStateFailsOnUnconfirmedGoAccessOwnership(t *testing.T) {
+	cfg := goAccessEnabledAppConfig()
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+	withFakeSSOutput(t, fakeSSListenLine(names.GoAccessWebSocketPort, "goaccess"))
+
+	previous := isAppGoAccessManagedPortBindingFn
+	t.Cleanup(func() { isAppGoAccessManagedPortBindingFn = previous })
+	isAppGoAccessManagedPortBindingFn = func(appsvc.Names, preflight.PortBinding) (bool, bool) {
+		return false, false
+	}
+
+	checked, ready, detail := detectAppGoAccessPortState(cfg)
+	if !checked || ready {
+		t.Fatalf("detectAppGoAccessPortState() = checked %v ready %v detail %q, want unconfirmed ownership failure", checked, ready, detail)
+	}
+	if !strings.Contains(detail, "Could not confirm") {
+		t.Fatalf("detail = %q, want unconfirmed ownership detail", detail)
+	}
+}
+
+func TestDetectAppGoAccessPortStateFailsOnBlankProcessOwnership(t *testing.T) {
+	cfg := goAccessEnabledAppConfig()
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+	withFakeSSOutput(t, fakeSSListenLineWithoutProcessForAddress("127.0.0.1", names.GoAccessWebSocketPort))
+
+	checked, ready, detail := detectAppGoAccessPortState(cfg)
+	if !checked || ready {
+		t.Fatalf("detectAppGoAccessPortState() = checked %v ready %v detail %q, want blank process ownership failure", checked, ready, detail)
+	}
+	if !strings.Contains(detail, "Could not confirm") {
+		t.Fatalf("detail = %q, want unconfirmed ownership detail", detail)
+	}
+}
+
+func TestDetectAppPortBindingsPreservesDuplicateRequiredListeners(t *testing.T) {
+	withFakeSSOutput(t,
+		fakeSSListenLineForAddress("0.0.0.0", 80, "nginx")+
+			fakeSSListenLineForAddress("127.0.0.1", 80, "caddy"),
+	)
+
+	bindings := detectAppPortBindings()
+	processes := map[string]bool{}
+	for _, binding := range bindings {
+		if binding.Port == 80 && binding.InUse {
+			processes[binding.Process] = true
+		}
+	}
+	if !processes["nginx"] || !processes["caddy"] {
+		t.Fatalf("detectAppPortBindings() = %#v, want both nginx and caddy listeners on 80/tcp", bindings)
+	}
+	if !slices.ContainsFunc(bindings, func(binding preflight.PortBinding) bool {
+		return binding.Port == 443 && strings.EqualFold(binding.Protocol, "tcp") && !binding.InUse
+	}) {
+		t.Fatalf("detectAppPortBindings() = %#v, want placeholder for unused 443/tcp", bindings)
+	}
+}
+
+func TestDetectAppPortBindingsPrefersDuplicateSSLineWithProcessDetails(t *testing.T) {
+	withFakeSSOutput(t,
+		fakeSSListenLineWithoutProcessForAddress("0.0.0.0", 80)+
+			fakeSSListenLineForAddress("0.0.0.0", 80, "nginx"),
+	)
+
+	bindings := detectAppPortBindings()
+	nginxFound := false
+	blankFound := false
+	for _, binding := range bindings {
+		if binding.Port != 80 || !binding.InUse {
+			continue
+		}
+		switch binding.Process {
+		case "nginx":
+			nginxFound = true
+		case "":
+			blankFound = true
+		}
+	}
+	if !nginxFound || blankFound {
+		t.Fatalf("detectAppPortBindings() = %#v, want nginx listener without duplicate blank process binding", bindings)
+	}
+}
+
+func TestDetectAppGoAccessPortStateRejectsUnmanagedListener(t *testing.T) {
+	cfg := goAccessEnabledAppConfig()
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+	withFakeSSOutput(t, fakeSSListenLine(names.GoAccessWebSocketPort, "other-goaccess"))
+
+	previousApp := isAppManagedPortBindingFn
+	previousGoAccess := isAppGoAccessManagedPortBindingFn
+	t.Cleanup(func() {
+		isAppManagedPortBindingFn = previousApp
+		isAppGoAccessManagedPortBindingFn = previousGoAccess
+	})
+	isAppManagedPortBindingFn = func(appsvc.Names, preflight.PortBinding) (bool, bool) {
+		return false, true
+	}
+	isAppGoAccessManagedPortBindingFn = func(appsvc.Names, preflight.PortBinding) (bool, bool) { return false, true }
+
+	checked, ready, detail := detectAppGoAccessPortState(cfg)
+	if !checked || ready {
+		t.Fatalf("detectAppGoAccessPortState() = checked %v ready %v detail %q, want conflict", checked, ready, detail)
+	}
+	if !strings.Contains(detail, "other-goaccess") {
+		t.Fatalf("detail = %q, want conflicting process", detail)
+	}
+}
+
+func TestDetectAppGoAccessPortStateRejectsPlannedAppListenConflict(t *testing.T) {
+	cfg := goAccessEnabledAppConfig()
+	cfg.Nginx.GoAccess.WebSocketListen = cfg.App.Listen
+
+	checked, ready, detail := detectAppGoAccessPortState(cfg)
+	if !checked || ready {
+		t.Fatalf("detectAppGoAccessPortState() = checked %v ready %v detail %q, want planned bind conflict", checked, ready, detail)
+	}
+	if !strings.Contains(detail, "nginx.goaccess.websocket_listen must not overlap app.listen bind host and port") {
+		t.Fatalf("detail = %q, want appconfig listen conflict", detail)
+	}
+}
+
+func TestDetectAppGoAccessPortStateAllowsNonOverlappingLoopbackListener(t *testing.T) {
+	cfg := goAccessEnabledAppConfig()
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+	withFakeSSOutput(t, fakeSSListenLineForAddress("[::1]", names.GoAccessWebSocketPort, "other-goaccess"))
+
+	previous := isAppGoAccessManagedPortBindingFn
+	t.Cleanup(func() { isAppGoAccessManagedPortBindingFn = previous })
+	isAppGoAccessManagedPortBindingFn = func(appsvc.Names, preflight.PortBinding) (bool, bool) {
+		t.Fatal("managed binding check must not run for a non-overlapping listener")
+		return false, true
+	}
+
+	checked, ready, detail := detectAppGoAccessPortState(cfg)
+	if !checked || !ready {
+		t.Fatalf("detectAppGoAccessPortState() = checked %v ready %v detail %q, want non-overlapping listener pass", checked, ready, detail)
+	}
+}
+
+func TestSocketBindHostsOverlapUsesWildcardAddressFamily(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		left  string
+		right string
+		want  bool
+	}{
+		{name: "ipv4 wildcard does not cover ipv6", left: "0.0.0.0", right: "::1", want: false},
+		{name: "ipv6 wildcard conservatively covers ipv4", left: "::", right: "127.0.0.1", want: true},
+		{name: "ipv4 wildcard covers ipv4", left: "0.0.0.0", right: "127.0.0.1", want: true},
+		{name: "ipv6 wildcard covers ipv6", left: "::", right: "::1", want: true},
+		{name: "localhost overlaps ipv4 loopback", left: "localhost", right: "127.0.0.1", want: true},
+		{name: "localhost overlaps ipv6 loopback", left: "localhost", right: "::1", want: true},
+		{name: "localhost does not overlap non-loopback ipv4", left: "localhost", right: "192.0.2.10", want: false},
+		{name: "localhost does not overlap non-loopback ipv6", left: "localhost", right: "2001:db8::10", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := socketBindHostsOverlap(tt.left, tt.right); got != tt.want {
+				t.Fatalf("socketBindHostsOverlap(%q, %q) = %v, want %v", tt.left, tt.right, got, tt.want)
+			}
+			if got := socketBindHostsOverlap(tt.right, tt.left); got != tt.want {
+				t.Fatalf("socketBindHostsOverlap(%q, %q) = %v, want %v", tt.right, tt.left, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDetectAppGoAccessPortStateRejectsWildcardListener(t *testing.T) {
+	cfg := goAccessEnabledAppConfig()
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+	withFakeSSOutput(t, fakeSSListenLineForAddress("0.0.0.0", names.GoAccessWebSocketPort, "other-goaccess"))
+
+	previousApp := isAppManagedPortBindingFn
+	previousGoAccess := isAppGoAccessManagedPortBindingFn
+	t.Cleanup(func() {
+		isAppManagedPortBindingFn = previousApp
+		isAppGoAccessManagedPortBindingFn = previousGoAccess
+	})
+	isAppManagedPortBindingFn = func(appsvc.Names, preflight.PortBinding) (bool, bool) {
+		return false, true
+	}
+	isAppGoAccessManagedPortBindingFn = func(appsvc.Names, preflight.PortBinding) (bool, bool) { return false, true }
+
+	checked, ready, detail := detectAppGoAccessPortState(cfg)
+	if !checked || ready {
+		t.Fatalf("detectAppGoAccessPortState() = checked %v ready %v detail %q, want wildcard conflict", checked, ready, detail)
+	}
+	if !strings.Contains(detail, "other-goaccess") {
+		t.Fatalf("detail = %q, want conflicting process", detail)
+	}
+}
+
+func TestIsAppGoAccessManagedPortBindingRequiresMatchingPID(t *testing.T) {
+	cfg := goAccessEnabledAppConfig()
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+	withFakeSystemctlMainPID(t, "123")
+	managed, confirmed := isAppGoAccessManagedPortBinding(names, preflight.PortBinding{Port: names.GoAccessWebSocketPort, Protocol: "tcp", InUse: true, Process: "goaccess", PID: 123})
+	if !managed || !confirmed {
+		t.Fatalf("isAppGoAccessManagedPortBinding() = managed %v confirmed %v, want matching MainPID", managed, confirmed)
+	}
+	managed, confirmed = isAppGoAccessManagedPortBinding(names, preflight.PortBinding{Port: names.GoAccessWebSocketPort, Protocol: "tcp", InUse: true, Process: "goaccess", PID: 456})
+	if managed || !confirmed {
+		t.Fatalf("isAppGoAccessManagedPortBinding() = managed %v confirmed %v, want confirmed mismatched PID rejection", managed, confirmed)
+	}
+	managed, confirmed = isAppGoAccessManagedPortBinding(names, preflight.PortBinding{Port: names.GoAccessWebSocketPort, Protocol: "tcp", InUse: true, Process: "goaccess"})
+	if managed || confirmed {
+		t.Fatalf("isAppGoAccessManagedPortBinding() = managed %v confirmed %v, want missing PID unconfirmed", managed, confirmed)
+	}
+}
+
+func TestIsAppGoAccessManagedPortBindingAllowsWorkerPIDInManagedUnitCgroup(t *testing.T) {
+	cfg := goAccessEnabledAppConfig()
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+	withFakeSystemctlMainPID(t, "123")
+	t.Setenv("SYSTEMD_CONTROL_GROUP", "/system.slice/review-app-goaccess.service")
+
+	previousCgroup := readAppProcessCgroupFileFn
+	t.Cleanup(func() { readAppProcessCgroupFileFn = previousCgroup })
+	readAppProcessCgroupFileFn = func(string) ([]byte, error) {
+		return []byte("0::/system.slice/review-app-goaccess.service/session.scope\n"), nil
+	}
+	managed, confirmed := isAppGoAccessManagedPortBinding(names, preflight.PortBinding{Port: names.GoAccessWebSocketPort, Protocol: "tcp", InUse: true, Process: "goaccess", PID: 456})
+	if !managed || !confirmed {
+		t.Fatalf("isAppGoAccessManagedPortBinding(worker PID) = managed %v confirmed %v, want managed worker PID in service cgroup", managed, confirmed)
+	}
+
+	readAppProcessCgroupFileFn = func(string) ([]byte, error) {
+		return []byte("0::/system.slice/foreign.service\n"), nil
+	}
+	managed, confirmed = isAppGoAccessManagedPortBinding(names, preflight.PortBinding{Port: names.GoAccessWebSocketPort, Protocol: "tcp", InUse: true, Process: "goaccess", PID: 456})
+	if managed || !confirmed {
+		t.Fatalf("isAppGoAccessManagedPortBinding(foreign cgroup worker PID) = managed %v confirmed %v, want confirmed unmanaged worker PID", managed, confirmed)
+	}
+}
+
+func TestIsAppManagedPortBindingRequiresManagedUnitMarker(t *testing.T) {
+	cfg := goAccessEnabledAppConfig()
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+	withFakeSystemctlMainPID(t, "123")
+
+	binding := preflight.PortBinding{Port: names.GoAccessWebSocketPort, Protocol: "tcp", InUse: true, Process: "review-app", PID: 123}
+	managed, confirmed := isAppManagedPortBinding(names, binding)
+	if !managed || !confirmed {
+		t.Fatalf("isAppManagedPortBinding(managed unit) = managed %v confirmed %v, want matching Meshify-managed unit", managed, confirmed)
+	}
+
+	previousRead := readAppServiceUnitFileFn
+	t.Cleanup(func() { readAppServiceUnitFileFn = previousRead })
+	readAppServiceUnitFileFn = func(string) ([]byte, error) {
+		return []byte("[Service]\nExecStart=/opt/foreign-app/foreign-app\n"), nil
+	}
+	managed, confirmed = isAppManagedPortBinding(names, binding)
+	if managed || !confirmed {
+		t.Fatalf("isAppManagedPortBinding(foreign unit) = managed %v confirmed %v, want confirmed unmanaged unit", managed, confirmed)
+	}
+}
+
+func TestIsAppManagedPortBindingAllowsWorkerPIDInManagedUnitCgroup(t *testing.T) {
+	cfg := goAccessEnabledAppConfig()
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+	withFakeSystemctlMainPID(t, "123")
+
+	managed, confirmed := isAppManagedPortBinding(names, preflight.PortBinding{
+		Port:     names.GoAccessWebSocketPort,
+		Protocol: "tcp",
+		InUse:    true,
+		Process:  "review-app-worker",
+		PID:      456,
+	})
+	if !managed || !confirmed {
+		t.Fatalf("isAppManagedPortBinding(worker PID) = managed %v confirmed %v, want managed worker PID in service cgroup", managed, confirmed)
+	}
+
+	previousCgroup := readAppProcessCgroupFileFn
+	t.Cleanup(func() { readAppProcessCgroupFileFn = previousCgroup })
+	readAppProcessCgroupFileFn = func(string) ([]byte, error) {
+		return []byte("0::/system.slice/foreign.service\n"), nil
+	}
+	managed, confirmed = isAppManagedPortBinding(names, preflight.PortBinding{
+		Port:     names.GoAccessWebSocketPort,
+		Protocol: "tcp",
+		InUse:    true,
+		Process:  "review-app-worker",
+		PID:      456,
+	})
+	if managed || !confirmed {
+		t.Fatalf("isAppManagedPortBinding(foreign cgroup worker PID) = managed %v confirmed %v, want confirmed unmanaged worker PID", managed, confirmed)
+	}
+}
+
+func TestDetectAppGoAccessPortStateRejectsForeignAppServiceWithMatchingPID(t *testing.T) {
+	cfg := goAccessEnabledAppConfig()
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+	withFakeSSOutput(t, fakeSSListenLine(names.GoAccessWebSocketPort, "review-app"))
+	withFakeSystemctlMainPID(t, "123")
+
+	previousRead := readAppServiceUnitFileFn
+	t.Cleanup(func() { readAppServiceUnitFileFn = previousRead })
+	readAppServiceUnitFileFn = func(string) ([]byte, error) {
+		return []byte("[Service]\nExecStart=/opt/foreign-app/foreign-app\n"), nil
+	}
+
+	checked, ready, detail := detectAppGoAccessPortState(cfg)
+	if !checked || ready {
+		t.Fatalf("detectAppGoAccessPortState() = checked %v ready %v detail %q, want foreign matching-PID service rejection", checked, ready, detail)
+	}
+	if !strings.Contains(detail, "review-app") {
+		t.Fatalf("detail = %q, want conflicting process", detail)
+	}
+}
+
+func TestDetectAppGoAccessLocaleStateRequiresUTF8ChineseLocale(t *testing.T) {
+	cfg := goAccessEnabledAppConfig()
+	cfg.Nginx.GoAccess.Language = appconfig.NginxGoAccessLanguageSimplifiedChinese
+
+	withFakeLocaleOutput(t, "C\nzh_CN.gbk\n")
+	checked, ready, detail := detectAppGoAccessLocaleState(cfg)
+	if !checked || ready {
+		t.Fatalf("detectAppGoAccessLocaleState(gbk) = checked %v ready %v detail %q, want UTF-8 failure", checked, ready, detail)
+	}
+
+	withFakeLocaleOutput(t, "C.UTF-8\nzh_CN.gbk\n")
+	checked, ready, detail = detectAppGoAccessLocaleState(cfg)
+	if !checked || ready || !strings.Contains(detail, "zh_CN.UTF-8") {
+		t.Fatalf("detectAppGoAccessLocaleState(missing zh-CN) = checked %v ready %v detail %q, want zh-CN failure", checked, ready, detail)
+	}
+
+	withFakeLocaleOutput(t, "zh_CN.UTF-8\n")
+	checked, ready, detail = detectAppGoAccessLocaleState(cfg)
+	if !checked || ready || !strings.Contains(detail, "C.UTF-8") {
+		t.Fatalf("detectAppGoAccessLocaleState(missing C.UTF-8) = checked %v ready %v detail %q, want C.UTF-8 failure", checked, ready, detail)
+	}
+
+	withFakeLocaleOutput(t, "C.UTF-8\nzh_CN.UTF-8\n")
+	checked, ready, detail = detectAppGoAccessLocaleState(cfg)
+	if !checked || !ready {
+		t.Fatalf("detectAppGoAccessLocaleState(utf8) = checked %v ready %v detail %q, want pass", checked, ready, detail)
+	}
+}
+
+func TestDetectAppGoAccessLocaleStateRequiresCUTF8EnglishLocale(t *testing.T) {
+	cfg := goAccessEnabledAppConfig()
+	cfg.Nginx.GoAccess.Language = appconfig.NginxGoAccessLanguageEnglish
+
+	withFakeLocaleOutput(t, "C\nPOSIX\n")
+	checked, ready, detail := detectAppGoAccessLocaleState(cfg)
+	if !checked || ready || !strings.Contains(detail, "C.UTF-8") {
+		t.Fatalf("detectAppGoAccessLocaleState(en missing C.UTF-8) = checked %v ready %v detail %q, want C.UTF-8 failure", checked, ready, detail)
+	}
+
+	withFakeLocaleOutput(t, "C.utf8\n")
+	checked, ready, detail = detectAppGoAccessLocaleState(cfg)
+	if !checked || !ready {
+		t.Fatalf("detectAppGoAccessLocaleState(en C.utf8) = checked %v ready %v detail %q, want pass", checked, ready, detail)
+	}
+}
+
+func TestDetectAppGoAccessAuthFileStateRequiresSafeParentDirectory(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(filepath.Dir(dir), 0o755); err != nil {
+		t.Fatalf("Chmod(temp parent dir) error = %v", err)
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatalf("Chmod(temp dir) error = %v", err)
+	}
+	authFile := filepath.Join(dir, "goaccess.htpasswd")
+	if err := os.WriteFile(authFile, []byte("user:hash\n"), 0o640); err != nil {
+		t.Fatalf("WriteFile(authFile) error = %v", err)
+	}
+	cfg := goAccessEnabledAppConfig()
+	cfg.Nginx.GoAccess.AuthBasicUserFile = authFile
+
+	previousLstat := lstatAppServicePathFn
+	t.Cleanup(func() {
+		lstatAppServicePathFn = previousLstat
+	})
+	safeDirs := ancestorDirs(dir)
+	lstatAppServicePathFn = func(path string) (os.FileInfo, error) {
+		info, err := os.Lstat(path)
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := safeDirs[path]; ok {
+			return rootOwnedModeFileInfo{name: info.Name(), mode: os.ModeDir | 0o755}, nil
+		}
+		return rootOwnedModeFileInfo{name: info.Name(), mode: info.Mode(), size: info.Size(), gid: 33}, nil
+	}
+
+	checked, ready, detail := detectAppGoAccessAuthFileState(cfg)
+	if !checked || !ready {
+		t.Fatalf("detectAppGoAccessAuthFileState() = checked %t ready %t detail %q, want ready", checked, ready, detail)
+	}
+
+	worldReadableAuthFile := filepath.Join(dir, "world-readable.htpasswd")
+	if err := os.WriteFile(worldReadableAuthFile, []byte("user:hash\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(worldReadableAuthFile) error = %v", err)
+	}
+	cfg.Nginx.GoAccess.AuthBasicUserFile = worldReadableAuthFile
+	checked, ready, detail = detectAppGoAccessAuthFileState(cfg)
+	if !checked || ready || !strings.Contains(detail, "must not be group-writable or accessible by others") {
+		t.Fatalf("detectAppGoAccessAuthFileState() = checked %t ready %t detail %q, want world-readable auth file failure", checked, ready, detail)
+	}
+
+	hiddenDir := filepath.Join(dir, "hidden")
+	if err := os.Mkdir(hiddenDir, 0o700); err != nil {
+		t.Fatalf("Mkdir(hiddenDir) error = %v", err)
+	}
+	hiddenAuthFile := filepath.Join(hiddenDir, "goaccess.htpasswd")
+	if err := os.WriteFile(hiddenAuthFile, []byte("user:hash\n"), 0o640); err != nil {
+		t.Fatalf("WriteFile(hiddenAuthFile) error = %v", err)
+	}
+	cfg.Nginx.GoAccess.AuthBasicUserFile = hiddenAuthFile
+	checked, ready, detail = detectAppGoAccessAuthFileState(cfg)
+	if !checked || !ready {
+		t.Fatalf("detectAppGoAccessAuthFileState() = checked %t ready %t detail %q, want secure hidden auth file ready without runtime traversal check", checked, ready, detail)
+	}
+	if strings.Contains(detail, "Nginx runtime user www-data") || strings.Contains(detail, "runtime readability check") {
+		t.Fatalf("detail = %q, must not claim preflight completed Nginx runtime readability", detail)
+	}
+
+	emptyAuthFile := filepath.Join(dir, "empty.htpasswd")
+	if err := os.WriteFile(emptyAuthFile, nil, 0o640); err != nil {
+		t.Fatalf("WriteFile(emptyAuthFile) error = %v", err)
+	}
+	cfg.Nginx.GoAccess.AuthBasicUserFile = emptyAuthFile
+	checked, ready, detail = detectAppGoAccessAuthFileState(cfg)
+	if !checked || ready || !strings.Contains(detail, "must not be empty") {
+		t.Fatalf("detectAppGoAccessAuthFileState() = checked %t ready %t detail %q, want empty file failure", checked, ready, detail)
+	}
+
+	malformedAuthFile := filepath.Join(dir, "malformed.htpasswd")
+	if err := os.WriteFile(malformedAuthFile, []byte("not-a-credential\n"), 0o640); err != nil {
+		t.Fatalf("WriteFile(malformedAuthFile) error = %v", err)
+	}
+	cfg.Nginx.GoAccess.AuthBasicUserFile = malformedAuthFile
+	checked, ready, detail = detectAppGoAccessAuthFileState(cfg)
+	if !checked || ready || !strings.Contains(detail, "must contain at least one user:hash credential line") {
+		t.Fatalf("detectAppGoAccessAuthFileState() = checked %t ready %t detail %q, want malformed file failure", checked, ready, detail)
+	}
+
+	spacedHashAuthFile := filepath.Join(dir, "spaced-hash.htpasswd")
+	if err := os.WriteFile(spacedHashAuthFile, []byte("user: hash\n"), 0o640); err != nil {
+		t.Fatalf("WriteFile(spacedHashAuthFile) error = %v", err)
+	}
+	cfg.Nginx.GoAccess.AuthBasicUserFile = spacedHashAuthFile
+	checked, ready, detail = detectAppGoAccessAuthFileState(cfg)
+	if !checked || ready || !strings.Contains(detail, "must contain at least one user:hash credential line") {
+		t.Fatalf("detectAppGoAccessAuthFileState() = checked %t ready %t detail %q, want spaced hash failure", checked, ready, detail)
+	}
+
+	hashWithWhitespaceAuthFile := filepath.Join(dir, "hash-with-whitespace.htpasswd")
+	if err := os.WriteFile(hashWithWhitespaceAuthFile, []byte("user:ha sh\n"), 0o640); err != nil {
+		t.Fatalf("WriteFile(hashWithWhitespaceAuthFile) error = %v", err)
+	}
+	cfg.Nginx.GoAccess.AuthBasicUserFile = hashWithWhitespaceAuthFile
+	checked, ready, detail = detectAppGoAccessAuthFileState(cfg)
+	if !checked || ready || !strings.Contains(detail, "must contain at least one user:hash credential line") {
+		t.Fatalf("detectAppGoAccessAuthFileState() = checked %t ready %t detail %q, want whitespace in hash failure", checked, ready, detail)
+	}
+
+	writableDir := filepath.Join(dir, "writable")
+	if err := os.Mkdir(writableDir, 0o700); err != nil {
+		t.Fatalf("Mkdir(writableDir) error = %v", err)
+	}
+	if err := os.Chmod(writableDir, 0o777); err != nil {
+		t.Fatalf("Chmod(writableDir) error = %v", err)
+	}
+	writableParentAuthFile := filepath.Join(writableDir, "goaccess.htpasswd")
+	if err := os.WriteFile(writableParentAuthFile, []byte("user:hash\n"), 0o640); err != nil {
+		t.Fatalf("WriteFile(writableParentAuthFile) error = %v", err)
+	}
+	cfg.Nginx.GoAccess.AuthBasicUserFile = writableParentAuthFile
+	checked, ready, detail = detectAppGoAccessAuthFileState(cfg)
+	if !checked || ready || !strings.Contains(detail, "parent directory") || !strings.Contains(detail, "must not be writable by group or others") {
+		t.Fatalf("detectAppGoAccessAuthFileState() = checked %t ready %t detail %q, want writable parent failure", checked, ready, detail)
+	}
+
+	stickyAncestorDir := filepath.Join(dir, "sticky")
+	if err := os.Mkdir(stickyAncestorDir, 0o755); err != nil {
+		t.Fatalf("Mkdir(stickyAncestorDir) error = %v", err)
+	}
+	if err := os.Chmod(stickyAncestorDir, os.ModeSticky|0o777); err != nil {
+		t.Fatalf("Chmod(stickyAncestorDir) error = %v", err)
+	}
+	stickyChildDir := filepath.Join(stickyAncestorDir, "safe")
+	if err := os.Mkdir(stickyChildDir, 0o755); err != nil {
+		t.Fatalf("Mkdir(stickyChildDir) error = %v", err)
+	}
+	stickyAncestorAuthFile := filepath.Join(stickyChildDir, "goaccess.htpasswd")
+	if err := os.WriteFile(stickyAncestorAuthFile, []byte("user:hash\n"), 0o640); err != nil {
+		t.Fatalf("WriteFile(stickyAncestorAuthFile) error = %v", err)
+	}
+	cfg.Nginx.GoAccess.AuthBasicUserFile = stickyAncestorAuthFile
+	checked, ready, detail = detectAppGoAccessAuthFileState(cfg)
+	if !checked || ready || !strings.Contains(detail, "parent directory") || !strings.Contains(detail, "must not be writable by group or others") {
+		t.Fatalf("detectAppGoAccessAuthFileState() = checked %t ready %t detail %q, want sticky ancestor failure", checked, ready, detail)
+	}
+}
+
+func ancestorDirs(path string) map[string]struct{} {
+	dirs := map[string]struct{}{}
+	dir := path
+	for {
+		dirs[dir] = struct{}{}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return dirs
+		}
+		dir = parent
+	}
+}
+
+func TestDetectAppGoAccessLogFileStateRequiresStaticSafePath(t *testing.T) {
+	const logFile = "/var/log/meshify/custom/review-app.access.log"
+	const hiddenLogFile = "/var/log/private/review-app.access.log"
+	logMode := os.FileMode(0o644)
+	logUID := uint32(0)
+	customLogDirMode := os.FileMode(0o755)
+	cfg := goAccessEnabledAppConfig()
+	cfg.Nginx.AccessLog = logFile
+
+	previousLstat := lstatAppServicePathFn
+	t.Cleanup(func() {
+		lstatAppServicePathFn = previousLstat
+	})
+	lstatAppServicePathFn = func(path string) (os.FileInfo, error) {
+		switch path {
+		case logFile, hiddenLogFile:
+			return rootOwnedModeFileInfo{name: filepath.Base(path), mode: logMode, size: 1, uid: logUID}, nil
+		case "/var/log/meshify/custom":
+			return rootOwnedModeFileInfo{name: "custom", mode: os.ModeDir | customLogDirMode}, nil
+		case "/var/log/meshify":
+			return rootOwnedModeFileInfo{name: "meshify", mode: os.ModeDir | 0o755}, nil
+		case "/var/log/private":
+			return rootOwnedModeFileInfo{name: "private", mode: os.ModeDir | 0o700}, nil
+		case "/var/log":
+			return rootOwnedModeFileInfo{name: "log", mode: os.ModeDir | 0o755}, nil
+		case "/var":
+			return rootOwnedModeFileInfo{name: "var", mode: os.ModeDir | 0o755}, nil
+		case "/":
+			return rootOwnedModeFileInfo{name: "/", mode: os.ModeDir | 0o755}, nil
+		default:
+			return nil, os.ErrNotExist
+		}
+	}
+
+	checked, ready, detail := detectAppGoAccessLogFileState(cfg)
+	if !checked || !ready {
+		t.Fatalf("detectAppGoAccessLogFileState() = checked %t ready %t detail %q, want ready", checked, ready, detail)
+	}
+
+	logMode = 0o640
+	checked, ready, detail = detectAppGoAccessLogFileState(cfg)
+	if !checked || !ready {
+		t.Fatalf("detectAppGoAccessLogFileState() = checked %t ready %t detail %q, want 0640 preflight pass", checked, ready, detail)
+	}
+
+	logUID = 33
+	checked, ready, detail = detectAppGoAccessLogFileState(cfg)
+	if !checked || !ready {
+		t.Fatalf("detectAppGoAccessLogFileState() = checked %t ready %t detail %q, want www-data-owned preflight pass", checked, ready, detail)
+	}
+
+	logUID = 1000
+	checked, ready, detail = detectAppGoAccessLogFileState(cfg)
+	if !checked || ready || !strings.Contains(detail, "must be owned by root or www-data") {
+		t.Fatalf("detectAppGoAccessLogFileState() = checked %t ready %t detail %q, want owner failure", checked, ready, detail)
+	}
+	logUID = 0
+
+	logMode = 0o664
+	checked, ready, detail = detectAppGoAccessLogFileState(cfg)
+	if !checked || ready || !strings.Contains(detail, "must not be writable by group or others") {
+		t.Fatalf("detectAppGoAccessLogFileState() = checked %t ready %t detail %q, want writable log failure", checked, ready, detail)
+	}
+
+	logMode = 0o644
+	cfg.Nginx.AccessLog = hiddenLogFile
+	checked, ready, detail = detectAppGoAccessLogFileState(cfg)
+	if !checked || !ready {
+		t.Fatalf("detectAppGoAccessLogFileState() = checked %t ready %t detail %q, want root-only parent preflight pass", checked, ready, detail)
+	}
+
+	cfg.Nginx.AccessLog = logFile
+	customLogDirMode = 0o775
+	checked, ready, detail = detectAppGoAccessLogFileState(cfg)
+	if !checked || ready || !strings.Contains(detail, "parent directory") || !strings.Contains(detail, "must not be writable by group or others") {
+		t.Fatalf("detectAppGoAccessLogFileState() = checked %t ready %t detail %q, want writable parent failure", checked, ready, detail)
+	}
+
+	cfg.Nginx.AccessLog = "/var/log/meshify/apps/review-app/access.log"
+	checked, ready, detail = detectAppGoAccessLogFileState(cfg)
+	if checked || ready || detail != "" {
+		t.Fatalf("detectAppGoAccessLogFileState(managed explicit log) = checked %t ready %t detail %q, want skipped", checked, ready, detail)
+	}
+}
+
+func TestEnsureAppGoAccessDependencyRequiresRenderedRuntimeOptions(t *testing.T) {
+	allOptions := allGoAccessRequiredOptions()
+	if err := ensureAppGoAccessDependency(stdcontext.Background(), host.NewExecutor(goAccessHelpRunner(t, allOptions...), nil)); err != nil {
+		t.Fatalf("ensureAppGoAccessDependency(all options) error = %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		options []string
+		want    string
+	}{
+		{name: "empty help", options: nil, want: "empty output"},
+		{name: "missing config file", options: withoutString(allOptions, "--config-file"), want: "--config-file"},
+		{name: "missing datetime format", options: withoutString(allOptions, "--datetime-format"), want: "--datetime-format"},
+		{name: "missing date format", options: withoutString(allOptions, "--date-format"), want: "--date-format"},
+		{name: "missing time format", options: withoutString(allOptions, "--time-format"), want: "--time-format"},
+		{name: "missing addr", options: withoutString(allOptions, "--addr"), want: "--addr"},
+		{name: "missing port", options: withoutString(allOptions, "--port"), want: "--port"},
+		{name: "missing ping interval", options: withoutString(allOptions, "--ping-interval"), want: "--ping-interval"},
+		{name: "missing html report title", options: withoutString(allOptions, "--html-report-title"), want: "--html-report-title"},
+		{name: "missing static file", options: withoutString(allOptions, "--static-file"), want: "--static-file"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ensureAppGoAccessDependency(stdcontext.Background(), host.NewExecutor(goAccessHelpRunner(t, tt.options...), nil))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("ensureAppGoAccessDependency() error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestEnsureAppGoAccessDependencyChecksFreshDBRestoreCompatibility(t *testing.T) {
+	allOptions := allGoAccessRequiredOptions()
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		switch command.Name {
+		case appsvc.GoAccessBinaryPath:
+			if len(command.Args) == 1 && command.Args[0] == "--version" {
+				return host.Result{Command: command, Stdout: "GoAccess test\n"}, nil
+			}
+			if len(command.Args) == 1 && command.Args[0] == "--help" {
+				return host.Result{Command: command, Stdout: strings.Join(allOptions, "\n") + "\n"}, nil
+			}
+		case "sh":
+			if command.DisplayName == "check-goaccess-fresh-db-compatibility" {
+				return host.Result{Command: command}, errors.New("fresh db restore failed")
+			}
+		}
+		t.Fatalf("unexpected command %#v", command)
+		return host.Result{}, nil
+	}}
+	err := ensureAppGoAccessDependency(stdcontext.Background(), host.NewExecutor(runner, nil))
+	if err == nil || !strings.Contains(err.Error(), "fresh db persist/restore compatibility check") {
+		t.Fatalf("ensureAppGoAccessDependency() error = %v, want fresh db compatibility failure", err)
+	}
+}
+
+func TestAppHostDependencyPackagesForGoAccess(t *testing.T) {
+	disabled := appconfig.New()
+	if slices.Contains(appHostDependencyPackages(disabled), "goaccess") {
+		t.Fatalf("disabled GoAccess dependencies = %#v, did not expect goaccess", appHostDependencyPackages(disabled))
+	}
+	if slices.Contains(appHostDependencyPackages(disabled), "logrotate") {
+		t.Fatalf("disabled GoAccess dependencies = %#v, did not expect logrotate", appHostDependencyPackages(disabled))
+	}
+
+	managed := appconfig.New()
+	managed.Nginx.GoAccess.Enabled = true
+	managedPackages := appHostDependencyPackages(managed)
+	for _, want := range []string{"goaccess", "logrotate"} {
+		if !slices.Contains(managedPackages, want) {
+			t.Fatalf("managed GoAccess dependencies = %#v, want %s", managedPackages, want)
+		}
+	}
+
+	explicitLog := managed
+	explicitLog.Nginx.AccessLog = "/var/log/meshify/custom/review-app.access.log"
+	explicitPackages := appHostDependencyPackages(explicitLog)
+	if !slices.Contains(explicitPackages, "goaccess") {
+		t.Fatalf("explicit-log GoAccess dependencies = %#v, want goaccess", explicitPackages)
+	}
+	if slices.Contains(explicitPackages, "logrotate") {
+		t.Fatalf("explicit-log GoAccess dependencies = %#v, did not expect managed logrotate dependency", explicitPackages)
+	}
+}
+
+func allGoAccessRequiredOptions() []string {
+	return []string{"--no-global-config", "--config-file", "--log-file", "--output", "--log-format", "--datetime-format", "--date-format", "--time-format", "--real-time-html", "--addr", "--port", "--ws-url", "--origin", "--ping-interval", "--persist", "--restore", "--db-path", "--html-report-title", "--static-file"}
 }
 
 func TestExecute_InitInvalidFormatDoesNotWriteConfig(t *testing.T) {
@@ -3650,7 +7052,7 @@ func TestEnsureAppHostDependenciesFailsWhenLegoArchitectureCannotBeDetected(t *t
 		return host.Result{}, nil
 	}}
 
-	err := ensureAppHostDependencies(stdcontext.Background(), host.NewExecutor(runner, nil))
+	err := ensureAppHostDependencies(stdcontext.Background(), appconfig.New(), host.NewExecutor(runner, nil))
 	if err == nil || !strings.Contains(err.Error(), "detect package architecture with dpkg --print-architecture") {
 		t.Fatalf("ensureAppHostDependencies() error = %v, want explicit dpkg architecture failure", err)
 	}
@@ -3716,7 +7118,43 @@ type rootOwnedFileInfo struct {
 func (info rootOwnedFileInfo) Sys() any {
 	return struct {
 		UID uint32
-	}{UID: 0}
+		GID uint32
+	}{UID: 0, GID: 0}
+}
+
+type rootOwnedModeFileInfo struct {
+	name string
+	mode os.FileMode
+	size int64
+	uid  uint32
+	gid  uint32
+}
+
+func (info rootOwnedModeFileInfo) Name() string {
+	return info.name
+}
+
+func (info rootOwnedModeFileInfo) Size() int64 {
+	return info.size
+}
+
+func (info rootOwnedModeFileInfo) Mode() os.FileMode {
+	return info.mode
+}
+
+func (info rootOwnedModeFileInfo) ModTime() time.Time {
+	return time.Time{}
+}
+
+func (info rootOwnedModeFileInfo) IsDir() bool {
+	return info.mode.IsDir()
+}
+
+func (info rootOwnedModeFileInfo) Sys() any {
+	return struct {
+		UID uint32
+		GID uint32
+	}{UID: info.uid, GID: info.gid}
 }
 
 func TestDeployDesiredStateDigestIgnoresShellCredentialSecretValues(t *testing.T) {
@@ -3788,8 +7226,14 @@ LISTEN 0 4096 [::]:443 [::]:* users:(("nginx",pid=123,fd=7))
 	if !tcpBindings[80].InUse || tcpBindings[80].Process != "nginx" {
 		t.Fatalf("tcpBindings[80] = %#v, want nginx listener", tcpBindings[80])
 	}
+	if tcpBindings[80].LocalAddress != "0.0.0.0" {
+		t.Fatalf("tcpBindings[80].LocalAddress = %q, want 0.0.0.0", tcpBindings[80].LocalAddress)
+	}
 	if !tcpBindings[443].InUse || tcpBindings[443].Process != "nginx" {
 		t.Fatalf("tcpBindings[443] = %#v, want nginx listener", tcpBindings[443])
+	}
+	if tcpBindings[443].LocalAddress != "::" {
+		t.Fatalf("tcpBindings[443].LocalAddress = %q, want ::", tcpBindings[443].LocalAddress)
 	}
 
 	udpRaw := `UNCONN 0 0 0.0.0.0:3478 0.0.0.0:* users:(("headscale",pid=456,fd=9))
@@ -3800,6 +7244,129 @@ LISTEN 0 4096 [::]:443 [::]:* users:(("nginx",pid=123,fd=7))
 	}
 	if !udpBindings[3478].InUse || udpBindings[3478].Process != "headscale" {
 		t.Fatalf("udpBindings[3478] = %#v, want headscale listener", udpBindings[3478])
+	}
+}
+
+func TestParseSSBindingsPrefersProcessDetailsForDuplicatePort(t *testing.T) {
+	t.Parallel()
+
+	raw := `LISTEN 0 4096 127.0.0.1:40123 0.0.0.0:*
+LISTEN 0 4096 127.0.0.1:40123 0.0.0.0:* users:(("goaccess",pid=123,fd=7))
+`
+	bindings, detected := parseSSBindings(raw, "tcp", []int{40123})
+	if !detected {
+		t.Fatal("parseSSBindings() detected = false, want true")
+	}
+	got := bindings[40123]
+	if got.Process != "goaccess" || got.PID != 123 {
+		t.Fatalf("bindings[40123] = %#v, want goaccess PID 123", got)
+	}
+}
+
+func TestParseSSBindingListPreservesDistinctProcessesForSameSocket(t *testing.T) {
+	t.Parallel()
+
+	raw := `LISTEN 0 4096 0.0.0.0:80 0.0.0.0:* users:(("nginx",pid=123,fd=6))
+LISTEN 0 4096 0.0.0.0:80 0.0.0.0:* users:(("caddy",pid=456,fd=7))
+`
+	bindings, detected := parseSSBindingList(raw, "tcp", []int{80})
+	if !detected {
+		t.Fatal("parseSSBindingList() detected = false, want true")
+	}
+	processes := map[string]bool{}
+	for _, binding := range bindings {
+		processes[binding.Process] = true
+	}
+	if len(bindings) != 2 || !processes["nginx"] || !processes["caddy"] {
+		t.Fatalf("parseSSBindingList() = %#v, want nginx and caddy entries", bindings)
+	}
+}
+
+func TestParseSSBindingListPreservesMultipleProcessesFromOneLine(t *testing.T) {
+	t.Parallel()
+
+	raw := `LISTEN 0 4096 0.0.0.0:80 0.0.0.0:* users:(("nginx",pid=123,fd=6),("caddy",pid=456,fd=7))
+`
+	bindings, detected := parseSSBindingList(raw, "tcp", []int{80})
+	if !detected {
+		t.Fatal("parseSSBindingList() detected = false, want true")
+	}
+	processes := map[string]int{}
+	for _, binding := range bindings {
+		processes[binding.Process] = binding.PID
+	}
+	if len(bindings) != 2 || processes["nginx"] != 123 || processes["caddy"] != 456 {
+		t.Fatalf("parseSSBindingList() = %#v, want nginx and caddy entries from one ss line", bindings)
+	}
+}
+
+func TestDetectPortBindingsPreservesDuplicateRequiredListeners(t *testing.T) {
+	cfg := config.ExampleConfig()
+	withFakeSSOutput(t, `LISTEN 0 4096 0.0.0.0:80 0.0.0.0:* users:(("nginx",pid=123,fd=6))
+LISTEN 0 4096 127.0.0.1:80 0.0.0.0:* users:(("caddy",pid=456,fd=7))
+`)
+
+	bindings := detectPortBindings(cfg)
+	hasNginx := slices.ContainsFunc(bindings, func(binding preflight.PortBinding) bool {
+		return binding.Port == 80 && binding.Protocol == "tcp" && binding.LocalAddress == "0.0.0.0" && binding.Process == "nginx"
+	})
+	hasCaddy := slices.ContainsFunc(bindings, func(binding preflight.PortBinding) bool {
+		return binding.Port == 80 && binding.Protocol == "tcp" && binding.LocalAddress == "127.0.0.1" && binding.Process == "caddy"
+	})
+	if !hasNginx || !hasCaddy {
+		t.Fatalf("detectPortBindings() = %#v, want both nginx and caddy listeners on 80/tcp", bindings)
+	}
+
+	result := preflight.CheckPortAvailabilityForConfig(cfg, bindings)
+	if result.Status != preflight.StatusFail {
+		t.Fatalf("CheckPortAvailabilityForConfig(detectPortBindings()) status = %q, want %q; findings = %#v", result.Status, preflight.StatusFail, result.Findings)
+	}
+	if !strings.Contains(strings.Join(result.Findings, "\n"), "caddy") {
+		t.Fatalf("CheckPortAvailabilityForConfig(detectPortBindings()) findings = %#v, want caddy conflict", result.Findings)
+	}
+}
+
+func TestDetectPortBindingsPreservesMultipleProcessesFromOneSSLine(t *testing.T) {
+	cfg := config.ExampleConfig()
+	withFakeSSOutput(t, `LISTEN 0 4096 0.0.0.0:80 0.0.0.0:* users:(("nginx",pid=123,fd=6),("caddy",pid=456,fd=7))
+`)
+
+	bindings := detectPortBindings(cfg)
+	hasNginx := slices.ContainsFunc(bindings, func(binding preflight.PortBinding) bool {
+		return binding.Port == 80 && binding.Protocol == "tcp" && binding.LocalAddress == "0.0.0.0" && binding.Process == "nginx" && binding.PID == 123
+	})
+	hasCaddy := slices.ContainsFunc(bindings, func(binding preflight.PortBinding) bool {
+		return binding.Port == 80 && binding.Protocol == "tcp" && binding.LocalAddress == "0.0.0.0" && binding.Process == "caddy" && binding.PID == 456
+	})
+	if !hasNginx || !hasCaddy {
+		t.Fatalf("detectPortBindings() = %#v, want nginx and caddy listeners from one ss line", bindings)
+	}
+
+	result := preflight.CheckPortAvailabilityForConfig(cfg, bindings)
+	if result.Status != preflight.StatusFail {
+		t.Fatalf("CheckPortAvailabilityForConfig(detectPortBindings()) status = %q, want %q; findings = %#v", result.Status, preflight.StatusFail, result.Findings)
+	}
+	if !strings.Contains(strings.Join(result.Findings, "\n"), "caddy") {
+		t.Fatalf("CheckPortAvailabilityForConfig(detectPortBindings()) findings = %#v, want caddy conflict", result.Findings)
+	}
+}
+
+func TestDetectPortBindingsAllowsNonOverlappingLoopbackListeners(t *testing.T) {
+	cfg := config.ExampleConfig()
+	withFakeSSOutput(t, `LISTEN 0 4096 127.0.0.2:8080 0.0.0.0:* users:(("caddy",pid=456,fd=7))
+`)
+
+	bindings := detectPortBindings(cfg)
+	hasCaddy := slices.ContainsFunc(bindings, func(binding preflight.PortBinding) bool {
+		return binding.Port == 8080 && binding.Protocol == "tcp" && binding.LocalAddress == "127.0.0.2" && binding.Process == "caddy"
+	})
+	if !hasCaddy {
+		t.Fatalf("detectPortBindings() = %#v, want caddy listener on 127.0.0.2:8080", bindings)
+	}
+
+	result := preflight.CheckPortAvailabilityForConfig(cfg, bindings)
+	if result.Status != preflight.StatusPass {
+		t.Fatalf("CheckPortAvailabilityForConfig(detectPortBindings()) status = %q, want %q; findings = %#v", result.Status, preflight.StatusPass, result.Findings)
 	}
 }
 
@@ -6933,6 +10500,15 @@ func successfulDeployHostResult(command host.Command) (host.Result, error) {
 		}
 	case "apt-get", "mkdir", "sh", "curl", "sha256sum", "tar", "chmod", "/opt/meshify/bin/lego", "ln", "nginx", "systemctl":
 		return host.Result{Command: command}, nil
+	case appsvc.GoAccessBinaryPath:
+		switch strings.Join(actual.Args, " ") {
+		case "--version":
+			return host.Result{Command: command, Stdout: "GoAccess test\n"}, nil
+		case "--help":
+			return host.Result{Command: command, Stdout: strings.Join(allGoAccessRequiredOptions(), "\n") + "\n"}, nil
+		default:
+			return host.Result{Command: command}, nil
+		}
 	default:
 		return host.Result{Command: command}, nil
 	}
@@ -7292,6 +10868,133 @@ func TestExecute_StatusMissingConfig(t *testing.T) {
 	if !strings.Contains(stdout, "meshify init --config "+configPath) {
 		t.Fatalf("stdout = %q, want init hint", stdout)
 	}
+}
+
+func goAccessEnabledAppConfig() appconfig.Config {
+	cfg := appconfig.New()
+	cfg.App.Name = "review-app"
+	cfg.App.Domains = []string{"app.example.com"}
+	cfg.App.CertificateEmail = "ops@example.com"
+	cfg.App.Listen = "127.0.0.1:18001"
+	cfg.Service.ExecStart = "/opt/review-app/review-app --listen 127.0.0.1:18001"
+	cfg.Service.WorkingDirectory = "/opt/review-app"
+	cfg.Nginx.GoAccess.Enabled = true
+	cfg.Nginx.GoAccess.AuthBasicUserFile = "/etc/review-app/goaccess.htpasswd"
+	return cfg
+}
+
+func withFakeSSOutput(t *testing.T, output string) {
+	t.Helper()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ss")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\ncat <<'EOF'\n"+output+"EOF\n"), 0o755); err != nil {
+		t.Fatalf("WriteFile(fake ss) error = %v", err)
+	}
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+}
+
+func fakeSSListenLine(port int, process string) string {
+	return fakeSSListenLineForAddress("127.0.0.1", port, process)
+}
+
+func fakeSSListenLineForAddress(address string, port int, process string) string {
+	return fakeSSListenLineForAddressWithPID(address, port, process, 123)
+}
+
+func fakeSSListenLineForAddressWithPID(address string, port int, process string, pid int) string {
+	return fmt.Sprintf("LISTEN 0 4096 %s:%d 0.0.0.0:* users:((\"%s\",pid=%d,fd=7))\n", address, port, process, pid)
+}
+
+func fakeSSListenLineWithoutProcessForAddress(address string, port int) string {
+	return fmt.Sprintf("LISTEN 0 4096 %s:%d 0.0.0.0:*\n", address, port)
+}
+
+func withFakeLocaleOutput(t *testing.T, output string) {
+	t.Helper()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "locale")
+	script := "#!/bin/sh\nif [ \"$1\" = \"-a\" ]; then\n  cat <<'EOF'\n" + output + "EOF\n  exit 0\nfi\nexit 64\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("WriteFile(fake locale) error = %v", err)
+	}
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+}
+
+func withFakeSystemctlMainPID(t *testing.T, mainPID string) {
+	t.Helper()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "systemctl")
+	script := `#!/bin/sh
+case "$1:$2" in
+  is-active:--quiet) exit 0 ;;
+  show:*)
+    control_group=${SYSTEMD_CONTROL_GROUP:-/system.slice/$2}
+    case " $* " in
+      *ControlGroup*) printf '%s\n' "$control_group"; exit 0 ;;
+    esac
+    printf '%s\n' "$SYSTEMD_MAIN_PID"; exit 0
+    ;;
+esac
+exit 64
+`
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("WriteFile(fake systemctl) error = %v", err)
+	}
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	t.Setenv("SYSTEMD_MAIN_PID", mainPID)
+	t.Setenv("SYSTEMD_CONTROL_GROUP", "")
+
+	previousRead := readAppServiceUnitFileFn
+	previousCgroup := readAppProcessCgroupFileFn
+	t.Cleanup(func() { readAppServiceUnitFileFn = previousRead })
+	t.Cleanup(func() { readAppProcessCgroupFileFn = previousCgroup })
+	readAppServiceUnitFileFn = func(path string) ([]byte, error) {
+		appName := strings.TrimSuffix(filepath.Base(path), ".service")
+		appName = strings.TrimSuffix(appName, "-goaccess")
+		return []byte("# " + appsvc.ManagedMarker(appName) + "\n"), nil
+	}
+	readAppProcessCgroupFileFn = func(string) ([]byte, error) {
+		return []byte("0::/system.slice/review-app.service\n"), nil
+	}
+}
+
+func goAccessHelpRunner(t *testing.T, options ...string) *scriptedHostRunner {
+	t.Helper()
+
+	help := ""
+	if len(options) > 0 {
+		help = strings.Join(options, "\n") + "\n"
+	}
+	return &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		switch command.Name {
+		case appsvc.GoAccessBinaryPath:
+			if len(command.Args) == 1 && command.Args[0] == "--version" {
+				return host.Result{Command: command, Stdout: "GoAccess test\n"}, nil
+			}
+			if len(command.Args) == 1 && command.Args[0] == "--help" {
+				return host.Result{Command: command, Stdout: help}, nil
+			}
+		case "sh":
+			if command.DisplayName == "check-goaccess-fresh-db-compatibility" {
+				return host.Result{Command: command}, nil
+			}
+		}
+		t.Fatalf("unexpected command %#v", command)
+		return host.Result{}, nil
+	}}
+}
+
+func withoutString(values []string, remove string) []string {
+	filtered := make([]string, 0, len(values))
+	for _, value := range values {
+		if value != remove {
+			filtered = append(filtered, value)
+		}
+	}
+	return filtered
 }
 
 func TestExecute_UnknownCommand(t *testing.T) {

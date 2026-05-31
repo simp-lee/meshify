@@ -9,6 +9,21 @@ const (
 	DefaultNginxProxyReadTimeout  = "600s"
 	DefaultNginxProxySendTimeout  = "600s"
 
+	DefaultNginxGoAccessLanguage            = "en"
+	DefaultNginxGoAccessLogFormat           = NginxGoAccessLogFormatEnhanced
+	DefaultNginxGoAccessPathSuffix          = "goaccess"
+	DefaultNginxGoAccessWebSocketPathSuffix = "ws"
+
+	NginxGoAccessLanguageEnglish           = "en"
+	NginxGoAccessLanguageSimplifiedChinese = "zh-CN"
+
+	NginxGoAccessLogFormatEnhanced = "enhanced"
+	NginxGoAccessLogFormatCombined = "combined"
+
+	NginxGoAccessDefaultWebSocketHost = "127.0.0.1"
+	NginxGoAccessWebSocketPortBase    = 39000
+	NginxGoAccessWebSocketPortSpan    = 20000
+
 	ACMEChallengeHTTP01 = "http-01"
 	ACMEChallengeDNS01  = "dns-01"
 
@@ -47,8 +62,20 @@ type NginxConfig struct {
 	HTTP2             *bool                       `yaml:"http2"`
 	AccessLog         string                      `yaml:"access_log"`
 	ErrorLog          string                      `yaml:"error_log"`
+	GoAccess          NginxGoAccessConfig         `yaml:"goaccess"`
 	Proxy             NginxProxyConfig            `yaml:"proxy"`
 	StaticLocations   []NginxStaticLocationConfig `yaml:"static_locations"`
+}
+
+type NginxGoAccessConfig struct {
+	Enabled           bool     `yaml:"enabled"`
+	Language          string   `yaml:"language"`
+	LogFormat         string   `yaml:"log_format"`
+	Path              string   `yaml:"path"`
+	WebSocketPath     string   `yaml:"websocket_path"`
+	WebSocketListen   string   `yaml:"websocket_listen"`
+	AuthBasicUserFile string   `yaml:"auth_basic_user_file"`
+	AuthCIDRAllowlist []string `yaml:"auth_cidr_allowlist"`
 }
 
 type NginxProxyConfig struct {

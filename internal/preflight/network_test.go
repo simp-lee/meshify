@@ -167,6 +167,25 @@ func TestCheckPortAvailabilityBlocksNonNginxWebListeners(t *testing.T) {
 	}
 }
 
+func TestCheckPortAvailabilityBlocksDuplicateNonNginxWebListener(t *testing.T) {
+	t.Parallel()
+
+	result := CheckPortAvailability([]PortBinding{
+		{Port: 80, Protocol: "tcp", InUse: true, LocalAddress: "0.0.0.0", Process: "nginx"},
+		{Port: 80, Protocol: "tcp", InUse: true, LocalAddress: "127.0.0.1", Process: "caddy"},
+		{Port: 443, Protocol: "tcp", InUse: false},
+		{Port: 3478, Protocol: "udp", InUse: false},
+	})
+
+	if result.Status != StatusFail {
+		t.Fatalf("CheckPortAvailability() status = %q, want %q", result.Status, StatusFail)
+	}
+	joined := strings.Join(result.Findings, "\n")
+	if !strings.Contains(joined, "caddy") {
+		t.Fatalf("CheckPortAvailability() findings = %q, want caddy conflict", joined)
+	}
+}
+
 func TestCheckPortAvailabilityForConfigChecksHeadscaleLocalPorts(t *testing.T) {
 	t.Parallel()
 
@@ -193,6 +212,78 @@ func TestCheckPortAvailabilityForConfigChecksHeadscaleLocalPorts(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(result.Remediations, "\n"), "advanced.headscale.metrics_port") {
 		t.Fatalf("CheckPortAvailabilityForConfig() remediations = %q, want metrics config guidance", strings.Join(result.Remediations, " | "))
+	}
+}
+
+func TestCheckPortAvailabilityForConfigAllowsNonOverlappingLoopbackListeners(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.ExampleConfig()
+	cfg.Advanced.Headscale.MetricsPort = 19091
+
+	result := CheckPortAvailabilityForConfig(cfg, []PortBinding{
+		{Port: 80, Protocol: "tcp", InUse: false},
+		{Port: 443, Protocol: "tcp", InUse: false},
+		{Port: 3478, Protocol: "udp", InUse: false},
+		{Port: 8080, Protocol: "tcp", InUse: true, LocalAddress: "127.0.0.2", Process: "caddy"},
+		{Port: 19091, Protocol: "tcp", InUse: true, LocalAddress: "127.0.0.2", Process: "prometheus"},
+		{Port: 50443, Protocol: "tcp", InUse: true, LocalAddress: "::1", Process: "grpc-test"},
+	})
+
+	if result.Status != StatusPass {
+		t.Fatalf("CheckPortAvailabilityForConfig() status = %q, want %q; findings = %#v", result.Status, StatusPass, result.Findings)
+	}
+}
+
+func TestCheckPortAvailabilityForConfigBlocksWildcardLocalPortListeners(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.ExampleConfig()
+
+	result := CheckPortAvailabilityForConfig(cfg, []PortBinding{
+		{Port: 80, Protocol: "tcp", InUse: false},
+		{Port: 443, Protocol: "tcp", InUse: false},
+		{Port: 3478, Protocol: "udp", InUse: false},
+		{Port: 8080, Protocol: "tcp", InUse: true, LocalAddress: "0.0.0.0", Process: "caddy"},
+		{Port: config.DefaultHeadscaleMetricsPort, Protocol: "tcp", InUse: false},
+		{Port: 50443, Protocol: "tcp", InUse: false},
+	})
+
+	if result.Status != StatusFail {
+		t.Fatalf("CheckPortAvailabilityForConfig() status = %q, want %q", result.Status, StatusFail)
+	}
+	if !strings.Contains(strings.Join(result.Findings, "\n"), "caddy") {
+		t.Fatalf("CheckPortAvailabilityForConfig() findings = %#v, want wildcard caddy conflict", result.Findings)
+	}
+}
+
+func TestSocketBindHostsOverlapUsesWildcardAddressFamily(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		left  string
+		right string
+		want  bool
+	}{
+		{name: "ipv4 wildcard does not cover ipv6", left: "0.0.0.0", right: "::1", want: false},
+		{name: "ipv6 wildcard conservatively covers ipv4", left: "::", right: "127.0.0.1", want: true},
+		{name: "ipv4 wildcard covers ipv4", left: "0.0.0.0", right: "127.0.0.1", want: true},
+		{name: "ipv6 wildcard covers ipv6", left: "::", right: "::1", want: true},
+		{name: "unknown wildcard stays conservative", left: "*", right: "::1", want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := socketBindHostsOverlap(tt.left, tt.right); got != tt.want {
+				t.Fatalf("socketBindHostsOverlap(%q, %q) = %v, want %v", tt.left, tt.right, got, tt.want)
+			}
+			if got := socketBindHostsOverlap(tt.right, tt.left); got != tt.want {
+				t.Fatalf("socketBindHostsOverlap(%q, %q) = %v, want %v", tt.right, tt.left, got, tt.want)
+			}
+		})
 	}
 }
 

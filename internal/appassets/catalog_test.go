@@ -49,6 +49,46 @@ func TestRuntimeCatalogIncludesServiceOnlyForListenMode(t *testing.T) {
 	}
 }
 
+func TestRuntimeCatalogIncludesGoAccessAssetsOnlyWhenEnabled(t *testing.T) {
+	t.Parallel()
+
+	disabledCatalog, err := RuntimeCatalog(testListenConfig())
+	if err != nil {
+		t.Fatalf("RuntimeCatalog(disabled) error = %v", err)
+	}
+	for _, sourcePath := range []string{GoAccessConfigTemplate, GoAccessServiceTemplate, GoAccessLogrotateTemplate} {
+		if hasSource(disabledCatalog, sourcePath) {
+			t.Fatalf("disabled catalog unexpectedly includes %s", sourcePath)
+		}
+	}
+
+	enabled := testListenConfig()
+	enabled.Nginx.GoAccess.Enabled = true
+	enabled.Nginx.GoAccess.AuthBasicUserFile = "/etc/example-app/goaccess.htpasswd"
+	enabledCatalog, err := RuntimeCatalog(enabled)
+	if err != nil {
+		t.Fatalf("RuntimeCatalog(enabled) error = %v", err)
+	}
+	for _, sourcePath := range []string{GoAccessConfigTemplate, GoAccessServiceTemplate, GoAccessLogrotateTemplate} {
+		if !hasSource(enabledCatalog, sourcePath) {
+			t.Fatalf("enabled catalog missing %s", sourcePath)
+		}
+	}
+
+	explicit := enabled
+	explicit.Nginx.AccessLog = "/var/log/meshify/custom/example-app.access.log"
+	explicitCatalog, err := RuntimeCatalog(explicit)
+	if err != nil {
+		t.Fatalf("RuntimeCatalog(explicit) error = %v", err)
+	}
+	if !hasSource(explicitCatalog, GoAccessConfigTemplate) || !hasSource(explicitCatalog, GoAccessServiceTemplate) {
+		t.Fatalf("explicit-log GoAccess catalog missing config/service assets")
+	}
+	if hasSource(explicitCatalog, GoAccessLogrotateTemplate) {
+		t.Fatalf("explicit-log GoAccess catalog unexpectedly includes managed logrotate asset")
+	}
+}
+
 func TestRuntimeCatalogMatchesCanonicalAppTemplates(t *testing.T) {
 	t.Parallel()
 
@@ -59,6 +99,12 @@ func TestRuntimeCatalogMatchesCanonicalAppTemplates(t *testing.T) {
 	}
 	listenSources := sourceSet(listenCatalog)
 	for _, sourcePath := range expected {
+		if isGoAccessTemplate(sourcePath) {
+			if _, ok := listenSources[sourcePath]; ok {
+				t.Fatalf("disabled listen runtime catalog unexpectedly includes GoAccess template %q", sourcePath)
+			}
+			continue
+		}
 		if _, ok := listenSources[sourcePath]; !ok {
 			t.Fatalf("listen runtime catalog missing canonical app template %q", sourcePath)
 		}
@@ -78,15 +124,38 @@ func TestRuntimeCatalogMatchesCanonicalAppTemplates(t *testing.T) {
 	upstreamSources := sourceSet(upstreamCatalog)
 	for _, sourcePath := range expected {
 		_, ok := upstreamSources[sourcePath]
-		if sourcePath == ServiceTemplate {
+		if sourcePath == ServiceTemplate || isGoAccessTemplate(sourcePath) {
 			if ok {
-				t.Fatalf("upstream runtime catalog unexpectedly includes service template %q", sourcePath)
+				t.Fatalf("upstream runtime catalog unexpectedly includes conditional template %q", sourcePath)
 			}
 			continue
 		}
 		if !ok {
 			t.Fatalf("upstream runtime catalog missing canonical app template %q", sourcePath)
 		}
+	}
+
+	enabled := testListenConfig()
+	enabled.Nginx.GoAccess.Enabled = true
+	enabled.Nginx.GoAccess.AuthBasicUserFile = "/etc/example-app/goaccess.htpasswd"
+	enabledCatalog, err := RuntimeCatalog(enabled)
+	if err != nil {
+		t.Fatalf("RuntimeCatalog(enabled) error = %v", err)
+	}
+	enabledSources := sourceSet(enabledCatalog)
+	for _, sourcePath := range expected {
+		if _, ok := enabledSources[sourcePath]; !ok {
+			t.Fatalf("enabled runtime catalog missing canonical app template %q", sourcePath)
+		}
+	}
+}
+
+func isGoAccessTemplate(sourcePath string) bool {
+	switch sourcePath {
+	case GoAccessConfigTemplate, GoAccessServiceTemplate, GoAccessLogrotateTemplate:
+		return true
+	default:
+		return false
 	}
 }
 
