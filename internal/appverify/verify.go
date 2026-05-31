@@ -147,7 +147,7 @@ func validateGoAccessStatic(cfg appconfig.Config, names appsvc.Names, staged []a
 		"real-time-html":    "true",
 		"addr":              names.GoAccessWebSocketHost,
 		"port":              fmt.Sprintf("%d", names.GoAccessWebSocketPort),
-		"ws-url":            "wss://" + cfg.PrimaryDomain() + cfg.NginxGoAccessWebSocketPath(),
+		"ws-url":            "wss://" + cfg.PrimaryDomain() + ":443" + cfg.NginxGoAccessWebSocketPath(),
 		"origin":            "https://" + cfg.PrimaryDomain(),
 		"ping-interval":     "10",
 		"persist":           "true",

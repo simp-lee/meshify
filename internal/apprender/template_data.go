@@ -196,7 +196,7 @@ func goAccessTemplateData(cfg appconfig.Config, names appsvc.Names) GoAccessTemp
 		SystemUser:                names.GoAccessSystemUser,
 		SystemGroup:               names.GoAccessSystemGroup,
 		DashboardURL:              "https://" + cfg.PrimaryDomain() + cfg.NginxGoAccessDashboardPath(),
-		WSURL:                     "wss://" + cfg.PrimaryDomain() + cfg.NginxGoAccessWebSocketPath(),
+		WSURL:                     goAccessPublicWebSocketURL(cfg.PrimaryDomain(), cfg.NginxGoAccessWebSocketPath()),
 		Origin:                    "https://" + cfg.PrimaryDomain(),
 		HTMLReportTitle:           "Meshify-GoAccess-" + names.AppName,
 	}
@@ -217,6 +217,10 @@ func goAccessTemplateData(cfg appconfig.Config, names appsvc.Names) GoAccessTemp
 		data.LCTime = "C.UTF-8"
 	}
 	return data
+}
+
+func goAccessPublicWebSocketURL(primaryDomain string, websocketPath string) string {
+	return "wss://" + primaryDomain + ":443" + websocketPath
 }
 
 func proxyTemplateData(proxy appconfig.NginxProxyConfig) ProxyTemplateData {

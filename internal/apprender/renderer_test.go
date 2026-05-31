@@ -240,7 +240,7 @@ func TestStageRuntimeRendersGoAccessAssetsAndNginxLocations(t *testing.T) {
 		"real-time-html true",
 		"addr 127.0.0.1",
 		"port ",
-		"ws-url wss://abc.com/_meshify/apps/example-app/goaccess/ws",
+		"ws-url wss://abc.com:443/_meshify/apps/example-app/goaccess/ws",
 		"origin https://abc.com",
 		"ping-interval 10",
 		"persist true",
