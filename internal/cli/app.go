@@ -2109,14 +2109,14 @@ func ensureAppGoAccessDependency(ctx stdcontext.Context, executor host.Executor)
 		return fmt.Errorf("%s --version failed after package install: %w", appsvc.GoAccessBinaryPath, commandErrorWithOutput(versionResult, err))
 	}
 	result, err := executor.Run(ctx, goAccessProbeCommand("--help"))
-	if err != nil {
+	help := strings.TrimSpace(result.Stdout + "\n" + result.Stderr)
+	if err != nil && !goAccessHelpHasAllRequiredOptions(help) {
 		return fmt.Errorf("%s --help failed while checking required runtime parameters: %w", appsvc.GoAccessBinaryPath, commandErrorWithOutput(result, err))
 	}
-	help := strings.TrimSpace(result.Stdout + "\n" + result.Stderr)
 	if help == "" {
 		return fmt.Errorf("%s --help returned empty output while checking required runtime parameters", appsvc.GoAccessBinaryPath)
 	}
-	for _, flag := range []string{"--no-global-config", "--config-file", "--log-file", "--output", "--log-format", "--datetime-format", "--date-format", "--time-format", "--real-time-html", "--addr", "--port", "--ws-url", "--origin", "--ping-interval", "--persist", "--restore", "--db-path", "--html-report-title", "--static-file"} {
+	for _, flag := range goAccessRequiredRuntimeOptions() {
 		if !goAccessHelpHasOption(help, flag) {
 			return fmt.Errorf("installed %s does not advertise required option %s; install a newer GoAccess package", appsvc.GoAccessBinaryPath, flag)
 		}
@@ -2193,6 +2193,22 @@ func goAccessHelpHasOption(help string, option string) bool {
 		}
 	}
 	return false
+}
+
+func goAccessHelpHasAllRequiredOptions(help string) bool {
+	if strings.TrimSpace(help) == "" {
+		return false
+	}
+	for _, flag := range goAccessRequiredRuntimeOptions() {
+		if !goAccessHelpHasOption(help, flag) {
+			return false
+		}
+	}
+	return true
+}
+
+func goAccessRequiredRuntimeOptions() []string {
+	return []string{"--no-global-config", "--config-file", "--log-file", "--output", "--log-format", "--datetime-format", "--date-format", "--time-format", "--real-time-html", "--addr", "--port", "--ws-url", "--origin", "--ping-interval", "--persist", "--restore", "--db-path", "--html-report-title", "--static-file"}
 }
 
 func appHostDependencyPackages(cfg appconfig.Config) []string {

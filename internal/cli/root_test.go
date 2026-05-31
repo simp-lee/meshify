@@ -5639,6 +5639,36 @@ func TestEnsureAppGoAccessDependencyIncludesGoAccessOutputOnHelpFailure(t *testi
 	}
 }
 
+func TestEnsureAppGoAccessDependencyAcceptsNonzeroHelpWithRequiredOptions(t *testing.T) {
+	allOptions := allGoAccessRequiredOptions()
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		switch command.Name {
+		case appsvc.GoAccessBinaryPath:
+			if len(command.Args) == 1 && command.Args[0] == "--version" {
+				return host.Result{Command: command, Stdout: "GoAccess test\n"}, nil
+			}
+			if len(command.Args) == 1 && command.Args[0] == "--help" {
+				result := host.Result{
+					Command:  command,
+					ExitCode: 1,
+					Stdout:   strings.Join(allOptions, "\n") + "\n",
+				}
+				return result, &host.CommandError{Result: result, Err: errors.New("exit status 1")}
+			}
+		case "sh":
+			if command.DisplayName == "check-goaccess-fresh-db-compatibility" {
+				return host.Result{Command: command}, nil
+			}
+		}
+		t.Fatalf("unexpected command %#v", command)
+		return host.Result{}, nil
+	}}
+
+	if err := ensureAppGoAccessDependency(stdcontext.Background(), host.NewExecutor(runner, nil)); err != nil {
+		t.Fatalf("ensureAppGoAccessDependency() error = %v", err)
+	}
+}
+
 func TestEnsureAppGoAccessDependencyUsesStableProbeLocale(t *testing.T) {
 	allOptions := allGoAccessRequiredOptions()
 	seen := []string{}
@@ -5730,7 +5760,7 @@ func TestAppHostDependencyPackagesForGoAccess(t *testing.T) {
 }
 
 func allGoAccessRequiredOptions() []string {
-	return []string{"--no-global-config", "--config-file", "--log-file", "--output", "--log-format", "--datetime-format", "--date-format", "--time-format", "--real-time-html", "--addr", "--port", "--ws-url", "--origin", "--ping-interval", "--persist", "--restore", "--db-path", "--html-report-title", "--static-file"}
+	return goAccessRequiredRuntimeOptions()
 }
 
 func TestExecute_InitInvalidFormatDoesNotWriteConfig(t *testing.T) {
