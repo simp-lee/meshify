@@ -460,6 +460,17 @@ sudo htpasswd -m /etc/example-app/goaccess.htpasswd another-user
 
 Meshify does not ship a copyable htpasswd template, and you should not reuse example hashes; this file is the dashboard password database and must be generated for each deployment.
 
+GoAccess also needs the system locales selected by `nginx.goaccess.language`. Debian/Ubuntu normally provides `C.UTF-8`; when using `language: "zh-CN"`, generate `zh_CN.UTF-8` before deploy:
+
+```bash
+sudo apt install -y locales
+sudo sed -i 's/^# *zh_CN.UTF-8 UTF-8/zh_CN.UTF-8 UTF-8/' /etc/locale.gen
+sudo locale-gen zh_CN.UTF-8
+locale -a | grep -Ei '^(C|C\.utf8|zh_CN\.utf8|zh_CN\.UTF-8)$'
+```
+
+Keep the login shell locale valid too. For example, if `env` shows `LANG=en_US.UTF-8`, `locale -a` must list `en_US.utf8`; otherwise generate it or switch the host default to `C.UTF-8` with `sudo update-locale LANG=C.UTF-8`. Meshify runs GoAccess `--version`, `--help`, and compatibility probes under `LANG=C LC_ALL=C` so dependency checks do not depend on the operator's SSH locale. The deployed GoAccess systemd service still uses the UTF-8 locale selected by `nginx.goaccess.language`.
+
 Key rules:
 
 | Item | Rule |

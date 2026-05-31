@@ -2104,12 +2104,13 @@ func parseDottedVersion(value string) [3]int {
 }
 
 func ensureAppGoAccessDependency(ctx stdcontext.Context, executor host.Executor) error {
-	if _, err := executor.Run(ctx, host.Command{Name: appsvc.GoAccessBinaryPath, Args: []string{"--version"}}); err != nil {
-		return fmt.Errorf("%s --version failed after package install: %w", appsvc.GoAccessBinaryPath, err)
-	}
-	result, err := executor.Run(ctx, host.Command{Name: appsvc.GoAccessBinaryPath, Args: []string{"--help"}})
+	versionResult, err := executor.Run(ctx, goAccessProbeCommand("--version"))
 	if err != nil {
-		return fmt.Errorf("%s --help failed while checking required runtime parameters: %w", appsvc.GoAccessBinaryPath, err)
+		return fmt.Errorf("%s --version failed after package install: %w", appsvc.GoAccessBinaryPath, commandErrorWithOutput(versionResult, err))
+	}
+	result, err := executor.Run(ctx, goAccessProbeCommand("--help"))
+	if err != nil {
+		return fmt.Errorf("%s --help failed while checking required runtime parameters: %w", appsvc.GoAccessBinaryPath, commandErrorWithOutput(result, err))
 	}
 	help := strings.TrimSpace(result.Stdout + "\n" + result.Stderr)
 	if help == "" {
@@ -2120,10 +2121,26 @@ func ensureAppGoAccessDependency(ctx stdcontext.Context, executor host.Executor)
 			return fmt.Errorf("installed %s does not advertise required option %s; install a newer GoAccess package", appsvc.GoAccessBinaryPath, flag)
 		}
 	}
-	if _, err := executor.Run(ctx, goAccessFreshDBCompatibilityCommand()); err != nil {
-		return fmt.Errorf("installed %s failed Meshify fresh db persist/restore compatibility check: %w", appsvc.GoAccessBinaryPath, err)
+	result, err = executor.Run(ctx, goAccessFreshDBCompatibilityCommand())
+	if err != nil {
+		return fmt.Errorf("installed %s failed Meshify fresh db persist/restore compatibility check: %w", appsvc.GoAccessBinaryPath, commandErrorWithOutput(result, err))
 	}
 	return nil
+}
+
+func goAccessProbeCommand(arg string) host.Command {
+	return host.Command{
+		Name: appsvc.GoAccessBinaryPath,
+		Args: []string{arg},
+		Env:  goAccessProbeEnv(),
+	}
+}
+
+func goAccessProbeEnv() map[string]string {
+	return map[string]string{
+		"LANG":   "C",
+		"LC_ALL": "C",
+	}
 }
 
 func goAccessFreshDBCompatibilityCommand() host.Command {
@@ -2162,6 +2179,7 @@ fi`
 	return host.Command{
 		Name:        "sh",
 		Args:        []string{"-c", script, "meshify-app-goaccess-fresh-db-compatibility", appsvc.GoAccessBinaryPath},
+		Env:         goAccessProbeEnv(),
 		DisplayName: "check-goaccess-fresh-db-compatibility",
 		DisplayArgs: []string{appsvc.GoAccessBinaryPath},
 	}

@@ -460,6 +460,17 @@ sudo htpasswd -m /etc/example-app/goaccess.htpasswd another-user
 
 Meshify 不提供可复制的 htpasswd 模板，也不要复用示例 hash；这个文件本质上是看板密码库，必须按部署现场生成。
 
+GoAccess 还需要 `nginx.goaccess.language` 对应的系统 locale。Debian/Ubuntu 通常自带 `C.UTF-8`；使用 `language: "zh-CN"` 时，部署前需要生成 `zh_CN.UTF-8`：
+
+```bash
+sudo apt install -y locales
+sudo sed -i 's/^# *zh_CN.UTF-8 UTF-8/zh_CN.UTF-8 UTF-8/' /etc/locale.gen
+sudo locale-gen zh_CN.UTF-8
+locale -a | grep -Ei '^(C|C\.utf8|zh_CN\.utf8|zh_CN\.UTF-8)$'
+```
+
+登录 shell 自身的 locale 也要有效。例如 `env` 显示 `LANG=en_US.UTF-8` 时，`locale -a` 必须包含 `en_US.utf8`；否则生成它，或用 `sudo update-locale LANG=C.UTF-8` 把主机默认值改成 `C.UTF-8`。Meshify 会用 `LANG=C LC_ALL=C` 运行 GoAccess 的 `--version`、`--help` 和兼容性探测，避免依赖操作者 SSH 会话的 locale；真正部署出来的 GoAccess systemd service 仍会使用 `nginx.goaccess.language` 选择的 UTF-8 locale。
+
 关键规则：
 
 | 项目 | 规则 |

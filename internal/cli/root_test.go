@@ -5607,6 +5607,74 @@ func TestEnsureAppGoAccessDependencyRequiresRenderedRuntimeOptions(t *testing.T)
 	}
 }
 
+func TestEnsureAppGoAccessDependencyIncludesGoAccessOutputOnHelpFailure(t *testing.T) {
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		if command.Name == appsvc.GoAccessBinaryPath {
+			switch strings.Join(command.Args, " ") {
+			case "--version":
+				return host.Result{Command: command, Stdout: "GoAccess test\n"}, nil
+			case "--help":
+				result := host.Result{
+					Command:  command,
+					ExitCode: 1,
+					Stderr:   "goaccess: locale not supported\nverbose follow-up",
+				}
+				return result, &host.CommandError{Result: result, Err: errors.New("exit status 1")}
+			}
+		}
+		t.Fatalf("unexpected command %#v", command)
+		return host.Result{}, nil
+	}}
+
+	err := ensureAppGoAccessDependency(stdcontext.Background(), host.NewExecutor(runner, nil))
+	if err == nil {
+		t.Fatal("ensureAppGoAccessDependency() error = nil, want help failure")
+	}
+	message := err.Error()
+	if !strings.Contains(message, "output: goaccess: locale not supported") {
+		t.Fatalf("error = %q, want GoAccess output", message)
+	}
+	if strings.Contains(message, "verbose follow-up") {
+		t.Fatalf("error = %q, do not want multiline command output", message)
+	}
+}
+
+func TestEnsureAppGoAccessDependencyUsesStableProbeLocale(t *testing.T) {
+	allOptions := allGoAccessRequiredOptions()
+	seen := []string{}
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		if command.Env["LANG"] != "C" || command.Env["LC_ALL"] != "C" {
+			t.Fatalf("command.Env = %#v, want GoAccess probe locale", command.Env)
+		}
+		switch command.Name {
+		case appsvc.GoAccessBinaryPath:
+			seen = append(seen, command.Name+" "+strings.Join(command.Args, " "))
+			if len(command.Args) == 1 && command.Args[0] == "--version" {
+				return host.Result{Command: command, Stdout: "GoAccess test\n"}, nil
+			}
+			if len(command.Args) == 1 && command.Args[0] == "--help" {
+				return host.Result{Command: command, Stdout: strings.Join(allOptions, "\n") + "\n"}, nil
+			}
+		case "sh":
+			if command.DisplayName == "check-goaccess-fresh-db-compatibility" {
+				seen = append(seen, command.DisplayName)
+				return host.Result{Command: command}, nil
+			}
+		}
+		t.Fatalf("unexpected command %#v", command)
+		return host.Result{}, nil
+	}}
+
+	executor := host.NewExecutor(runner, map[string]string{"LANG": "zh_CN.UTF-8", "LC_ALL": "zh_CN.UTF-8"})
+	if err := ensureAppGoAccessDependency(stdcontext.Background(), executor); err != nil {
+		t.Fatalf("ensureAppGoAccessDependency() error = %v", err)
+	}
+	want := []string{appsvc.GoAccessBinaryPath + " --version", appsvc.GoAccessBinaryPath + " --help", "check-goaccess-fresh-db-compatibility"}
+	if strings.Join(seen, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("seen commands = %#v, want %#v", seen, want)
+	}
+}
+
 func TestEnsureAppGoAccessDependencyChecksFreshDBRestoreCompatibility(t *testing.T) {
 	allOptions := allGoAccessRequiredOptions()
 	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
