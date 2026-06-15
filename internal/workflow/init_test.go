@@ -2,8 +2,8 @@ package workflow
 
 import (
 	"fmt"
-	"meshify/internal/config"
-	"meshify/internal/output"
+	"lanpanel/internal/config"
+	"lanpanel/internal/output"
 	"strings"
 	"testing"
 )
@@ -93,7 +93,7 @@ func TestRunInitCollectsDefaultGuidedConfig(t *testing.T) {
 		t.Fatalf("HeadscaleSource.Mode = %q, want %q", result.Config.Advanced.HeadscaleSource.Mode, config.PackageSourceModeDirect)
 	}
 
-	response := result.Response("meshify.yaml")
+	response := result.Response("lanpanel.yaml")
 	if response.Summary != "wrote guided config" {
 		t.Fatalf("Summary = %q, want %q", response.Summary, "wrote guided config")
 	}
@@ -101,10 +101,10 @@ func TestRunInitCollectsDefaultGuidedConfig(t *testing.T) {
 		t.Fatalf("config source = %q, want %q", response.Fields[1].Value, "guided default")
 	}
 	assertContainsStep(t, response.NextSteps, "Review the generated default section")
-	assertContainsStep(t, response.NextSteps, "meshify init --advanced --config meshify.advanced.yaml")
-	assertNotContainsStep(t, response.NextSteps, "meshify init --advanced --config meshify.yaml")
-	assertContainsStep(t, response.NextSteps, "meshify deploy --config meshify.yaml")
-	assertContainsStep(t, response.NextSteps, "meshify verify --config meshify.yaml")
+	assertContainsStep(t, response.NextSteps, "lanpanel init --advanced --config lanpanel.advanced.yaml")
+	assertNotContainsStep(t, response.NextSteps, "lanpanel init --advanced --config lanpanel.yaml")
+	assertContainsStep(t, response.NextSteps, "lanpanel deploy --config lanpanel.yaml")
+	assertContainsStep(t, response.NextSteps, "lanpanel verify --config lanpanel.yaml")
 	assertContainsStep(t, response.NextSteps, "validate this config now")
 }
 
@@ -137,11 +137,11 @@ func TestRunInitAllowsServerURLBeforeBaseDomainIsKnown(t *testing.T) {
 func TestExampleInitResultResponseUsesSeparateAdvancedConfigPath(t *testing.T) {
 	t.Parallel()
 
-	response := ExampleInitResult().Response("meshify.yaml")
+	response := ExampleInitResult().Response("lanpanel.yaml")
 
-	assertContainsStep(t, response.NextSteps, "meshify init --advanced --config meshify.advanced.yaml")
-	assertNotContainsStep(t, response.NextSteps, "meshify init --advanced --config meshify.yaml")
-	assertContainsStep(t, response.NextSteps, "meshify verify --config meshify.yaml")
+	assertContainsStep(t, response.NextSteps, "lanpanel init --advanced --config lanpanel.advanced.yaml")
+	assertNotContainsStep(t, response.NextSteps, "lanpanel init --advanced --config lanpanel.yaml")
+	assertContainsStep(t, response.NextSteps, "lanpanel verify --config lanpanel.yaml")
 	assertContainsStep(t, response.NextSteps, "validate this config now")
 }
 
@@ -155,7 +155,7 @@ func TestRunInitCollectsAdvancedGuidedConfig(t *testing.T) {
 			"tailnet.example.com",
 			"ops@example.com",
 			"cloudflare",
-			"/etc/meshify/dns01/cloudflare.env",
+			"/etc/lanpanel/dns01/cloudflare.env",
 			config.DefaultHeadscaleVersion,
 			"https://mirror.example.com/headscale.deb",
 			strings.Repeat("a", 64),
@@ -188,7 +188,7 @@ func TestRunInitCollectsAdvancedGuidedConfig(t *testing.T) {
 	if result.Config.Advanced.DNS01.Provider != "cloudflare" {
 		t.Fatalf("DNS01.Provider = %q, want %q", result.Config.Advanced.DNS01.Provider, "cloudflare")
 	}
-	if result.Config.Advanced.DNS01.EnvFile != "/etc/meshify/dns01/cloudflare.env" {
+	if result.Config.Advanced.DNS01.EnvFile != "/etc/lanpanel/dns01/cloudflare.env" {
 		t.Fatalf("DNS01.EnvFile = %q, want env path", result.Config.Advanced.DNS01.EnvFile)
 	}
 	if result.Config.Advanced.HeadscaleSource.Mode != config.PackageSourceModeMirror {
@@ -207,14 +207,14 @@ func TestRunInitCollectsAdvancedGuidedConfig(t *testing.T) {
 		t.Fatalf("PublicIPv6 = %q, want %q", result.Config.Advanced.Network.PublicIPv6, "2001:db8::10")
 	}
 
-	response := result.Response("meshify.yaml")
+	response := result.Response("lanpanel.yaml")
 	if response.Fields[1].Value != "guided advanced" {
 		t.Fatalf("config source = %q, want %q", response.Fields[1].Value, "guided advanced")
 	}
 	assertContainsStep(t, response.NextSteps, "Review the generated advanced section before deploy")
 	assertContainsStep(t, response.NextSteps, "Prepare the root-only DNS-01 env file")
-	assertContainsStep(t, response.NextSteps, "meshify deploy --config meshify.yaml")
-	assertContainsStep(t, response.NextSteps, "meshify verify --config meshify.yaml")
+	assertContainsStep(t, response.NextSteps, "lanpanel deploy --config lanpanel.yaml")
+	assertContainsStep(t, response.NextSteps, "lanpanel verify --config lanpanel.yaml")
 }
 
 func TestRunInitReturnsPromptValidationError(t *testing.T) {

@@ -6,7 +6,7 @@ import (
 )
 
 func ManagedMarker(appName string) string {
-	return "Meshify-managed: app.name=" + strings.TrimSpace(appName)
+	return "Lanpanel-managed: app.name=" + strings.TrimSpace(appName)
 }
 
 func CheckManagedContent(appName string, content []byte) error {
@@ -20,12 +20,12 @@ func CheckManagedContent(appName string, content []byte) error {
 			foundCurrent = true
 			continue
 		}
-		if strings.HasPrefix(normalized, "Meshify-managed:") {
-			return fmt.Errorf("target file is managed by a different Meshify app")
+		if strings.HasPrefix(normalized, "Lanpanel-managed:") {
+			return fmt.Errorf("target file is managed by a different Lanpanel app")
 		}
 	}
 	if foundCurrent {
 		return nil
 	}
-	return fmt.Errorf("target file is not a Meshify-managed app file")
+	return fmt.Errorf("target file is not a Lanpanel-managed app file")
 }

@@ -4,8 +4,8 @@ import (
 	stdcontext "context"
 	"fmt"
 	"io"
-	"meshify/internal/host"
-	"meshify/internal/output"
+	"lanpanel/internal/host"
+	"lanpanel/internal/output"
 	"strings"
 	"time"
 )
@@ -31,7 +31,7 @@ func runHostCommandWithProgress(ctx stdcontext.Context, executor host.Executor, 
 	}
 	detail := strings.TrimSpace(progress.Detail)
 	if detail != "" {
-		_, _ = fmt.Fprintf(writer, "meshify %s: %s\n", commandName, detail)
+		_, _ = fmt.Fprintf(writer, "lanpanel %s: %s\n", commandName, detail)
 	}
 
 	type outcome struct {
@@ -52,7 +52,7 @@ func runHostCommandWithProgress(ctx stdcontext.Context, executor host.Executor, 
 		case result := <-done:
 			return result.result, result.err
 		case <-ticker.C:
-			_, _ = fmt.Fprintf(writer, "meshify %s: still waiting for certificate issuance; elapsed %s\n", commandName, roundElapsed(time.Since(started)))
+			_, _ = fmt.Fprintf(writer, "lanpanel %s: still waiting for certificate issuance; elapsed %s\n", commandName, roundElapsed(time.Since(started)))
 		}
 	}
 }

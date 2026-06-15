@@ -1,2 +1,2 @@
-// Package appsvc plans app-specific host resources for meshify app deployments.
+// Package appsvc plans app-specific host resources for lanpanel app deployments.
 package appsvc

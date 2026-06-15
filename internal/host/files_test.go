@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 	"io/fs"
-	"meshify/internal/assets"
-	"meshify/internal/render"
+	"lanpanel/internal/assets"
+	"lanpanel/internal/render"
 	"os"
 	"path/filepath"
 	"slices"
@@ -270,7 +270,7 @@ func TestCommandFileSystemWriteFileUsesRestrictiveAtomicReplace(t *testing.T) {
 func TestCommandFileSystemStatParsesLocaleIndependentModeBits(t *testing.T) {
 	t.Parallel()
 
-	regularRunner := &captureRunner{result: Result{Stdout: "81a4 123 1700000000\n"}}
+	regularRunner := &captureRunner{result: Result{Stdout: "81a4 123 1700000000 0 0\n"}}
 	fileSystem := NewCommandFileSystem(NewExecutor(regularRunner, nil))
 	regularInfo, err := fileSystem.Stat("/etc/headscale/config.yaml")
 	if err != nil {
@@ -285,8 +285,15 @@ func TestCommandFileSystemStatParsesLocaleIndependentModeBits(t *testing.T) {
 	if regularInfo.Size() != 123 || regularInfo.ModTime().Unix() != 1700000000 {
 		t.Fatalf("regular size/mtime = %d/%d, want 123/1700000000", regularInfo.Size(), regularInfo.ModTime().Unix())
 	}
+	owner, ok := regularInfo.Sys().(struct {
+		UID uint64
+		GID uint64
+	})
+	if !ok || owner.UID != 0 || owner.GID != 0 {
+		t.Fatalf("regular owner = %#v, %v; want uid/gid 0", regularInfo.Sys(), ok)
+	}
 
-	symlinkRunner := &captureRunner{result: Result{Stdout: "a1ff 7 1700000001\n"}}
+	symlinkRunner := &captureRunner{result: Result{Stdout: "a1ff 7 1700000001 0 0\n"}}
 	fileSystem = NewCommandFileSystem(NewExecutor(symlinkRunner, nil))
 	symlinkInfo, err := fileSystem.Lstat("/etc/headscale/config.yaml")
 	if err != nil {
@@ -302,7 +309,7 @@ func TestCommandFileSystemStatParsesLocaleIndependentModeBits(t *testing.T) {
 		t.Fatalf("symlink size/mtime = %d/%d, want 7/1700000001", symlinkInfo.Size(), symlinkInfo.ModTime().Unix())
 	}
 
-	directoryRunner := &captureRunner{result: Result{Stdout: "41ed 4096 1700000002\n"}}
+	directoryRunner := &captureRunner{result: Result{Stdout: "41ed 4096 1700000002 0 0\n"}}
 	fileSystem = NewCommandFileSystem(NewExecutor(directoryRunner, nil))
 	directoryInfo, err := fileSystem.Lstat("/etc/headscale")
 	if err != nil {
@@ -315,7 +322,7 @@ func TestCommandFileSystemStatParsesLocaleIndependentModeBits(t *testing.T) {
 		t.Fatalf("directory size/mtime = %d/%d, want 4096/1700000002", directoryInfo.Size(), directoryInfo.ModTime().Unix())
 	}
 
-	specialRunner := &captureRunner{result: Result{Stdout: "8fed 0 1700000003\n"}}
+	specialRunner := &captureRunner{result: Result{Stdout: "8fed 0 1700000003 0 0\n"}}
 	fileSystem = NewCommandFileSystem(NewExecutor(specialRunner, nil))
 	specialInfo, err := fileSystem.Stat("/usr/local/bin/app")
 	if err != nil {

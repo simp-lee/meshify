@@ -3,7 +3,7 @@ package preflight
 
 import (
 	"fmt"
-	"meshify/internal/config"
+	"lanpanel/internal/config"
 	"net/url"
 	"strings"
 )

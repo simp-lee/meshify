@@ -1,7 +1,7 @@
 package preflight
 
 import (
-	"meshify/internal/config"
+	"lanpanel/internal/config"
 	"strings"
 	"testing"
 )
@@ -323,10 +323,10 @@ func TestCheckPortAvailabilityForConfigAllowsManagedResumeListeners(t *testing.T
 	if result.Status != StatusPass {
 		t.Fatalf("CheckPortAvailabilityForConfigWithManagedServices() status = %q, want %q", result.Status, StatusPass)
 	}
-	if !strings.Contains(strings.Join(result.Findings, "\n"), "meshify-managed headscale") {
+	if !strings.Contains(strings.Join(result.Findings, "\n"), "lanpanel-managed headscale") {
 		t.Fatalf("findings = %q, want managed Headscale detail", strings.Join(result.Findings, " | "))
 	}
-	if !strings.Contains(strings.Join(result.Findings, "\n"), "meshify-managed nginx") {
+	if !strings.Contains(strings.Join(result.Findings, "\n"), "lanpanel-managed nginx") {
 		t.Fatalf("findings = %q, want managed Nginx detail", strings.Join(result.Findings, " | "))
 	}
 }
@@ -355,7 +355,7 @@ func TestCheckServiceConflictsAllowsManagedResumeServices(t *testing.T) {
 	if result.Status != StatusPass {
 		t.Fatalf("CheckServiceConflictsWithManagedServices() status = %q, want %q", result.Status, StatusPass)
 	}
-	if !strings.Contains(strings.Join(result.Findings, "\n"), "meshify-managed service") {
+	if !strings.Contains(strings.Join(result.Findings, "\n"), "lanpanel-managed service") {
 		t.Fatalf("findings = %q, want managed service detail", strings.Join(result.Findings, " | "))
 	}
 }

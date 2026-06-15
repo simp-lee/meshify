@@ -1,8 +1,8 @@
 package render
 
 import (
-	"meshify/internal/assets"
-	"meshify/internal/config"
+	"lanpanel/internal/assets"
+	"lanpanel/internal/config"
 	"strings"
 	"testing"
 )
@@ -50,7 +50,7 @@ func TestNewTemplateDataCanonicalizesLegoDNSProvider(t *testing.T) {
 	cfg := validConfig()
 	cfg.Default.ACMEChallenge = config.ACMEChallengeDNS01
 	cfg.Advanced.DNS01.Provider = "google"
-	cfg.Advanced.DNS01.EnvFile = "/etc/meshify/dns01/gcloud.env"
+	cfg.Advanced.DNS01.EnvFile = "/etc/lanpanel/dns01/gcloud.env"
 
 	data, err := NewTemplateData(cfg)
 	if err != nil {

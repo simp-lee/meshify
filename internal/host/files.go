@@ -5,8 +5,8 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
-	"meshify/internal/assets"
-	"meshify/internal/render"
+	"lanpanel/internal/assets"
+	"lanpanel/internal/render"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -75,7 +75,7 @@ func (fileSystem CommandFileSystem) WriteFile(name string, data []byte, perm fs.
 	mode := fmt.Sprintf("%03o", perm.Perm())
 	_, err := fileSystem.executor.Run(context.Background(), Command{
 		Name:        "sh",
-		Args:        []string{"-c", commandAtomicWriteScript, "meshify-write-file", name, mode},
+		Args:        []string{"-c", commandAtomicWriteScript, "lanpanel-write-file", name, mode},
 		Stdin:       append([]byte(nil), data...),
 		DisplayName: "install",
 		DisplayArgs: []string{"-m", mode, "--", name},
@@ -92,9 +92,9 @@ func (fileSystem CommandFileSystem) Lstat(name string) (fs.FileInfo, error) {
 }
 
 func (fileSystem CommandFileSystem) stat(name string, dereference string) (fs.FileInfo, error) {
-	args := []string{"-c", "%f %s %Y", "--", name}
+	args := []string{"-c", "%f %s %Y %u %g", "--", name}
 	if dereference != "" {
-		args = []string{dereference, "-c", "%f %s %Y", "--", name}
+		args = []string{dereference, "-c", "%f %s %Y %u %g", "--", name}
 	}
 	result, err := fileSystem.executor.Run(context.Background(), Command{Name: "stat", Args: args})
 	if err != nil {
@@ -105,8 +105,8 @@ func (fileSystem CommandFileSystem) stat(name string, dereference string) (fs.Fi
 	}
 
 	fields := strings.Fields(result.Stdout)
-	if len(fields) != 3 {
-		return nil, fmt.Errorf("parse stat output for %s: expected mode size mtime, got %q", name, strings.TrimSpace(result.Stdout))
+	if len(fields) != 5 {
+		return nil, fmt.Errorf("parse stat output for %s: expected mode size mtime uid gid, got %q", name, strings.TrimSpace(result.Stdout))
 	}
 	rawMode, parseErr := strconv.ParseUint(fields[0], 16, 32)
 	if parseErr != nil {
@@ -120,8 +120,16 @@ func (fileSystem CommandFileSystem) stat(name string, dereference string) (fs.Fi
 	if parseErr != nil {
 		return nil, fmt.Errorf("parse file mtime for %s: %w", name, parseErr)
 	}
+	uid, parseErr := strconv.ParseUint(fields[3], 10, 64)
+	if parseErr != nil {
+		return nil, fmt.Errorf("parse file uid for %s: %w", name, parseErr)
+	}
+	gid, parseErr := strconv.ParseUint(fields[4], 10, 64)
+	if parseErr != nil {
+		return nil, fmt.Errorf("parse file gid for %s: %w", name, parseErr)
+	}
 
-	return commandFileInfo{name: filepath.Base(name), size: size, mode: commandFileModeFromRaw(rawMode), modTime: time.Unix(mtime, 0)}, nil
+	return commandFileInfo{name: filepath.Base(name), size: size, mode: commandFileModeFromRaw(rawMode), modTime: time.Unix(mtime, 0), uid: uid, gid: gid}, nil
 }
 
 func commandFileModeFromRaw(rawMode uint64) fs.FileMode {
@@ -393,6 +401,8 @@ type commandFileInfo struct {
 	size    int64
 	mode    fs.FileMode
 	modTime time.Time
+	uid     uint64
+	gid     uint64
 }
 
 func (info commandFileInfo) Name() string       { return info.name }
@@ -400,7 +410,12 @@ func (info commandFileInfo) Size() int64        { return info.size }
 func (info commandFileInfo) Mode() fs.FileMode  { return info.mode }
 func (info commandFileInfo) ModTime() time.Time { return info.modTime }
 func (info commandFileInfo) IsDir() bool        { return info.mode.IsDir() }
-func (info commandFileInfo) Sys() any           { return nil }
+func (info commandFileInfo) Sys() any {
+	return struct {
+		UID uint64
+		GID uint64
+	}{UID: info.uid, GID: info.gid}
+}
 
 func commandRefersToMissingPath(result Result, err error) bool {
 	if err == nil {

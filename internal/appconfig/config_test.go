@@ -55,10 +55,10 @@ func TestNewAppliesDefaultsAndRequiresUserInputs(t *testing.T) {
 	if got := cfg.Nginx.GoAccess.EffectiveLogFormat(); got != DefaultNginxGoAccessLogFormat {
 		t.Fatalf("nginx.goaccess.log_format effective default = %q, want %q", got, DefaultNginxGoAccessLogFormat)
 	}
-	if got := cfg.Nginx.GoAccess.EffectivePath(); got != "/_meshify/apps/<app-name>/goaccess" {
+	if got := cfg.Nginx.GoAccess.EffectivePath(); got != "/_lanpanel/apps/<app-name>/goaccess" {
 		t.Fatalf("nginx.goaccess.path effective default = %q, want app-scoped placeholder", got)
 	}
-	if got := cfg.Nginx.GoAccess.EffectiveWebSocketPath(); got != "/_meshify/apps/<app-name>/goaccess/ws" {
+	if got := cfg.Nginx.GoAccess.EffectiveWebSocketPath(); got != "/_lanpanel/apps/<app-name>/goaccess/ws" {
 		t.Fatalf("nginx.goaccess.websocket_path effective default = %q, want app-scoped placeholder", got)
 	}
 
@@ -82,7 +82,7 @@ func TestLoadBytesValidListenConfig(t *testing.T) {
 	t.Parallel()
 
 	cfg, err := LoadBytes([]byte(`
-api_version: meshify/app/v1alpha1
+api_version: lanpanel/app/v1alpha1
 app:
   name: example-app
   domains:
@@ -97,7 +97,7 @@ service:
 nginx:
   client_max_body_size: 100m
   http2: true
-  access_log: /var/log/meshify/custom/example-app.access.log
+  access_log: /var/log/lanpanel/custom/example-app.access.log
   error_log: /var/log/nginx/example-app.error.log
   goaccess:
     enabled: true
@@ -143,8 +143,8 @@ nginx:
 	if got := cfg.ResourceName(); got != "example-app" {
 		t.Fatalf("ResourceName() = %q, want example-app", got)
 	}
-	if got := cfg.EffectiveMeshifyConfig(); got != DefaultMeshifyConfigPath {
-		t.Fatalf("EffectiveMeshifyConfig() = %q, want %q", got, DefaultMeshifyConfigPath)
+	if got := cfg.EffectiveLanpanelConfig(); got != DefaultLanpanelConfigPath {
+		t.Fatalf("EffectiveLanpanelConfig() = %q, want %q", got, DefaultLanpanelConfigPath)
 	}
 	if got := cfg.App.Domains[0]; got != "abc.com" {
 		t.Fatalf("normalized domain = %q, want abc.com", got)
@@ -258,7 +258,7 @@ service:
 	}
 
 	if _, err := LoadBytes([]byte(`
-api_version: meshify/app/v1alpha1
+api_version: lanpanel/app/v1alpha1
 app:
   name: example-app
   domains: [abc.com]
@@ -272,7 +272,7 @@ service:
 	}
 
 	if _, err := LoadBytes([]byte(`
-api_version: meshify/app/v1alpha1
+api_version: lanpanel/app/v1alpha1
 app:
   name: example-app
   domains: [abc.com]
@@ -288,9 +288,9 @@ nginx:
 	}
 
 	if _, err := LoadBytes([]byte(`
-api_version: meshify/app/v1alpha1
+api_version: lanpanel/app/v1alpha1
 ---
-api_version: meshify/app/v1alpha1
+api_version: lanpanel/app/v1alpha1
 `)); err == nil || !strings.Contains(err.Error(), "multiple YAML documents") {
 		t.Fatalf("LoadBytes() multiple documents error = %v, want multiple document failure", err)
 	}
@@ -300,7 +300,7 @@ func TestLoadBytesDefaultsACMEChallengeButNotAPIVersion(t *testing.T) {
 	t.Parallel()
 
 	cfg, err := LoadBytes([]byte(`
-api_version: meshify/app/v1alpha1
+api_version: lanpanel/app/v1alpha1
 app:
   name: example-app
   domains: [abc.com]
@@ -343,7 +343,7 @@ func TestValidateRejectsUnsafeAppNames(t *testing.T) {
 		{name: "123", want: "app.name must start with a lowercase letter"},
 		{name: "1-app", want: "app.name must start with a lowercase letter"},
 		{name: "app-name-that-is-longer-than-32-chars", want: "app.name must be 32 characters or shorter"},
-		{name: "meshify", want: "app.name is reserved"},
+		{name: "lanpanel", want: "app.name is reserved"},
 		{name: "bin", want: "app.name is reserved"},
 		{name: "daemon", want: "app.name is reserved"},
 		{name: "nogroup", want: "app.name is reserved"},
@@ -377,7 +377,7 @@ func TestValidateRejectsUnsafeAppNames(t *testing.T) {
 		t.Fatalf("Validate() with app.name www error = %v", err)
 	}
 
-	for _, name := range []string{"api-goaccess", "meshify-goaccess-api", "mga-api"} {
+	for _, name := range []string{"api-goaccess", "lanpanel-goaccess-api", "mga-api"} {
 		cfg := validListenConfig()
 		cfg.App.Name = name
 		cfg.Service.ExecStart = "/opt/" + name + "/" + name
@@ -536,7 +536,7 @@ func TestValidateDNS01Rules(t *testing.T) {
 	valid := validListenConfig()
 	valid.App.ACMEChallenge = ACMEChallengeDNS01
 	valid.DNS01.Provider = "cloudflare"
-	valid.DNS01.EnvFile = "/etc/meshify/dns/cloudflare.env"
+	valid.DNS01.EnvFile = "/etc/lanpanel/dns/cloudflare.env"
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
 	}
@@ -545,7 +545,7 @@ func TestValidateDNS01Rules(t *testing.T) {
 	tencentcloud.App.ACMEChallenge = ACMEChallengeDNS01
 	tencentcloud.DNS01.Provider = "tencentcloud"
 	expectValidationError(t, tencentcloud, "dns01.env_file is required for DNS-01 renewal with lego DNS provider tencentcloud")
-	tencentcloud.DNS01.EnvFile = "/etc/meshify/dns/tencentcloud.env"
+	tencentcloud.DNS01.EnvFile = "/etc/lanpanel/dns/tencentcloud.env"
 	if err := tencentcloud.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
 	}
@@ -553,6 +553,160 @@ func TestValidateDNS01Rules(t *testing.T) {
 	badPath := valid
 	badPath.DNS01.EnvFile = "relative.env"
 	expectValidationError(t, badPath, "dns01.env_file must be an absolute path")
+}
+
+func TestValidateRealIPRules(t *testing.T) {
+	t.Parallel()
+
+	enabled := true
+	disabled := false
+
+	valid := validListenConfig()
+	valid.App.ACMEChallenge = ACMEChallengeDNS01
+	valid.DNS01.Provider = "tencentcloud"
+	valid.DNS01.EnvFile = "/etc/lanpanel/dns/tencentcloud.env"
+	valid.Nginx.RealIPProfile = "edgeone-prod"
+	valid.RealIP.Profiles = map[string]RealIPProfileConfig{
+		"edgeone-prod": {
+			Enabled:         &enabled,
+			Provider:        RealIPProviderEdgeOne,
+			RefreshInterval: "72h",
+			EdgeOne: RealIPEdgeOneConfig{
+				ZoneID:  "zone-2abcDEF123",
+				EnvFile: "/etc/lanpanel/realip/edgeone-prod.env",
+			},
+		},
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("Validate() with EdgeOne realip profile error = %v", err)
+	}
+	if !valid.RealIPEnabled() {
+		t.Fatal("RealIPEnabled() = false, want true")
+	}
+	profile, ok := valid.RealIPProfile("edgeone-prod")
+	if !ok || profile.EffectiveRefreshInterval() != "72h" || !profile.IsEnabled() {
+		t.Fatalf("RealIPProfile(edgeone-prod) = %#v, %v; want enabled profile", profile, ok)
+	}
+
+	noReference := validListenConfig()
+	noReference.RealIP.Profiles = map[string]RealIPProfileConfig{
+		"edgeone-prod": {Enabled: &disabled, Provider: RealIPProviderEdgeOne},
+	}
+	if err := noReference.Validate(); err != nil {
+		t.Fatalf("Validate() with unreferenced disabled profile error = %v", err)
+	}
+	if noReference.RealIPEnabled() {
+		t.Fatal("RealIPEnabled() = true for unreferenced disabled profile, want false")
+	}
+
+	missingEnabled := validListenConfig()
+	missingEnabled.RealIP.Profiles = map[string]RealIPProfileConfig{
+		"edgeone-prod": {Provider: RealIPProviderEdgeOne},
+	}
+	expectValidationError(t, missingEnabled, "realip.profiles.edgeone-prod.enabled is required")
+
+	badName := validListenConfig()
+	badName.RealIP.Profiles = map[string]RealIPProfileConfig{
+		"EdgeOne": {Enabled: &disabled, Provider: RealIPProviderEdgeOne},
+	}
+	expectValidationError(t, badName, "realip.profiles.EdgeOne name must start with a lowercase letter")
+
+	unknownProvider := validListenConfig()
+	unknownProvider.RealIP.Profiles = map[string]RealIPProfileConfig{
+		"cdn": {Enabled: &disabled, Provider: "custom"},
+	}
+	expectValidationError(t, unknownProvider, "realip.profiles.cdn.provider must be edgeone")
+
+	missingReference := validListenConfig()
+	missingReference.Nginx.RealIPProfile = "edgeone-prod"
+	expectValidationError(t, missingReference, "nginx.realip_profile references undefined realip profile edgeone-prod")
+
+	disabledReference := validListenConfig()
+	disabledReference.Nginx.RealIPProfile = "edgeone-prod"
+	disabledReference.RealIP.Profiles = map[string]RealIPProfileConfig{
+		"edgeone-prod": {Enabled: &disabled, Provider: RealIPProviderEdgeOne},
+	}
+	expectValidationError(t, disabledReference, "nginx.realip_profile references disabled realip profile edgeone-prod")
+
+	http01Reference := validListenConfig()
+	http01Reference.Nginx.RealIPProfile = "edgeone-prod"
+	http01Reference.RealIP.Profiles = map[string]RealIPProfileConfig{
+		"edgeone-prod": {
+			Enabled:  &enabled,
+			Provider: RealIPProviderEdgeOne,
+			EdgeOne: RealIPEdgeOneConfig{
+				ZoneID:  "zone-2abcDEF123",
+				EnvFile: "/etc/lanpanel/realip/edgeone-prod.env",
+			},
+		},
+	}
+	expectValidationError(t, http01Reference, "app.acme_challenge must be dns-01 when nginx.realip_profile references an EdgeOne profile")
+
+	missingEdgeOneFields := valid
+	missingEdgeOneFields.RealIP.Profiles = map[string]RealIPProfileConfig{
+		"edgeone-prod": {Enabled: &enabled, Provider: RealIPProviderEdgeOne},
+	}
+	expectValidationError(t, missingEdgeOneFields, "realip.profiles.edgeone-prod.edgeone.zone_id is required")
+	expectValidationError(t, missingEdgeOneFields, "realip.profiles.edgeone-prod.edgeone.env_file is required")
+
+	badEnvFile := valid
+	badEnvFile.RealIP.Profiles["edgeone-prod"] = RealIPProfileConfig{
+		Enabled:  &enabled,
+		Provider: RealIPProviderEdgeOne,
+		EdgeOne:  RealIPEdgeOneConfig{ZoneID: "zone-2abcDEF123", EnvFile: "relative.env"},
+	}
+	expectValidationError(t, badEnvFile, "realip.profiles.edgeone-prod.edgeone.env_file must be an absolute path")
+
+	fastRefresh := valid
+	fastRefresh.RealIP.Profiles["edgeone-prod"] = RealIPProfileConfig{
+		Enabled:         &enabled,
+		Provider:        RealIPProviderEdgeOne,
+		RefreshInterval: "30m",
+		EdgeOne:         RealIPEdgeOneConfig{ZoneID: "zone-2abcDEF123", EnvFile: "/etc/lanpanel/realip/edgeone-prod.env"},
+	}
+	expectValidationError(t, fastRefresh, "realip.profiles.edgeone-prod.refresh_interval must be at least 1h")
+
+	subSecondRefresh := valid
+	subSecondRefresh.RealIP.Profiles["edgeone-prod"] = RealIPProfileConfig{
+		Enabled:         &enabled,
+		Provider:        RealIPProviderEdgeOne,
+		RefreshInterval: "3600000000001ns",
+		EdgeOne:         RealIPEdgeOneConfig{ZoneID: "zone-2abcDEF123", EnvFile: "/etc/lanpanel/realip/edgeone-prod.env"},
+	}
+	expectValidationError(t, subSecondRefresh, "realip.profiles.edgeone-prod.refresh_interval must resolve to whole seconds")
+}
+
+func TestLoadBytesRejectsUnknownRealIPFields(t *testing.T) {
+	t.Parallel()
+
+	_, err := LoadBytes([]byte(`
+api_version: lanpanel/app/v1alpha1
+app:
+  name: example-app
+  domains: [abc.com]
+  certificate_email: ops@example.com
+  acme_challenge: dns-01
+  listen: 127.0.0.1:18001
+service:
+  exec_start: /opt/example-app/example-app
+nginx:
+  realip_profile: edgeone-prod
+realip:
+  profiles:
+    edgeone-prod:
+      enabled: true
+      provider: edgeone
+      header_override: X-Forwarded-For
+      edgeone:
+        zone_id: zone-2abcDEF123
+        env_file: /etc/lanpanel/realip/edgeone-prod.env
+dns01:
+  provider: tencentcloud
+  env_file: /etc/lanpanel/dns/tencentcloud.env
+`))
+	if err == nil {
+		t.Fatal("LoadBytes() unknown realip profile field error = nil, want non-nil")
+	}
 }
 
 func TestValidateNginxStaticLocationRules(t *testing.T) {
@@ -578,7 +732,7 @@ func TestValidateNginxStaticLocationRules(t *testing.T) {
 		},
 	}
 	valid.Nginx.ClientMaxBodySize = "100m"
-	valid.Nginx.AccessLog = "/var/log/meshify/custom/example-app.access.log"
+	valid.Nginx.AccessLog = "/var/log/lanpanel/custom/example-app.access.log"
 	valid.Nginx.ErrorLog = "/var/log/nginx/example-app.error.log"
 	valid.Nginx.Proxy.ConnectTimeout = "30s"
 	valid.Nginx.Proxy.ReadTimeout = "600s"
@@ -691,10 +845,10 @@ func TestValidateNginxGoAccessRules(t *testing.T) {
 	if got := valid.Nginx.GoAccess.EffectiveLogFormat(); got != NginxGoAccessLogFormatEnhanced {
 		t.Fatalf("EffectiveLogFormat() = %q, want enhanced", got)
 	}
-	if got := valid.NginxGoAccessDashboardPath(); got != "/_meshify/apps/example-app/goaccess" {
+	if got := valid.NginxGoAccessDashboardPath(); got != "/_lanpanel/apps/example-app/goaccess" {
 		t.Fatalf("NginxGoAccessDashboardPath() = %q, want app-scoped default", got)
 	}
-	if got := valid.NginxGoAccessWebSocketPath(); got != "/_meshify/apps/example-app/goaccess/ws" {
+	if got := valid.NginxGoAccessWebSocketPath(); got != "/_lanpanel/apps/example-app/goaccess/ws" {
 		t.Fatalf("NginxGoAccessWebSocketPath() = %q, want app-scoped default", got)
 	}
 	if got := DefaultNginxGoAccessWebSocketPort("i3t"); got != 50444 {
@@ -724,19 +878,19 @@ func TestValidateNginxGoAccessRules(t *testing.T) {
 	}
 
 	explicitManagedLog := valid
-	explicitManagedLog.Nginx.AccessLog = "/var/log/meshify/apps/example-app/access.log"
+	explicitManagedLog.Nginx.AccessLog = "/var/log/lanpanel/apps/example-app/access.log"
 	if err := explicitManagedLog.Validate(); err != nil {
-		t.Fatalf("Validate() with explicit Meshify-managed GoAccess access log error = %v", err)
+		t.Fatalf("Validate() with explicit Lanpanel-managed GoAccess access log error = %v", err)
 	}
 	if !explicitManagedLog.NginxGoAccessManagesCanonicalAccessLog() {
-		t.Fatal("NginxGoAccessManagesCanonicalAccessLog(explicit Meshify log root) = false, want true")
+		t.Fatal("NginxGoAccessManagesCanonicalAccessLog(explicit Lanpanel log root) = false, want true")
 	}
-	if got := explicitManagedLog.NginxGoAccessCanonicalAccessLogPath(); got != "/var/log/meshify/apps/example-app/access.log" {
+	if got := explicitManagedLog.NginxGoAccessCanonicalAccessLogPath(); got != "/var/log/lanpanel/apps/example-app/access.log" {
 		t.Fatalf("NginxGoAccessCanonicalAccessLogPath() = %q, want explicit managed path", got)
 	}
 
 	explicitCustomLog := valid
-	explicitCustomLog.Nginx.AccessLog = "/var/log/meshify/custom/example-app.access.log"
+	explicitCustomLog.Nginx.AccessLog = "/var/log/lanpanel/custom/example-app.access.log"
 	if explicitCustomLog.NginxGoAccessManagesCanonicalAccessLog() {
 		t.Fatal("NginxGoAccessManagesCanonicalAccessLog(custom explicit log) = true, want false")
 	}
@@ -796,59 +950,59 @@ func TestValidateNginxGoAccessRules(t *testing.T) {
 			want: "nginx.access_log must not be under /var/log/nginx when nginx.goaccess.enabled is true",
 		},
 		{
-			name: "access log under different Meshify app log root",
+			name: "access log under different Lanpanel app log root",
 			mutate: func(cfg *Config) {
-				cfg.Nginx.AccessLog = "/var/log/meshify/apps/other-app/access.log"
+				cfg.Nginx.AccessLog = "/var/log/lanpanel/apps/other-app/access.log"
 			},
-			want: "nginx.access_log under /var/log/meshify/apps must stay under the current app log directory",
+			want: "nginx.access_log under /var/log/lanpanel/apps must stay under the current app log directory",
 		},
 		{
-			name: "access log equals current Meshify app log directory",
+			name: "access log equals current Lanpanel app log directory",
 			mutate: func(cfg *Config) {
-				cfg.Nginx.AccessLog = "/var/log/meshify/apps/example-app"
+				cfg.Nginx.AccessLog = "/var/log/lanpanel/apps/example-app"
 			},
-			want: "nginx.access_log must be a file under the Meshify-managed GoAccess log directory",
+			want: "nginx.access_log must be a file under the Lanpanel-managed GoAccess log directory",
 		},
 		{
-			name: "access log equals Meshify app log marker",
+			name: "access log equals Lanpanel app log marker",
 			mutate: func(cfg *Config) {
-				cfg.Nginx.AccessLog = "/var/log/meshify/apps/example-app/.meshify-managed"
+				cfg.Nginx.AccessLog = "/var/log/lanpanel/apps/example-app/.lanpanel-managed"
 			},
-			want: "nginx.access_log under the Meshify-managed GoAccess log directory must be the direct access.log file",
+			want: "nginx.access_log under the Lanpanel-managed GoAccess log directory must be the direct access.log file",
 		},
 		{
 			name: "access log equals app var marker",
 			mutate: func(cfg *Config) {
-				cfg.Nginx.AccessLog = "/var/lib/example-app/.meshify-managed"
+				cfg.Nginx.AccessLog = "/var/lib/example-app/.lanpanel-managed"
 			},
-			want: "nginx.access_log must not point to Meshify-managed app var marker path",
+			want: "nginx.access_log must not point to Lanpanel-managed app var marker path",
 		},
 		{
 			name: "access log under app var root",
 			mutate: func(cfg *Config) {
 				cfg.Nginx.AccessLog = "/var/lib/example-app/runtime.log"
 			},
-			want: "nginx.access_log must not be under Meshify-managed app var root directory",
+			want: "nginx.access_log must not be under Lanpanel-managed app var root directory",
 		},
 		{
-			name: "access log nested under current Meshify app log directory",
+			name: "access log nested under current Lanpanel app log directory",
 			mutate: func(cfg *Config) {
-				cfg.Nginx.AccessLog = "/var/log/meshify/apps/example-app/nested/access.log"
+				cfg.Nginx.AccessLog = "/var/log/lanpanel/apps/example-app/nested/access.log"
 			},
-			want: "nginx.access_log under the Meshify-managed GoAccess log directory must be the direct access.log file",
+			want: "nginx.access_log under the Lanpanel-managed GoAccess log directory must be the direct access.log file",
 		},
 		{
 			name: "error log equals derived canonical access log",
 			mutate: func(cfg *Config) {
-				cfg.Nginx.ErrorLog = "/var/log/meshify/apps/example-app/access.log"
+				cfg.Nginx.ErrorLog = "/var/log/lanpanel/apps/example-app/access.log"
 			},
 			want: "nginx.error_log must not equal the GoAccess canonical access log",
 		},
 		{
 			name: "error log equals explicit canonical access log",
 			mutate: func(cfg *Config) {
-				cfg.Nginx.AccessLog = "/var/log/meshify/custom/example-app.access.log"
-				cfg.Nginx.ErrorLog = "/var/log/meshify/custom/example-app.access.log"
+				cfg.Nginx.AccessLog = "/var/log/lanpanel/custom/example-app.access.log"
+				cfg.Nginx.ErrorLog = "/var/log/lanpanel/custom/example-app.access.log"
 			},
 			want: "nginx.error_log must not equal the GoAccess canonical access log",
 		},
@@ -862,72 +1016,72 @@ func TestValidateNginxGoAccessRules(t *testing.T) {
 		{
 			name: "error log equals app etc marker",
 			mutate: func(cfg *Config) {
-				cfg.Nginx.ErrorLog = "/etc/example-app/.meshify-managed"
+				cfg.Nginx.ErrorLog = "/etc/example-app/.lanpanel-managed"
 			},
-			want: "nginx.error_log must not point to Meshify-managed app etc marker path",
+			want: "nginx.error_log must not point to Lanpanel-managed app etc marker path",
 		},
 		{
 			name: "error log under app hook root",
 			mutate: func(cfg *Config) {
-				cfg.Nginx.ErrorLog = "/usr/local/lib/meshify/apps/example-app/error.log"
+				cfg.Nginx.ErrorLog = "/usr/local/lib/lanpanel/apps/example-app/error.log"
 			},
-			want: "nginx.error_log must not be under Meshify-managed app hook root directory",
+			want: "nginx.error_log must not be under Lanpanel-managed app hook root directory",
 		},
 		{
 			name: "error log collides with goaccess config",
 			mutate: func(cfg *Config) {
 				cfg.Nginx.ErrorLog = "/etc/example-app/goaccess.conf"
 			},
-			want: "nginx.error_log must not point to Meshify-managed GoAccess config path",
+			want: "nginx.error_log must not point to Lanpanel-managed GoAccess config path",
 		},
 		{
 			name: "error log collides with goaccess report",
 			mutate: func(cfg *Config) {
 				cfg.Nginx.ErrorLog = "/var/lib/example-app/goaccess/report.html"
 			},
-			want: "nginx.error_log must not point to Meshify-managed GoAccess report path",
+			want: "nginx.error_log must not point to Lanpanel-managed GoAccess report path",
 		},
 		{
 			name: "error log under goaccess report directory",
 			mutate: func(cfg *Config) {
 				cfg.Nginx.ErrorLog = "/var/lib/example-app/goaccess/error.log"
 			},
-			want: "nginx.error_log must not be under Meshify-managed GoAccess report directory",
+			want: "nginx.error_log must not be under Lanpanel-managed GoAccess report directory",
 		},
 		{
 			name: "error log collides with goaccess db",
 			mutate: func(cfg *Config) {
 				cfg.Nginx.ErrorLog = "/var/lib/example-app/goaccess/db"
 			},
-			want: "nginx.error_log must not point to Meshify-managed GoAccess db path",
+			want: "nginx.error_log must not point to Lanpanel-managed GoAccess db path",
 		},
 		{
-			name: "error log under another Meshify app log namespace",
+			name: "error log under another Lanpanel app log namespace",
 			mutate: func(cfg *Config) {
-				cfg.Nginx.ErrorLog = "/var/log/meshify/apps/other-app/error.log"
+				cfg.Nginx.ErrorLog = "/var/log/lanpanel/apps/other-app/error.log"
 			},
-			want: "nginx.error_log must not be under Meshify-managed app log namespace",
+			want: "nginx.error_log must not be under Lanpanel-managed app log namespace",
 		},
 		{
 			name: "access log collides with goaccess config",
 			mutate: func(cfg *Config) {
 				cfg.Nginx.AccessLog = "/etc/example-app/goaccess.conf"
 			},
-			want: "nginx.access_log must not point to Meshify-managed GoAccess config path",
+			want: "nginx.access_log must not point to Lanpanel-managed GoAccess config path",
 		},
 		{
 			name: "access log collides with goaccess report",
 			mutate: func(cfg *Config) {
 				cfg.Nginx.AccessLog = "/var/lib/example-app/goaccess/report.html"
 			},
-			want: "nginx.access_log must not point to Meshify-managed GoAccess report path",
+			want: "nginx.access_log must not point to Lanpanel-managed GoAccess report path",
 		},
 		{
 			name: "access log under goaccess report directory",
 			mutate: func(cfg *Config) {
 				cfg.Nginx.AccessLog = "/var/lib/example-app/goaccess/access.log"
 			},
-			want: "nginx.access_log must not be under Meshify-managed GoAccess report directory",
+			want: "nginx.access_log must not be under Lanpanel-managed GoAccess report directory",
 		},
 		{
 			name: "access log equals auth file",
@@ -1004,84 +1158,84 @@ func TestValidateNginxGoAccessRules(t *testing.T) {
 			mutate: func(cfg *Config) {
 				cfg.Nginx.GoAccess.AuthBasicUserFile = "/var/lib/example-app/goaccess.htpasswd"
 			},
-			want: "nginx.goaccess.auth_basic_user_file must not be under Meshify-managed app var root directory",
+			want: "nginx.goaccess.auth_basic_user_file must not be under Lanpanel-managed app var root directory",
 		},
 		{
 			name: "auth file under app hook root",
 			mutate: func(cfg *Config) {
-				cfg.Nginx.GoAccess.AuthBasicUserFile = "/usr/local/lib/meshify/apps/example-app/goaccess.htpasswd"
+				cfg.Nginx.GoAccess.AuthBasicUserFile = "/usr/local/lib/lanpanel/apps/example-app/goaccess.htpasswd"
 			},
-			want: "nginx.goaccess.auth_basic_user_file must not be under Meshify-managed app hook root directory",
+			want: "nginx.goaccess.auth_basic_user_file must not be under Lanpanel-managed app hook root directory",
 		},
 		{
 			name: "auth file under goaccess log root",
 			mutate: func(cfg *Config) {
-				cfg.Nginx.GoAccess.AuthBasicUserFile = "/var/log/meshify/apps/example-app/goaccess.htpasswd"
+				cfg.Nginx.GoAccess.AuthBasicUserFile = "/var/log/lanpanel/apps/example-app/goaccess.htpasswd"
 			},
-			want: "nginx.goaccess.auth_basic_user_file must not be under Meshify-managed GoAccess log directory",
+			want: "nginx.goaccess.auth_basic_user_file must not be under Lanpanel-managed GoAccess log directory",
 		},
 		{
 			name: "auth file collides with goaccess config",
 			mutate: func(cfg *Config) {
 				cfg.Nginx.GoAccess.AuthBasicUserFile = "/etc/example-app/goaccess.conf"
 			},
-			want: "nginx.goaccess.auth_basic_user_file must not point to Meshify-managed GoAccess config path",
+			want: "nginx.goaccess.auth_basic_user_file must not point to Lanpanel-managed GoAccess config path",
 		},
 		{
 			name: "auth file collides with goaccess logrotate",
 			mutate: func(cfg *Config) {
 				cfg.Nginx.GoAccess.AuthBasicUserFile = "/etc/logrotate.d/example-app-goaccess"
 			},
-			want: "nginx.goaccess.auth_basic_user_file must not point to Meshify-managed GoAccess logrotate path",
+			want: "nginx.goaccess.auth_basic_user_file must not point to Lanpanel-managed GoAccess logrotate path",
 		},
 		{
 			name: "auth file collides with goaccess report",
 			mutate: func(cfg *Config) {
 				cfg.Nginx.GoAccess.AuthBasicUserFile = "/var/lib/example-app/goaccess/report.html"
 			},
-			want: "nginx.goaccess.auth_basic_user_file must not point to Meshify-managed GoAccess report path",
+			want: "nginx.goaccess.auth_basic_user_file must not point to Lanpanel-managed GoAccess report path",
 		},
 		{
 			name: "auth file under goaccess report directory",
 			mutate: func(cfg *Config) {
 				cfg.Nginx.GoAccess.AuthBasicUserFile = "/var/lib/example-app/goaccess/goaccess.htpasswd"
 			},
-			want: "nginx.goaccess.auth_basic_user_file must not be under Meshify-managed GoAccess report directory",
+			want: "nginx.goaccess.auth_basic_user_file must not be under Lanpanel-managed GoAccess report directory",
 		},
 		{
 			name: "auth file collides with goaccess db",
 			mutate: func(cfg *Config) {
 				cfg.Nginx.GoAccess.AuthBasicUserFile = "/var/lib/example-app/goaccess/db"
 			},
-			want: "nginx.goaccess.auth_basic_user_file must not point to Meshify-managed GoAccess db path",
+			want: "nginx.goaccess.auth_basic_user_file must not point to Lanpanel-managed GoAccess db path",
 		},
 		{
 			name: "auth file under goaccess db",
 			mutate: func(cfg *Config) {
 				cfg.Nginx.GoAccess.AuthBasicUserFile = "/var/lib/example-app/goaccess/db/goaccess.htpasswd"
 			},
-			want: "nginx.goaccess.auth_basic_user_file must not be under Meshify-managed GoAccess report directory",
+			want: "nginx.goaccess.auth_basic_user_file must not be under Lanpanel-managed GoAccess report directory",
 		},
 		{
 			name: "auth file collides with canonical access log",
 			mutate: func(cfg *Config) {
-				cfg.Nginx.GoAccess.AuthBasicUserFile = "/var/log/meshify/apps/example-app/access.log"
+				cfg.Nginx.GoAccess.AuthBasicUserFile = "/var/log/lanpanel/apps/example-app/access.log"
 			},
-			want: "nginx.goaccess.auth_basic_user_file must not point to Meshify-managed GoAccess canonical access log path",
+			want: "nginx.goaccess.auth_basic_user_file must not point to Lanpanel-managed GoAccess canonical access log path",
 		},
 		{
-			name: "auth file under another Meshify app log namespace",
+			name: "auth file under another Lanpanel app log namespace",
 			mutate: func(cfg *Config) {
-				cfg.Nginx.GoAccess.AuthBasicUserFile = "/var/log/meshify/apps/other-app/goaccess.htpasswd"
+				cfg.Nginx.GoAccess.AuthBasicUserFile = "/var/log/lanpanel/apps/other-app/goaccess.htpasswd"
 			},
-			want: "nginx.goaccess.auth_basic_user_file must not be under Meshify-managed app log namespace",
+			want: "nginx.goaccess.auth_basic_user_file must not be under Lanpanel-managed app log namespace",
 		},
 		{
 			name: "auth file collides with TLS private key",
 			mutate: func(cfg *Config) {
 				cfg.Nginx.GoAccess.AuthBasicUserFile = "/etc/example-app/tls/abc.com/privkey.pem"
 			},
-			want: "nginx.goaccess.auth_basic_user_file must not point to Meshify-managed TLS private key path",
+			want: "nginx.goaccess.auth_basic_user_file must not point to Lanpanel-managed TLS private key path",
 		},
 		{
 			name: "non-loopback websocket listen",
@@ -1131,65 +1285,65 @@ func TestValidateNginxGoAccessRules(t *testing.T) {
 		{
 			name: "unsafe dashboard path",
 			mutate: func(cfg *Config) {
-				cfg.Nginx.GoAccess.Path = "/_meshify/goaccess;return"
+				cfg.Nginx.GoAccess.Path = "/_lanpanel/goaccess;return"
 			},
 			want: "nginx.goaccess.path must not contain",
 		},
 		{
 			name: "dashboard path with query marker",
 			mutate: func(cfg *Config) {
-				cfg.Nginx.GoAccess.Path = "/_meshify/goaccess?debug=1"
+				cfg.Nginx.GoAccess.Path = "/_lanpanel/goaccess?debug=1"
 			},
 			want: "nginx.goaccess.path must be a canonical URL path",
 		},
 		{
 			name: "dashboard path with repeated slashes",
 			mutate: func(cfg *Config) {
-				cfg.Nginx.GoAccess.Path = "/_meshify//goaccess"
+				cfg.Nginx.GoAccess.Path = "/_lanpanel//goaccess"
 			},
 			want: "nginx.goaccess.path must not contain repeated slashes",
 		},
 		{
 			name: "websocket path with percent encoding",
 			mutate: func(cfg *Config) {
-				cfg.Nginx.GoAccess.WebSocketPath = "/_meshify/goaccess/%77s"
+				cfg.Nginx.GoAccess.WebSocketPath = "/_lanpanel/goaccess/%77s"
 			},
 			want: "nginx.goaccess.websocket_path must be a canonical URL path",
 		},
 		{
 			name: "websocket path with glob marker",
 			mutate: func(cfg *Config) {
-				cfg.Nginx.GoAccess.WebSocketPath = "/_meshify/goaccess/ws[0]"
+				cfg.Nginx.GoAccess.WebSocketPath = "/_lanpanel/goaccess/ws[0]"
 			},
 			want: "nginx.goaccess.websocket_path must be a canonical URL path",
 		},
 		{
 			name: "duplicate websocket path",
 			mutate: func(cfg *Config) {
-				cfg.Nginx.GoAccess.Path = "/_meshify/goaccess"
-				cfg.Nginx.GoAccess.WebSocketPath = "/_meshify/goaccess"
+				cfg.Nginx.GoAccess.Path = "/_lanpanel/goaccess"
+				cfg.Nginx.GoAccess.WebSocketPath = "/_lanpanel/goaccess"
 			},
 			want: "nginx.goaccess.websocket_path must not duplicate nginx.goaccess.path",
 		},
 		{
 			name: "prefix dashboard would swallow websocket",
 			mutate: func(cfg *Config) {
-				cfg.Nginx.GoAccess.Path = "/_meshify/goaccess/"
-				cfg.Nginx.GoAccess.WebSocketPath = "/_meshify/goaccess/ws"
+				cfg.Nginx.GoAccess.Path = "/_lanpanel/goaccess/"
+				cfg.Nginx.GoAccess.WebSocketPath = "/_lanpanel/goaccess/ws"
 			},
 			want: "nginx.goaccess.path must not end with /",
 		},
 		{
 			name: "static dashboard overlap",
 			mutate: func(cfg *Config) {
-				cfg.Nginx.StaticLocations = []NginxStaticLocationConfig{{Path: "/_meshify/", Alias: "/opt/example-app/web/static/"}}
+				cfg.Nginx.StaticLocations = []NginxStaticLocationConfig{{Path: "/_lanpanel/", Alias: "/opt/example-app/web/static/"}}
 			},
 			want: "nginx.goaccess.path must not overlap nginx.static_locations[0].path",
 		},
 		{
 			name: "static websocket overlap",
 			mutate: func(cfg *Config) {
-				cfg.Nginx.StaticLocations = []NginxStaticLocationConfig{{Path: "/_meshify/apps/example-app/goaccess/ws", Match: "exact", Alias: "/opt/example-app/web/static/ws.html"}}
+				cfg.Nginx.StaticLocations = []NginxStaticLocationConfig{{Path: "/_lanpanel/apps/example-app/goaccess/ws", Match: "exact", Alias: "/opt/example-app/web/static/ws.html"}}
 			},
 			want: "nginx.goaccess.websocket_path must not overlap nginx.static_locations[0].path",
 		},
@@ -1205,7 +1359,7 @@ func TestValidateNginxGoAccessRules(t *testing.T) {
 	}
 
 	disabledWithNoAuth := validListenConfig()
-	disabledWithNoAuth.Nginx.GoAccess.Path = "/_meshify/apps/example-app/goaccess"
+	disabledWithNoAuth.Nginx.GoAccess.Path = "/_lanpanel/apps/example-app/goaccess"
 	expectValidationError(t, disabledWithNoAuth, "nginx.goaccess.enabled must be true when nginx.goaccess fields are set")
 }
 
@@ -1240,17 +1394,17 @@ func TestValidateTailscaleRules(t *testing.T) {
 
 	cfg = validUpstreamConfig()
 	cfg.Tailscale.LoginServer = "https://hs.example.com"
-	cfg.Tailscale.MeshifyConfig = "meshify.yaml"
-	expectValidationError(t, cfg, "tailscale.meshify_config must be empty when tailscale.login_server is set")
+	cfg.Tailscale.LanpanelConfig = "lanpanel.yaml"
+	expectValidationError(t, cfg, "tailscale.lanpanel_config must be empty when tailscale.login_server is set")
 
 	cfg = validUpstreamConfig()
 	cfg.Tailscale.LoginServer = "https://abc.com"
 	expectValidationError(t, cfg, "tailscale.login_server host must not reuse an app domain")
 
 	cfg = validUpstreamConfig()
-	cfg.Tailscale.MeshifyConfig = "./meshify.yaml"
+	cfg.Tailscale.LanpanelConfig = "./lanpanel.yaml"
 	if err := cfg.Validate(); err != nil {
-		t.Fatalf("Validate() with relative meshify config error = %v", err)
+		t.Fatalf("Validate() with relative lanpanel config error = %v", err)
 	}
 
 	cfg = validUpstreamConfig()
@@ -1262,7 +1416,7 @@ func TestValidateTailscaleRules(t *testing.T) {
 	expectValidationError(t, cfg, "tailscale.auth_key_file must be an absolute path")
 
 	cfg = validUpstreamConfig()
-	cfg.Tailscale.AuthKeyFile = "/run/meshify/tailscale-auth.key"
+	cfg.Tailscale.AuthKeyFile = "/run/lanpanel/tailscale-auth.key"
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
 	}
@@ -1275,7 +1429,7 @@ func TestExampleYAMLMatchesDeployTemplateAndDoesNotCarrySecrets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExampleYAML() error = %v", err)
 	}
-	want, err := os.ReadFile(filepath.Join("..", "..", "deploy", "config", "meshify-app.yaml.example"))
+	want, err := os.ReadFile(filepath.Join("..", "..", "deploy", "config", "lanpanel-app.yaml.example"))
 	if err != nil {
 		t.Fatalf("ReadFile() error = %v", err)
 	}
@@ -1293,7 +1447,7 @@ func TestExampleYAMLMatchesDeployTemplateAndDoesNotCarrySecrets(t *testing.T) {
 func TestWriteFileUsesStrictPermissions(t *testing.T) {
 	t.Parallel()
 
-	path := filepath.Join(t.TempDir(), "meshify-app.yaml")
+	path := filepath.Join(t.TempDir(), "lanpanel-app.yaml")
 	if err := validListenConfig().WriteFile(path); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}

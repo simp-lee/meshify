@@ -2,7 +2,7 @@ package preflight
 
 import (
 	"fmt"
-	"meshify/internal/config"
+	"lanpanel/internal/config"
 	"strings"
 )
 
@@ -87,7 +87,7 @@ func CheckPackageSource(state PackageSourceState) CheckResult {
 				SeverityError,
 				"Official Headscale package source reachability could not be confirmed from this host.",
 				findings,
-				[]string{"Fix host egress or package source access until meshify can reach the official Headscale package source before deploy."},
+				[]string{"Fix host egress or package source access until lanpanel can reach the official Headscale package source before deploy."},
 			)
 		}
 		if !state.Reachable {
@@ -121,7 +121,7 @@ func CheckPackageSource(state PackageSourceState) CheckResult {
 				SeverityError,
 				"Official Headscale package integrity could not be verified automatically.",
 				findings,
-				[]string{"Fix checksum lookup or package download access until meshify can verify the official package SHA-256 digest before deploy."},
+				[]string{"Fix checksum lookup or package download access until lanpanel can verify the official package SHA-256 digest before deploy."},
 			)
 		}
 		if !sha256Matches(state.ExpectedSHA256, state.ActualSHA256) {
@@ -159,7 +159,7 @@ func CheckPackageSource(state PackageSourceState) CheckResult {
 				SeverityError,
 				"Headscale mirror package reachability could not be confirmed from this host.",
 				findings,
-				[]string{"Fix host egress, proxy settings, or the mirror URL until meshify can reach the configured package source before deploy."},
+				[]string{"Fix host egress, proxy settings, or the mirror URL until lanpanel can reach the configured package source before deploy."},
 			)
 		}
 		if !state.Reachable {
@@ -181,7 +181,7 @@ func CheckPackageSource(state PackageSourceState) CheckResult {
 				SeverityError,
 				"Headscale mirror package integrity could not be verified automatically.",
 				findings,
-				[]string{"Fix mirror download access until meshify can verify the mirror package SHA-256 digest before deploy."},
+				[]string{"Fix mirror download access until lanpanel can verify the mirror package SHA-256 digest before deploy."},
 			)
 		}
 		if !sha256Matches(state.ExpectedSHA256, state.ActualSHA256) {
@@ -230,7 +230,7 @@ func CheckPackageSource(state PackageSourceState) CheckResult {
 				SeverityError,
 				"Offline Headscale package integrity could not be verified automatically.",
 				findings,
-				[]string{"Fix local package access until meshify can compute and verify the offline package SHA-256 digest before deploy."},
+				[]string{"Fix local package access until lanpanel can compute and verify the offline package SHA-256 digest before deploy."},
 			)
 		}
 		if !sha256Matches(state.ExpectedSHA256, state.ActualSHA256) {
@@ -264,7 +264,7 @@ func checkLegoArchiveSource(state PackageSourceState, findings []string) ([]stri
 			SeverityError,
 			"Pinned lego artifact metadata is missing.",
 			findings,
-			[]string{"Confirm meshify can select the pinned lego release URL and SHA-256 digest before deploy."},
+			[]string{"Confirm lanpanel can select the pinned lego release URL and SHA-256 digest before deploy."},
 		)
 	}
 
@@ -303,7 +303,7 @@ func checkLegoArchiveSource(state PackageSourceState, findings []string) ([]stri
 				SeverityError,
 				"Offline lego archive integrity could not be verified automatically.",
 				findings,
-				[]string{"Fix local lego archive access until meshify can compute and verify the pinned archive SHA-256 digest before deploy."},
+				[]string{"Fix local lego archive access until lanpanel can compute and verify the pinned archive SHA-256 digest before deploy."},
 			)
 		}
 		if !sha256Matches(state.LegoExpectedSHA256, state.LegoActualSHA256) {
@@ -341,7 +341,7 @@ func checkLegoArchiveSource(state PackageSourceState, findings []string) ([]stri
 			SeverityError,
 			"Pinned lego archive URL is missing.",
 			findings,
-			[]string{"Confirm meshify can select the pinned lego release URL before deploy."},
+			[]string{"Confirm lanpanel can select the pinned lego release URL before deploy."},
 		)
 	}
 	findings = append(findings, fmt.Sprintf("Pinned lego archive URL: %s.", strings.TrimSpace(state.LegoURL)))
@@ -353,7 +353,7 @@ func checkLegoArchiveSource(state PackageSourceState, findings []string) ([]stri
 			SeverityError,
 			"Pinned lego archive reachability could not be confirmed from this host.",
 			findings,
-			[]string{"Fix host egress or proxy settings until meshify can reach the pinned lego GitHub release archive before deploy."},
+			[]string{"Fix host egress or proxy settings until lanpanel can reach the pinned lego GitHub release archive before deploy."},
 		)
 	}
 	if !state.LegoReachable {
@@ -364,7 +364,7 @@ func checkLegoArchiveSource(state PackageSourceState, findings []string) ([]stri
 			SeverityError,
 			"The pinned lego archive is unreachable from this host.",
 			findings,
-			[]string{"Configure a proxy or allow GitHub release access before deploy; meshify installs its own pinned lego binary."},
+			[]string{"Configure a proxy or allow GitHub release access before deploy; lanpanel installs its own pinned lego binary."},
 		)
 	}
 	if !state.LegoIntegrityChecked {
@@ -376,7 +376,7 @@ func checkLegoArchiveSource(state PackageSourceState, findings []string) ([]stri
 			SeverityError,
 			"Pinned lego archive integrity could not be verified automatically.",
 			findings,
-			[]string{"Fix GitHub release download access until meshify can verify the pinned lego archive digest before deploy."},
+			[]string{"Fix GitHub release download access until lanpanel can verify the pinned lego archive digest before deploy."},
 		)
 	}
 	if !sha256Matches(state.LegoExpectedSHA256, state.LegoActualSHA256) {
@@ -389,7 +389,7 @@ func checkLegoArchiveSource(state PackageSourceState, findings []string) ([]stri
 			SeverityError,
 			"Pinned lego archive integrity check failed.",
 			findings,
-			[]string{"Replace the downloaded lego archive source or update the pinned meshify release metadata before deploy."},
+			[]string{"Replace the downloaded lego archive source or update the pinned lanpanel release metadata before deploy."},
 		)
 	}
 	return findings, CheckResult{}

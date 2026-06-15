@@ -29,7 +29,7 @@ func CheckPermissions(state PermissionState) CheckResult {
 			"Root or sudo",
 			StatusFail,
 			SeverityError,
-			"meshify needs root or verified sudo access before deploy can continue.",
+			"lanpanel needs root or verified sudo access before deploy can continue.",
 			findings,
 			[]string{
 				"Run the deploy command as root, or grant the current user working sudo access.",
@@ -43,7 +43,7 @@ func CheckPermissions(state PermissionState) CheckResult {
 			"Root or sudo",
 			StatusFail,
 			SeverityError,
-			"meshify needs root or sudo access before deploy can continue.",
+			"lanpanel needs root or sudo access before deploy can continue.",
 			findings,
 			[]string{"Run the deploy command as root, or install and configure sudo for the current user."},
 		)

@@ -3,7 +3,7 @@ package headscale
 import (
 	"context"
 	"errors"
-	"meshify/internal/host"
+	"lanpanel/internal/host"
 	"strings"
 	"testing"
 	"time"
@@ -34,11 +34,11 @@ func TestNewOnboardingPlanDefaultsAndValidatesUserName(t *testing.T) {
 func TestHeadscaleCommandsUseLocalConfigPath(t *testing.T) {
 	t.Parallel()
 
-	create := CreateUserCommand("meshify")
+	create := CreateUserCommand("lanpanel")
 	if create.Name != "headscale" {
 		t.Fatalf("Name = %q, want headscale", create.Name)
 	}
-	if got := strings.Join(create.Args, " "); got != "--config /etc/headscale/config.yaml users create meshify" {
+	if got := strings.Join(create.Args, " "); got != "--config /etc/headscale/config.yaml users create lanpanel" {
 		t.Fatalf("Args = %q", got)
 	}
 
@@ -63,9 +63,9 @@ func TestParseUsersFindsNumericUserID(t *testing.T) {
 	output := `
 ID | Name    | Created
 1  | admin   | 2026-01-01
-2  | meshify | 2026-01-02
+2  | lanpanel | 2026-01-02
 `
-	userID, err := FindUserID(output, "meshify")
+	userID, err := FindUserID(output, "lanpanel")
 	if err != nil {
 		t.Fatalf("FindUserID() error = %v", err)
 	}
@@ -80,9 +80,9 @@ func TestParseUsersFindsUsernameColumnInHeadscaleV028Table(t *testing.T) {
 	output := `
 ID | Name           | Username | Email | Created
 1  | Admin Person   | admin    |       | 2026-01-01
-2  | Meshify Day 1  | meshify  |       | 2026-01-02
+2  | Lanpanel Day 1  | lanpanel  |       | 2026-01-02
 `
-	userID, err := FindUserID(output, "meshify")
+	userID, err := FindUserID(output, "lanpanel")
 	if err != nil {
 		t.Fatalf("FindUserID() error = %v", err)
 	}
@@ -94,8 +94,8 @@ ID | Name           | Username | Email | Created
 func TestParseUsersFindsUserIDFromJSONOutput(t *testing.T) {
 	t.Parallel()
 
-	output := `[{"id":1,"name":"admin"},{"id":2,"name":"meshify","display_name":"Meshify Day 1"}]`
-	userID, err := FindUserID(output, "meshify")
+	output := `[{"id":1,"name":"admin"},{"id":2,"name":"lanpanel","display_name":"Lanpanel Day 1"}]`
+	userID, err := FindUserID(output, "lanpanel")
 	if err != nil {
 		t.Fatalf("FindUserID() error = %v", err)
 	}
@@ -107,8 +107,8 @@ func TestParseUsersFindsUserIDFromJSONOutput(t *testing.T) {
 func TestFindUserIDRejectsAmbiguousJSONOutput(t *testing.T) {
 	t.Parallel()
 
-	output := `[{"id":2,"name":"meshify"},{"id":3,"name":"meshify"}]`
-	_, err := FindUserID(output, "meshify")
+	output := `[{"id":2,"name":"lanpanel"},{"id":3,"name":"lanpanel"}]`
+	_, err := FindUserID(output, "lanpanel")
 	if err == nil {
 		t.Fatal("FindUserID() error = nil, want ambiguous user failure")
 	}
@@ -122,10 +122,10 @@ func TestFindUserIDRejectsAmbiguousHeadscaleV028Table(t *testing.T) {
 
 	output := `
 ID | Name          | Username | Email | Created
-2  | Meshify Day 1 | meshify  |       | 2026-01-02
-3  | Meshify Other | meshify  |       | 2026-01-03
+2  | Lanpanel Day 1 | lanpanel  |       | 2026-01-02
+3  | Lanpanel Other | lanpanel  |       | 2026-01-03
 `
-	_, err := FindUserID(output, "meshify")
+	_, err := FindUserID(output, "lanpanel")
 	if err == nil {
 		t.Fatal("FindUserID() error = nil, want ambiguous user failure")
 	}
@@ -137,13 +137,13 @@ ID | Name          | Username | Email | Created
 func TestOnboardingCreatePreAuthKeyUsesUserIDAndReturnsKey(t *testing.T) {
 	t.Parallel()
 
-	plan, err := NewOnboardingPlan(OnboardingOptions{UserName: "meshify", Reusable: true})
+	plan, err := NewOnboardingPlan(OnboardingOptions{UserName: "lanpanel", Reusable: true})
 	if err != nil {
 		t.Fatalf("NewOnboardingPlan() error = %v", err)
 	}
 	runner := &scriptedRunner{
 		results: []host.Result{
-			{Stdout: `[{"id":2,"name":"meshify"}]` + "\n"},
+			{Stdout: `[{"id":2,"name":"lanpanel"}]` + "\n"},
 			{Stdout: "hskey-auth-example\n"},
 		},
 	}
@@ -170,7 +170,7 @@ func TestOnboardingCreatePreAuthKeyUsesUserIDAndReturnsKey(t *testing.T) {
 func TestOnboardingCreatesMissingUserBeforePreAuthKey(t *testing.T) {
 	t.Parallel()
 
-	plan, err := NewOnboardingPlan(OnboardingOptions{UserName: "meshify"})
+	plan, err := NewOnboardingPlan(OnboardingOptions{UserName: "lanpanel"})
 	if err != nil {
 		t.Fatalf("NewOnboardingPlan() error = %v", err)
 	}
@@ -178,7 +178,7 @@ func TestOnboardingCreatesMissingUserBeforePreAuthKey(t *testing.T) {
 		results: []host.Result{
 			{Stdout: `[]` + "\n"},
 			{},
-			{Stdout: "ID | Name\n2 | meshify\n"},
+			{Stdout: "ID | Name\n2 | lanpanel\n"},
 			{Stdout: "hskey-auth-example\n"},
 		},
 	}
@@ -190,7 +190,7 @@ func TestOnboardingCreatesMissingUserBeforePreAuthKey(t *testing.T) {
 	if len(runner.commands) != 4 {
 		t.Fatalf("commands = %d, want 4", len(runner.commands))
 	}
-	if got := strings.Join(runner.commands[1].Args, " "); !strings.Contains(got, "users create meshify") {
+	if got := strings.Join(runner.commands[1].Args, " "); !strings.Contains(got, "users create lanpanel") {
 		t.Fatalf("create command args = %q", got)
 	}
 	if got := strings.Join(runner.commands[3].Args, " "); !strings.Contains(got, "preauthkeys create --user 2") {
@@ -201,7 +201,7 @@ func TestOnboardingCreatesMissingUserBeforePreAuthKey(t *testing.T) {
 func TestOnboardingIgnoresExistingUserCreateFailure(t *testing.T) {
 	t.Parallel()
 
-	plan, err := NewOnboardingPlan(OnboardingOptions{UserName: "meshify"})
+	plan, err := NewOnboardingPlan(OnboardingOptions{UserName: "lanpanel"})
 	if err != nil {
 		t.Fatalf("NewOnboardingPlan() error = %v", err)
 	}
@@ -209,7 +209,7 @@ func TestOnboardingIgnoresExistingUserCreateFailure(t *testing.T) {
 		results: []host.Result{
 			{Stdout: `[]` + "\n"},
 			{Stderr: "Cannot create user: failed to create user: creating user: UNIQUE constraint failed: users.name"},
-			{Stdout: "ID | Name\n2 | meshify\n"},
+			{Stdout: "ID | Name\n2 | lanpanel\n"},
 			{Stdout: "hskey-auth-example\n"},
 		},
 		errors: map[int]error{1: errors.New("exit status 1")},
@@ -224,7 +224,7 @@ func TestOnboardingIgnoresExistingUserCreateFailure(t *testing.T) {
 func TestOnboardingCommandErrorsIncludeFirstOutputLine(t *testing.T) {
 	t.Parallel()
 
-	plan, err := NewOnboardingPlan(OnboardingOptions{UserName: "meshify"})
+	plan, err := NewOnboardingPlan(OnboardingOptions{UserName: "lanpanel"})
 	if err != nil {
 		t.Fatalf("NewOnboardingPlan() error = %v", err)
 	}
@@ -251,14 +251,14 @@ func TestOnboardingCommandErrorsIncludeFirstOutputLine(t *testing.T) {
 func TestOnboardingMasksPreAuthKeyCommandFailureOutput(t *testing.T) {
 	t.Parallel()
 
-	plan, err := NewOnboardingPlan(OnboardingOptions{UserName: "meshify"})
+	plan, err := NewOnboardingPlan(OnboardingOptions{UserName: "lanpanel"})
 	if err != nil {
 		t.Fatalf("NewOnboardingPlan() error = %v", err)
 	}
 	secret := "hskey-auth-secret"
 	runner := &scriptedRunner{
 		results: []host.Result{
-			{Stdout: `[{"id":2,"name":"meshify"}]` + "\n"},
+			{Stdout: `[{"id":2,"name":"lanpanel"}]` + "\n"},
 			{Stdout: secret + "\n", Stderr: "created " + secret + " but failed\ntrace detail"},
 		},
 		errors: map[int]error{1: errors.New("exit status 1 with " + secret)},
@@ -283,14 +283,14 @@ func TestOnboardingMasksPreAuthKeyCommandFailureOutput(t *testing.T) {
 func TestOnboardingRetriesTransientUsersListReadinessFailure(t *testing.T) {
 	t.Parallel()
 
-	plan, err := NewOnboardingPlan(OnboardingOptions{UserName: "meshify"})
+	plan, err := NewOnboardingPlan(OnboardingOptions{UserName: "lanpanel"})
 	if err != nil {
 		t.Fatalf("NewOnboardingPlan() error = %v", err)
 	}
 	runner := &scriptedRunner{
 		results: []host.Result{
 			{Stderr: "Could not connect: context deadline exceeded"},
-			{Stdout: `[{"id":2,"name":"meshify"}]` + "\n"},
+			{Stdout: `[{"id":2,"name":"lanpanel"}]` + "\n"},
 			{Stdout: "hskey-auth-example\n"},
 		},
 		errors: map[int]error{0: errors.New("exit status 1")},
@@ -322,14 +322,14 @@ func TestOnboardingRetriesTransientUsersListReadinessFailure(t *testing.T) {
 func TestOnboardingRetriesHeadscaleCLINilSocketPanic(t *testing.T) {
 	t.Parallel()
 
-	plan, err := NewOnboardingPlan(OnboardingOptions{UserName: "meshify"})
+	plan, err := NewOnboardingPlan(OnboardingOptions{UserName: "lanpanel"})
 	if err != nil {
 		t.Fatalf("NewOnboardingPlan() error = %v", err)
 	}
 	runner := &scriptedRunner{
 		results: []host.Result{
-			{Stderr: "panic: runtime error: invalid memory address or nil pointer dereference\nmeshify/vendor/github.com/juanfont/headscale/cmd/headscale/cli.newHeadscaleCLIWithConfig()"},
-			{Stdout: `[{"id":2,"name":"meshify"}]` + "\n"},
+			{Stderr: "panic: runtime error: invalid memory address or nil pointer dereference\nlanpanel/vendor/github.com/juanfont/headscale/cmd/headscale/cli.newHeadscaleCLIWithConfig()"},
+			{Stdout: `[{"id":2,"name":"lanpanel"}]` + "\n"},
 			{Stdout: "hskey-auth-example\n"},
 		},
 		errors: map[int]error{0: errors.New("exit status 2")},
@@ -355,7 +355,7 @@ func TestOnboardingRetriesHeadscaleCLINilSocketPanic(t *testing.T) {
 func TestOnboardingDoesNotRetryNonReadinessUsersListFailure(t *testing.T) {
 	t.Parallel()
 
-	plan, err := NewOnboardingPlan(OnboardingOptions{UserName: "meshify"})
+	plan, err := NewOnboardingPlan(OnboardingOptions{UserName: "lanpanel"})
 	if err != nil {
 		t.Fatalf("NewOnboardingPlan() error = %v", err)
 	}

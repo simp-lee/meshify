@@ -4,8 +4,8 @@ package state
 import (
 	"encoding/json"
 	"fmt"
-	"meshify/internal/assets"
-	"meshify/internal/workflow"
+	"lanpanel/internal/assets"
+	"lanpanel/internal/workflow"
 	"os"
 	"path/filepath"
 	"slices"

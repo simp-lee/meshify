@@ -1,2 +1,2 @@
-// Package appverify provides static verification for meshify app configs.
+// Package appverify provides static verification for lanpanel app configs.
 package appverify

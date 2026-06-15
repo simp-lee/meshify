@@ -1,0 +1,6 @@
+# Lanpanel-managed: realip.profile={{ .ProfileName }} provider={{ .Provider }}
+# Source: deploy/templates/realip/trusted-cidrs.conf.tmpl
+
+{{ range .TrustedCIDRs }}
+{{ . }} 1;
+{{- end }}

@@ -1,9 +1,10 @@
 package apprender
 
 import (
-	"meshify/internal/acme"
-	"meshify/internal/appconfig"
-	"meshify/internal/components/appsvc"
+	"fmt"
+	"lanpanel/internal/acme"
+	"lanpanel/internal/appconfig"
+	"lanpanel/internal/components/appsvc"
 	"strconv"
 	"strings"
 )
@@ -30,6 +31,7 @@ type TemplateData struct {
 	ErrorLog          string
 	GoAccess          GoAccessTemplateData
 	Proxy             ProxyTemplateData
+	RealIP            RealIPTemplateData
 	StaticLocations   []StaticLocationTemplateData
 	WebrootPath       string
 	LegoDataPath      string
@@ -86,6 +88,23 @@ type ProxyTemplateData struct {
 	RequestBuffering    string
 }
 
+type RealIPTemplateData struct {
+	Enabled                bool
+	ProfileName            string
+	Provider               string
+	Header                 string
+	NginxIncludePath       string
+	TrustedCIDRPath        string
+	RejectionLogPath       string
+	RejectionLogFormatName string
+	OriginalSourceVariable string
+	SourceTrustedVariable  string
+	HeaderIsIPVariable     string
+	HeaderPublicVariable   string
+	RejectReasonVariable   string
+	RejectLogVariable      string
+}
+
 type StaticLocationTemplateData struct {
 	Exact        bool
 	Path         string
@@ -118,6 +137,10 @@ func NewTemplateData(cfg appconfig.Config) (TemplateData, error) {
 	if cfg.Mode() == appconfig.ModeUpstream {
 		upstream = cfg.App.Upstream
 	}
+	realIP, err := realIPTemplateData(cfg, names)
+	if err != nil {
+		return TemplateData{}, err
+	}
 	return TemplateData{
 		AppName:           names.AppName,
 		VarPrefix:         names.VarPrefix,
@@ -140,6 +163,7 @@ func NewTemplateData(cfg appconfig.Config) (TemplateData, error) {
 		ErrorLog:          cfg.Nginx.ErrorLog,
 		GoAccess:          goAccessTemplateData(cfg, names),
 		Proxy:             proxyTemplateData(cfg.Nginx.Proxy),
+		RealIP:            realIP,
 		StaticLocations:   staticLocationTemplateData(cfg.Nginx.StaticLocations),
 		WebrootPath:       names.WebrootPath,
 		LegoDataPath:      names.LegoDataPath,
@@ -148,6 +172,37 @@ func NewTemplateData(cfg appconfig.Config) (TemplateData, error) {
 		PrivateKeyPath:    names.PrivateKeyPath,
 		TLSMarkerPath:     names.TLSMarkerPath,
 		HookPath:          names.HookPath,
+	}, nil
+}
+
+func realIPTemplateData(cfg appconfig.Config, names appsvc.Names) (RealIPTemplateData, error) {
+	profileName := strings.TrimSpace(cfg.Nginx.RealIPProfile)
+	if profileName == "" || !cfg.RealIPEnabled() {
+		return RealIPTemplateData{}, nil
+	}
+	profile, ok := cfg.RealIPProfile(profileName)
+	if !ok {
+		return RealIPTemplateData{}, fmt.Errorf("realip profile %q is missing", profileName)
+	}
+	realIPNames, err := appsvc.NewRealIPProfileNames(profileName, profile.Provider, names.AppName)
+	if err != nil {
+		return RealIPTemplateData{}, err
+	}
+	return RealIPTemplateData{
+		Enabled:                true,
+		ProfileName:            profileName,
+		Provider:               profile.Provider,
+		Header:                 appconfig.RealIPHeaderEdgeOne,
+		NginxIncludePath:       realIPNames.NginxIncludePath,
+		TrustedCIDRPath:        realIPNames.TrustedCIDRPath,
+		RejectionLogPath:       names.RealIPRejectionLogPath,
+		RejectionLogFormatName: names.RealIPRejectionLogFormatName,
+		OriginalSourceVariable: names.VarPrefix + "_realip_original_source",
+		SourceTrustedVariable:  names.VarPrefix + "_realip_source_trusted",
+		HeaderIsIPVariable:     names.VarPrefix + "_eo_connecting_ip_is_ip",
+		HeaderPublicVariable:   names.VarPrefix + "_eo_connecting_ip_is_public",
+		RejectReasonVariable:   names.VarPrefix + "_realip_reject_reason",
+		RejectLogVariable:      names.VarPrefix + "_realip_reject_log",
 	}, nil
 }
 
@@ -198,7 +253,7 @@ func goAccessTemplateData(cfg appconfig.Config, names appsvc.Names) GoAccessTemp
 		DashboardURL:              "https://" + cfg.PrimaryDomain() + cfg.NginxGoAccessDashboardPath(),
 		WSURL:                     goAccessPublicWebSocketURL(cfg.PrimaryDomain(), cfg.NginxGoAccessWebSocketPath()),
 		Origin:                    "https://" + cfg.PrimaryDomain(),
-		HTMLReportTitle:           "Meshify-GoAccess-" + names.AppName,
+		HTMLReportTitle:           "Lanpanel-GoAccess-" + names.AppName,
 	}
 	if data.EnhancedLogFormat {
 		data.GoAccessLogFormatDirective = `%h %^ %^ [%x] "%r" %s %b "%R" "%u" "%v" %T "%^" "%^"`

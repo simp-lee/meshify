@@ -2,7 +2,7 @@ package main
 
 import (
 	"bytes"
-	"meshify/internal/config"
+	"lanpanel/internal/config"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -43,11 +43,11 @@ func TestRun_HelpOutput(t *testing.T) {
 				t.Fatalf("stderr = %q, want empty", stderr)
 			}
 			for _, want := range []string{
-				"meshify manages init, deploy, verify, status, and app workflows.",
+				"lanpanel manages init, deploy, verify, status, and app workflows.",
 				"Happy path:",
-				"meshify init",
-				"meshify deploy",
-				"meshify verify",
+				"lanpanel init",
+				"lanpanel deploy",
+				"lanpanel verify",
 				"app      Manage additional app deployments.",
 			} {
 				if !strings.Contains(stdout, want) {
@@ -77,8 +77,8 @@ func TestRun_VersionOutput(t *testing.T) {
 			if err != nil {
 				t.Fatalf("run() error = %v", err)
 			}
-			if stdout != "meshify dev\n" {
-				t.Fatalf("stdout = %q, want %q", stdout, "meshify dev\n")
+			if stdout != "lanpanel dev\n" {
+				t.Fatalf("stdout = %q, want %q", stdout, "lanpanel dev\n")
 			}
 			if stderr != "" {
 				t.Fatalf("stderr = %q, want empty", stderr)
@@ -90,7 +90,7 @@ func TestRun_VersionOutput(t *testing.T) {
 func TestRun_InitWritesExampleConfig(t *testing.T) {
 	t.Parallel()
 
-	configPath := filepath.Join(t.TempDir(), "meshify.yaml")
+	configPath := filepath.Join(t.TempDir(), "lanpanel.yaml")
 	stdout, stderr, err := runCLI(t, "init", "--config", configPath)
 	if err != nil {
 		t.Fatalf("run() error = %v", err)
@@ -98,7 +98,7 @@ func TestRun_InitWritesExampleConfig(t *testing.T) {
 	if stderr != "" {
 		t.Fatalf("stderr = %q, want empty", stderr)
 	}
-	if !strings.Contains(stdout, "meshify init: wrote example config") {
+	if !strings.Contains(stdout, "lanpanel init: wrote example config") {
 		t.Fatalf("stdout = %q, want init summary", stdout)
 	}
 	if !strings.Contains(stdout, configPath) {
@@ -121,10 +121,10 @@ func TestRun_StatusMissingConfig(t *testing.T) {
 	if stderr != "" {
 		t.Fatalf("stderr = %q, want empty", stderr)
 	}
-	if !strings.Contains(stdout, "meshify status: no config file found") {
+	if !strings.Contains(stdout, "lanpanel status: no config file found") {
 		t.Fatalf("stdout = %q, want missing-config summary", stdout)
 	}
-	if !strings.Contains(stdout, "meshify init --config "+configPath) {
+	if !strings.Contains(stdout, "lanpanel init --config "+configPath) {
 		t.Fatalf("stdout = %q, want init hint", stdout)
 	}
 }

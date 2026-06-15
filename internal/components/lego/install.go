@@ -3,8 +3,8 @@ package lego
 import (
 	"context"
 	"fmt"
-	"meshify/internal/config"
-	"meshify/internal/host"
+	"lanpanel/internal/config"
+	"lanpanel/internal/host"
 	"path/filepath"
 	"strings"
 )
@@ -12,8 +12,8 @@ import (
 const (
 	Version = "v5.1.0"
 
-	BinaryPath      = "/opt/meshify/bin/lego"
-	DefaultCacheDir = "/var/cache/meshify"
+	BinaryPath      = "/opt/lanpanel/bin/lego"
+	DefaultCacheDir = "/var/cache/lanpanel"
 )
 
 const (

@@ -3,8 +3,8 @@ package render
 import (
 	"fmt"
 	"io/fs"
-	"meshify/internal/assets"
-	"meshify/internal/config"
+	"lanpanel/internal/assets"
+	"lanpanel/internal/config"
 	"slices"
 )
 

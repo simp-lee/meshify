@@ -5,10 +5,10 @@
 GO ?= go
 PKGS ?= ./...
 GOLANGCI_LINT ?= golangci-lint
-BINARY ?= meshify
+BINARY ?= lanpanel
 
 build:
-	$(GO) build -o $(BINARY) ./cmd/meshify
+	$(GO) build -o $(BINARY) ./cmd/lanpanel
 
 test:
 	$(GO) test $(PKGS)

@@ -1,17 +1,17 @@
-# Meshify
+# Lanpanel
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Meshify 是一个用 Go 写的服务器部署工具，不是 VPN 客户端。它适合想自建私有 Tailscale/Headscale 网络、但不想手工配置 Headscale、Nginx、HTTPS 证书和 systemd 的个人或小团队：准备一台 Debian/Ubuntu 云服务器、一个域名和 root 或 sudo 权限，Meshify 就会按 `meshify.yaml` 完成部署；也可以用 `meshify app` 把同机或 tailnet 内的 HTTP/WebSocket 服务挂到公网 HTTPS，并可选启用 GoAccess 实时访问日志看板。如果你只是想在云主机上跑自己的 Go Web 服务，也可以只用 app 流程，不部署私有 Tailscale/Headscale 网络。
+Lanpanel 是一个用 Go 写的服务器部署工具，不是 VPN 客户端。它适合想自建私有 Tailscale/Headscale 网络、但不想手工配置 Headscale、Nginx、HTTPS 证书和 systemd 的个人或小团队：准备一台 Debian/Ubuntu 云服务器、一个域名和 root 或 sudo 权限，Lanpanel 就会按 `lanpanel.yaml` 完成部署；也可以用 `lanpanel app` 把同机或 tailnet 内的 HTTP/WebSocket 服务挂到公网 HTTPS，并可选启用 GoAccess 实时访问日志看板。如果你只是想在云主机上跑自己的 Go Web 服务，也可以只用 app 流程，不部署私有 Tailscale/Headscale 网络。
 
 ## 先判断是否适合
 
-| 你想做什么 | Meshify 是否适合 |
+| 你想做什么 | Lanpanel 是否适合 |
 | --- | --- |
-| 用官方 Tailscale 客户端加入自己的私有网络 | 适合，Meshify 部署的是 Headscale 控制面 |
+| 用官方 Tailscale 客户端加入自己的私有网络 | 适合，Lanpanel 部署的是 Headscale 控制面 |
 | 在一台云服务器上自动配置 Headscale、Nginx、证书续期和基础验证 | 适合，这是本仓库的核心目标 |
-| 把同机 Go Web 服务或 tailnet 内 HTTP/WebSocket 服务发布到 HTTPS，并可选启用访问日志看板 | 适合，使用 `meshify app`，按需启用 `nginx.goaccess` |
-| 只发布云主机本机的 Go Web 服务，不搭私有 Tailscale/Headscale 网络 | 适合，使用 `meshify app` 的 `listen` 模式 |
+| 把同机 Go Web 服务或 tailnet 内 HTTP/WebSocket 服务发布到 HTTPS，并可选启用访问日志看板 | 适合，使用 `lanpanel app`，按需启用 `nginx.goaccess` |
+| 只发布云主机本机的 Go Web 服务，不搭私有 Tailscale/Headscale 网络 | 适合，使用 `lanpanel app` 的 `listen` 模式 |
 | 搭多机高可用、Kubernetes、Terraform、Ansible、Web UI、OIDC/SSO | 不适合，这些不在当前范围内 |
 | 找 Tailscale 客户端、通用反向代理框架或 Go SDK | 不适合，本仓库主要是 CLI、配置示例和运行时模板 |
 
@@ -25,32 +25,32 @@ Meshify 是一个用 Go 写的服务器部署工具，不是 VPN 客户端。它
 
 如果你只想部署本机 Go Web 服务，不创建私有网络，只需要 app 域名和 `80/tcp`、`443/tcp`；`3478/udp` 只用于主 Headscale 部署。
 
-在目标服务器安装 Release 二进制。先打开 [Releases](https://github.com/simp-lee/meshify/releases) 复制最新稳定 release tag，再把下面的 `vX.Y.Z` 替换成这个 tag；不要原样复制占位符。
+在目标服务器安装 Release 二进制。先打开 [Releases](https://github.com/simp-lee/lanpanel/releases) 复制最新稳定 release tag，再把下面的 `vX.Y.Z` 替换成这个 tag；不要原样复制占位符。
 
 ```bash
 VERSION=vX.Y.Z
-curl -fsSL https://raw.githubusercontent.com/simp-lee/meshify/main/scripts/install.sh | sh -s -- "${VERSION}"
-meshify --help
+curl -fsSL https://raw.githubusercontent.com/simp-lee/lanpanel/main/scripts/install.sh | sh -s -- "${VERSION}"
+lanpanel --help
 ```
 
-安装脚本会自动识别 `x86_64` 和 `arm64`/`aarch64`，下载 `VERSION` 对应的 GitHub Release asset，用 `checksums.txt` 校验后，把 `meshify` 安装到 `/usr/local/bin/meshify`。
+安装脚本会自动识别 `x86_64` 和 `arm64`/`aarch64`，下载 `VERSION` 对应的 GitHub Release asset，用 `checksums.txt` 校验后，把 `lanpanel` 安装到 `/usr/local/bin/lanpanel`。
 
-如果使用源码 checkout 而不是 Release 二进制，运行 `make build` 后把 `./meshify` 安装到 `/usr/local/bin/meshify`。
+如果使用源码 checkout 而不是 Release 二进制，运行 `make build` 后把 `./lanpanel` 安装到 `/usr/local/bin/lanpanel`。
 
-然后按默认流程执行 `init -> verify -> deploy -> verify -> status`。部署前务必检查 `meshify.yaml`；如果里面仍是示例值，至少把 `default.server_url`、`default.base_domain` 和 `default.certificate_email` 改成你的真实值。
+然后按默认流程执行 `init -> verify -> deploy -> verify -> status`。部署前务必检查 `lanpanel.yaml`；如果里面仍是示例值，至少把 `default.server_url`、`default.base_domain` 和 `default.certificate_email` 改成你的真实值。
 
 ```bash
-meshify init --config meshify.yaml
-# 检查 meshify.yaml；如仍是示例值，先编辑 default 段
-meshify verify --config meshify.yaml
-sudo meshify deploy --config meshify.yaml
-meshify verify --config meshify.yaml
-meshify status --config meshify.yaml
+lanpanel init --config lanpanel.yaml
+# 检查 lanpanel.yaml；如仍是示例值，先编辑 default 段
+lanpanel verify --config lanpanel.yaml
+sudo lanpanel deploy --config lanpanel.yaml
+lanpanel verify --config lanpanel.yaml
+lanpanel status --config lanpanel.yaml
 ```
 
 `deploy` 通过后，CLI 会输出初始 preauth key。先用它接入第一台客户端，后续每台客户端建议重新生成一个新的 key。
 
-上面这套默认流程用于部署私有 Tailscale/Headscale 网络。如果只是发布本机 Go 服务，可以跳过 `meshify init` 和 `meshify deploy` 主流程，直接看下面的“同机部署其它 Go 服务”章节。
+上面这套默认流程用于部署私有 Tailscale/Headscale 网络。如果只是发布本机 Go 服务，可以跳过 `lanpanel init` 和 `lanpanel deploy` 主流程，直接看下面的“同机部署其它 Go 服务”章节。
 
 ## 支持范围
 
@@ -58,12 +58,12 @@ meshify status --config meshify.yaml
 | --- | --- |
 | 服务器系统 | Debian、Ubuntu，或具备 apt/dpkg/systemd 的 Debian 系发行版 |
 | 控制面 | Headscale v0.28.0 只监听本机，由 Nginx 对外代理 |
-| TLS 自动化 | HTTP-01 或 DNS-01，使用 Meshify 管理的固定版本 lego v5.1.0 |
+| TLS 自动化 | HTTP-01 或 DNS-01，使用 Lanpanel 管理的固定版本 lego v5.1.0 |
 | 中继 | Headscale 内置 DERP/STUN，监听 `3478/udp`；不接入官方 DERP 列表 |
 | 客户端 | Windows, macOS, Debian/Ubuntu Linux |
 | 客户端基线 | Tailscale client >= v1.74.0 |
 
-Meshify 刻意保持范围小：不做多机高可用、Kubernetes、Terraform、Ansible、Web UI、OIDC/SSO、SQLite 自动备份恢复、官方 DERP 兜底，也默认不开放远程 gRPC/API-key 管理。
+Lanpanel 刻意保持范围小：不做多机高可用、Kubernetes、Terraform、Ansible、Web UI、OIDC/SSO、SQLite 自动备份恢复、官方 DERP 兜底，也默认不开放远程 gRPC/API-key 管理。
 
 ## 服务器端指南
 
@@ -79,7 +79,7 @@ Meshify 刻意保持范围小：不做多机高可用、Kubernetes、Terraform�
 
 ### 最小配置
 
-公开示例在 [`deploy/config/meshify.yaml.example`](deploy/config/meshify.yaml.example)。多数首次部署只需要编辑 `default`：
+公开示例在 [`deploy/config/lanpanel.yaml.example`](deploy/config/lanpanel.yaml.example)。多数首次部署只需要编辑 `default`：
 
 ```yaml
 default:
@@ -101,7 +101,7 @@ default:
 只有需要 DNS-01、Headscale 镜像/离线包、Headscale metrics 端口、离线 lego、包来源探测超时覆盖、代理、架构覆盖或公网 IP 覆盖时，才使用高级引导：
 
 ```bash
-meshify init --advanced --config meshify.yaml
+lanpanel init --advanced --config lanpanel.yaml
 ```
 
 如果 GitHub release 下载可达但很慢，可以调大包来源探测超时：
@@ -124,19 +124,21 @@ default:
 
 只有公网 80 不可靠或组织策略要求 DNS 验证时才使用 DNS-01。DNS-01 使用 lego provider code `cloudflare`、`route53`、`digitalocean`、`gcloud`、`tencentcloud`，其中 `google` 可作为 `gcloud` 别名。
 
-不要把 DNS API 值写进 `meshify.yaml`，也不要把原始 token/key 直接写进 `env_file`。Cloudflare、DigitalOcean 和腾讯云需要 root-only 的 `advanced.dns01.env_file`，并用各自支持的 `_FILE` 变量引用 root-only 密钥文件；Route53 和 gcloud 可走主机凭据链，或只在 `env_file` 中放它们支持的 provider 设置或凭据文件路径。
+不要把 DNS API 值写进 `lanpanel.yaml`，也不要把原始 token/key 直接写进 `env_file`。Cloudflare、DigitalOcean 和腾讯云需要 root-owned、root-only 的 `advanced.dns01.env_file`，并用各自支持的 `_FILE` 变量引用 root-owned、root-only 密钥文件；Route53 和 gcloud 可走主机凭据链，或只在 `env_file` 中放它们支持的 provider 设置或凭据文件路径。
 
-腾讯云 DNS / DNSPod 示例：先在腾讯云或 DNSPod 里创建能管理 DNSPod 解析记录的 API 密钥，然后把 SecretId 和 SecretKey 放进 root-only 文件，再由 lego env 文件引用这些文件：
+腾讯云 DNS / DNSPod 示例：先在腾讯云或 DNSPod 里创建能管理 DNSPod 解析记录的 API 密钥，然后把 SecretId 和 SecretKey 放进 root-owned、root-only 文件，再由 lego env 文件引用这些文件：
 
 ```bash
-sudo install -d -m 0700 /etc/meshify/dns01
-printf '%s' '<腾讯云 SecretId>' | sudo tee /etc/meshify/dns01/tencentcloud-secret-id >/dev/null
-printf '%s' '<腾讯云 SecretKey>' | sudo tee /etc/meshify/dns01/tencentcloud-secret-key >/dev/null
-sudo chmod 0600 /etc/meshify/dns01/tencentcloud-secret-id /etc/meshify/dns01/tencentcloud-secret-key
+sudo install -d -o root -g root -m 0700 /etc/lanpanel/dns01
+sudo install -o root -g root -m 0600 /dev/null /etc/lanpanel/dns01/tencentcloud-secret-id
+sudo install -o root -g root -m 0600 /dev/null /etc/lanpanel/dns01/tencentcloud-secret-key
+printf '%s' '<腾讯云 SecretId>' | sudo tee /etc/lanpanel/dns01/tencentcloud-secret-id >/dev/null
+printf '%s' '<腾讯云 SecretKey>' | sudo tee /etc/lanpanel/dns01/tencentcloud-secret-key >/dev/null
 
-sudo tee /etc/meshify/dns01/tencentcloud.env >/dev/null <<'EOF'
-TENCENTCLOUD_SECRET_ID_FILE=/etc/meshify/dns01/tencentcloud-secret-id
-TENCENTCLOUD_SECRET_KEY_FILE=/etc/meshify/dns01/tencentcloud-secret-key
+sudo install -o root -g root -m 0600 /dev/null /etc/lanpanel/dns01/tencentcloud.env
+sudo tee /etc/lanpanel/dns01/tencentcloud.env >/dev/null <<'EOF'
+TENCENTCLOUD_SECRET_ID_FILE=/etc/lanpanel/dns01/tencentcloud-secret-id
+TENCENTCLOUD_SECRET_KEY_FILE=/etc/lanpanel/dns01/tencentcloud-secret-key
 TENCENTCLOUD_PROPAGATION_TIMEOUT=900
 TENCENTCLOUD_POLLING_INTERVAL=10
 TENCENTCLOUD_TTL=600
@@ -145,12 +147,11 @@ LEGO_DNS_RESOLVERS=119.29.29.29:53
 LEGO_DNS_TIMEOUT=30
 LEGO_DNS_PROPAGATION_DISABLE_ANS=true
 EOF
-sudo chmod 0600 /etc/meshify/dns01/tencentcloud.env
 ```
 
 其中 `LEGO_DNS_*` 会把 lego 的 DNS zone 判断固定到 DNSPod 公共解析器，保留递归解析器 TXT 轮询，并跳过在腾讯云 EdgeOne / DNSPod 托管接入下容易失败的权威 nameserver 传播检查。配合 `TENCENTCLOUD_POLLING_INTERVAL=10`，lego 会每 10 秒检查一次，TXT 记录对指定递归解析器可见后就继续申请证书。
 
-然后在 `meshify.yaml` 中启用 DNS-01：
+然后在 `lanpanel.yaml` 中启用 DNS-01：
 
 ```yaml
 default:
@@ -159,7 +160,7 @@ default:
 advanced:
   dns01:
     provider: "tencentcloud"
-    env_file: "/etc/meshify/dns01/tencentcloud.env"
+    env_file: "/etc/lanpanel/dns01/tencentcloud.env"
 ```
 
 ### 部署
@@ -167,21 +168,21 @@ advanced:
 在目标服务器运行：
 
 ```bash
-sudo meshify deploy --config meshify.yaml
+sudo lanpanel deploy --config lanpanel.yaml
 ```
 
 `deploy` 会检查配置、系统家族、主机能力、权限、DNS、端口、包来源、ACME 前置条件和服务冲突；随后安装依赖、安装 lego 和 Headscale、写入运行时文件、申请证书、启用服务、创建初始 Headscale 用户和 preauth key，并执行静态验证。
 
-如果中途失败，按输出里的失败步骤修复后重复同一条 `deploy` 命令即可。Meshify 会把 checkpoint 写在配置文件旁边的 `.meshify/` 目录。
+如果中途失败，按输出里的失败步骤修复后重复同一条 `deploy` 命令即可。Lanpanel 会把 checkpoint 写在配置文件旁边的 `.lanpanel/` 目录。
 
 ### 验证和状态
 
 ```bash
-meshify verify --config meshify.yaml
-meshify status --config meshify.yaml
+lanpanel verify --config lanpanel.yaml
+lanpanel status --config lanpanel.yaml
 ```
 
-`verify` 是静态配置和 runtime 模板检查。它会重新检查渲染出的 Headscale、ACL、Nginx、TLS hook、证书计划、onboarding 准备状态，以及 Tailscale 客户端版本基线；它不读取宿主机上的 systemd 状态、证书文件、Nginx runtime、Headscale 进程状态或客户端在线状态。`meshify status` 是只读命令，用来查看配置状态、已完成 checkpoint、警告和上次可恢复失败。
+`verify` 是静态配置和 runtime 模板检查。它会重新检查渲染出的 Headscale、ACL、Nginx、TLS hook、证书计划、onboarding 准备状态，以及 Tailscale 客户端版本基线；它不读取宿主机上的 systemd 状态、证书文件、Nginx runtime、Headscale 进程状态或客户端在线状态。`lanpanel status` 是只读命令，用来查看配置状态、已完成 checkpoint、警告和上次可恢复失败。
 
 部署后的宿主机运行态仍要用系统命令确认：
 
@@ -194,8 +195,8 @@ curl -I https://hs.example.com
 预期结果：
 
 - Headscale 控制面、metrics、gRPC 都只监听本机。
-- Nginx 从 `/var/lib/meshify/acme-challenges` 处理 HTTP-01，使用 `fullchain.pem` 终止 TLS，并转发控制面和 DERP WebSocket 所需的 HTTP/1.1 upgrade。
-- Nginx 使用 `/etc/meshify/tls/<server>/fullchain.pem` 和 `/etc/meshify/tls/<server>/privkey.pem`。
+- Nginx 从 `/var/lib/lanpanel/acme-challenges` 处理 HTTP-01，使用 `fullchain.pem` 终止 TLS，并转发控制面和 DERP WebSocket 所需的 HTTP/1.1 upgrade。
+- Nginx 使用 `/etc/lanpanel/tls/<server>/fullchain.pem` 和 `/etc/lanpanel/tls/<server>/privkey.pem`。
 - Headscale 在 `3478/udp` 暴露 STUN，使用内置 DERP，`derp.urls` 保持为空。
 - 两台不同网络里的客户端能加入、解析 MagicDNS、互相 `tailscale ping`，并在 `tailscale netcheck` 中看到直连或 DERP 兜底路径。
 
@@ -226,7 +227,7 @@ Internet, ACME CA, and Tailscale clients
 |   - embedded DERP over HTTPS proxy path        |
 |   - STUN on 3478/udp                           |
 |                                                |
-| meshify-managed lego                           |
+| lanpanel-managed lego                           |
 |   - certificate issue/renew                    |
 |   - install hook reloads Nginx after validate  |
 +------------------------------------------------+
@@ -251,7 +252,7 @@ Internet
 |   - reads canonical Nginx access log           |
 |   - live updates over loopback WebSocket       |
 |   - Nginx serves report.html and proxies /ws   |
-|   - logrotate for meshify-managed access log   |
+|   - logrotate for lanpanel-managed access log   |
 |                                                |
 | example-app.service                            |
 |   - runs as app.name system user               |
@@ -285,33 +286,33 @@ Internet
 
 ### 同机部署其它 Go 服务
 
-如果要把自己的 Go Web 服务也放到这台云服务器，或把 tailnet 内某个 HTTP/WebSocket 服务通过这台服务器发布到公网，使用独立 app 配置和 `meshify app` 流程。
+如果要把自己的 Go Web 服务也放到这台云服务器，或把 tailnet 内某个 HTTP/WebSocket 服务通过这台服务器发布到公网，使用独立 app 配置和 `lanpanel app` 流程。
 
-如果你不想搭私有 Tailscale/Headscale 网络，只想让公网通过 HTTPS 访问这台云主机上的 Go 服务，也用这里的 `listen` 模式。这个模式不会要求你先部署 Headscale；只要保持 `upstream: ""`，并且不要把 `tailscale.enabled_for_listen` 改成 `true`，Meshify 就只处理本机 app、Nginx、证书和 systemd。
+如果你不想搭私有 Tailscale/Headscale 网络，只想让公网通过 HTTPS 访问这台云主机上的 Go 服务，也用这里的 `listen` 模式。这个模式不会要求你先部署 Headscale；只要保持 `upstream: ""`，并且不要把 `tailscale.enabled_for_listen` 改成 `true`，Lanpanel 就只处理本机 app、Nginx、证书和 systemd。
 
 新手先按这条最短路径走：生成配置、编辑配置、静态校验、部署。
 
 ```bash
-meshify app init --config meshify-apps/abc.yaml
-# 编辑 meshify-apps/abc.yaml
-meshify app verify --config meshify-apps/abc.yaml
-sudo meshify app deploy --config meshify-apps/abc.yaml
+lanpanel app init --config lanpanel-apps/abc.yaml
+# 编辑 lanpanel-apps/abc.yaml
+lanpanel app verify --config lanpanel-apps/abc.yaml
+sudo lanpanel app deploy --config lanpanel-apps/abc.yaml
 ```
 
-app 流程不提供 `--example`：`meshify app init` 本身就会写出可编辑示例配置；`--example` 只属于主 `meshify init` 命令。示例配置源在 [`deploy/config/meshify-app.yaml.example`](deploy/config/meshify-app.yaml.example)，`meshify app init` 会写出同样结构的可编辑文件。
+app 流程不提供 `--example`：`lanpanel app init` 本身就会写出可编辑示例配置；`--example` 只属于主 `lanpanel init` 命令。示例配置源在 [`deploy/config/lanpanel-app.yaml.example`](deploy/config/lanpanel-app.yaml.example)，`lanpanel app init` 会写出同样结构的可编辑文件。
 
-推荐一个 app 一个配置文件，并统一放在 `meshify-apps/` 目录：
+推荐一个 app 一个配置文件，并统一放在 `lanpanel-apps/` 目录：
 
 ```text
-meshify.yaml
-meshify-apps/abc.yaml
-meshify-apps/admin.yaml
-meshify-apps/tailapp.yaml
+lanpanel.yaml
+lanpanel-apps/abc.yaml
+lanpanel-apps/admin.yaml
+lanpanel-apps/tailapp.yaml
 ```
 
-只部署同机 `listen` app 时可以没有 `meshify.yaml`；上面的目录只是同时管理主私有网络和多个 app 时的常见放法。
+只部署同机 `listen` app 时可以没有 `lanpanel.yaml`；上面的目录只是同时管理主私有网络和多个 app 时的常见放法。
 
-`upstream` app 必须使用 Tailscale client；`listen` app 只有主动访问 tailnet 时才设置 `tailscale.enabled_for_listen: true`。`tailscale.login_server` 为空时，Meshify 会从 `tailscale.meshify_config` 读取 `default.server_url`；`tailscale.meshify_config` 为空时默认是命令当前工作目录下的 `./meshify.yaml`，不是 `--config` 旁边的文件。主配置不在当前目录时请显式设置 `tailscale.meshify_config`；没有主配置时请显式设置 `tailscale.login_server`，并提供 root-only 的 `tailscale.auth_key_file` 或提前把这台云服务器登录到对应 tailnet。
+`upstream` app 必须使用 Tailscale client；`listen` app 只有主动访问 tailnet 时才设置 `tailscale.enabled_for_listen: true`。`tailscale.login_server` 为空时，Lanpanel 会从 `tailscale.lanpanel_config` 读取 `default.server_url`；`tailscale.lanpanel_config` 为空时默认是命令当前工作目录下的 `./lanpanel.yaml`，不是 `--config` 旁边的文件。主配置不在当前目录时请显式设置 `tailscale.lanpanel_config`；没有主配置时请显式设置 `tailscale.login_server`，并提供 root-owned、root-only 的 `tailscale.auth_key_file` 或提前把这台云服务器登录到对应 tailnet。
 
 deploy 会检查 Tailscale client 是否已安装、运行并登录到期望 login server；已满足时会跳过安装和重登。自动登录固定附加 `--accept-dns=false --accept-routes=false --shields-up`。如果当前机器已经登录到无法证明匹配的 login server，deploy 会失败，不会自动 `logout`、清状态或重入网。
 
@@ -324,7 +325,7 @@ deploy 会检查 Tailscale client 是否已安装、运行并登录到期望 log
 | `listen` | Go 服务就跑在这台云服务器上 | 把业务二进制安装到 `service.exec_start` 第一个 token 指向的绝对路径，并让服务监听 loopback |
 | `upstream` | 后端服务在 tailnet 内其它节点上，例如 `100.64.10.20:18001` | 确认云服务器上的 Tailscale client 能访问这个固定 HTTP/WebSocket upstream |
 
-`listen` 表示本机 app 模式：Go 服务运行在同一台云服务器上，只监听 loopback，例如 `127.0.0.1:18001`。Meshify 会生成 app systemd service、Nginx 站点、证书、hook 和续期 timer；它只验证业务二进制存在且可执行，不复制你的业务二进制。
+`listen` 表示本机 app 模式：Go 服务运行在同一台云服务器上，只监听 loopback，例如 `127.0.0.1:18001`。Lanpanel 会生成 app systemd service、Nginx 站点、证书、hook 和续期 timer；它只验证业务二进制存在且可执行，不复制你的业务二进制。
 
 `upstream` 表示 tailnet upstream 模式：公网 Nginx 反代到 tailnet 内其它节点的固定 HTTP/WebSocket 地址，例如 `100.64.10.20:18001`。该模式不生成本机 app service。`listen` 和 `upstream` 必须二选一；`upstream` 模式自动需要 Tailscale client。`upstream` 只适合 HTTP/WebSocket 服务，不用于 PostgreSQL、Redis、MySQL 等数据库端口公网发布。
 
@@ -335,7 +336,7 @@ deploy 会检查 Tailscale client 是否已安装、运行并登录到期望 log
 `listen` 模式示例：
 
 ```yaml
-api_version: meshify/app/v1alpha1
+api_version: lanpanel/app/v1alpha1
 
 app:
   name: "example-app"
@@ -361,7 +362,7 @@ tailscale:
 `upstream` 模式示例：
 
 ```yaml
-api_version: meshify/app/v1alpha1
+api_version: lanpanel/app/v1alpha1
 
 app:
   name: "tailapp"
@@ -378,9 +379,9 @@ service:
   env_file: ""
 
 tailscale:
-  # 如果同目录没有主 meshify.yaml，就显式填写 login_server。
+  # 如果同目录没有主 lanpanel.yaml，就显式填写 login_server。
   # login_server: "https://hs.example.com"
-  # auth_key_file: "/etc/meshify/tailscale/app-auth-key"
+  # auth_key_file: "/etc/lanpanel/tailscale/app-auth-key"
 ```
 
 多个域名写在同一个 `app.domains` 列表中。所有域名会写入同一个 Nginx `server_name`、同一张证书的 SAN，以及 Host/SNI allowlist。首版不会自动做 `abc.com` 和 `www.abc.com` 之间的 canonical redirect；它们默认服务同一个 app。
@@ -406,20 +407,20 @@ tailscale:
 
 | 配置 | 行为 | 是否自动轮转 |
 | --- | --- | --- |
-| `nginx.access_log: ""` + GoAccess 关闭 | Meshify 不渲染 app 专属 `access_log`，Nginx 继承全局日志配置；Debian/Ubuntu 通常使用 `/var/log/nginx/access.log` | Meshify 不处理；通常由发行版 Nginx/logrotate 处理 |
-| `nginx.access_log: ""` + GoAccess 开启 | Meshify 使用并创建 `/var/log/meshify/apps/<app-name>/access.log`，并渲染 GoAccess 需要的日志格式 | 会自动轮转：daily、保留 14 份、压缩，轮转后 reload Nginx 并 restart GoAccess |
-| 显式设置其它 `nginx.access_log` 路径 + GoAccess 关闭 | Meshify 只把路径写进 Nginx 配置，不创建文件或目录 | 不会；需要自行配置 logrotate |
+| `nginx.access_log: ""` + GoAccess 关闭 | Lanpanel 不渲染 app 专属 `access_log`，Nginx 继承全局日志配置；Debian/Ubuntu 通常使用 `/var/log/nginx/access.log` | Lanpanel 不处理；通常由发行版 Nginx/logrotate 处理 |
+| `nginx.access_log: ""` + GoAccess 开启 | Lanpanel 使用并创建 `/var/log/lanpanel/apps/<app-name>/access.log`，并渲染 GoAccess 需要的日志格式 | 会自动轮转：daily、保留 14 份、压缩，轮转后 reload Nginx 并 restart GoAccess |
+| 显式设置其它 `nginx.access_log` 路径 + GoAccess 关闭 | Lanpanel 只把路径写进 Nginx 配置，不创建文件或目录 | 不会；需要自行配置 logrotate |
 | 显式设置其它 `nginx.access_log` 路径 + GoAccess 开启 | 该路径作为外部 canonical access log；部署前必须预先准备，并满足下方 GoAccess 安全要求 | 不会；需要自行轮转，并处理 Nginx reopen/reload 和 GoAccess 重启 |
 
-`nginx.static_locations` 会渲染在 app 反代 location 之前，支持可选 `default_type`、`expires`、`Cache-Control`、`try_files $uri =404`、`gzip_static on` 和 `access_log off`。同一个 location 中建议只设置 `expires` 或 `cache_control` 之一，因为 Nginx `expires` 也会生成 `Cache-Control` 响应头；如果两者都设置，Meshify 会同时渲染两个指令。Meshify 不复制静态文件内容；静态文件应由业务发布流程和业务二进制一起放到对应 release 路径。
+`nginx.static_locations` 会渲染在 app 反代 location 之前，支持可选 `default_type`、`expires`、`Cache-Control`、`try_files $uri =404`、`gzip_static on` 和 `access_log off`。同一个 location 中建议只设置 `expires` 或 `cache_control` 之一，因为 Nginx `expires` 也会生成 `Cache-Control` 响应头；如果两者都设置，Lanpanel 会同时渲染两个指令。Lanpanel 不复制静态文件内容；静态文件应由业务发布流程和业务二进制一起放到对应 release 路径。
 
 `nginx.http2` 为 true 或任一静态 location 设置 `gzip_static: true` 时，app deploy 会在写入 runtime 文件前检查 `nginx -V`；`http2 on;` 要求 Nginx 至少为 `1.25.1` 且包含 `http_v2` 模块。
 
 #### GoAccess app 访问日志看板
 
-`nginx.goaccess` 默认关闭。启用后会得到一个带 basic auth 的实时 HTML 访问日志看板，默认入口是 `https://<primary-domain>/_meshify/apps/<app-name>/goaccess`。Meshify 会安装或检查 `goaccess`，生成 GoAccess 配置、`<app-name>-goaccess.service`、`/var/lib/<app-name>/goaccess/report.html` 报表，以及启用 `persist true` 和 `restore true` 的 GoAccess `db-path` `/var/lib/<app-name>/goaccess/db`；如果使用 Meshify 托管的 access log，也会一起配置 `logrotate`。
+`nginx.goaccess` 默认关闭。启用后会得到一个带 basic auth 的实时 HTML 访问日志看板，默认入口是 `https://<primary-domain>/_lanpanel/apps/<app-name>/goaccess`。Lanpanel 会安装或检查 `goaccess`，生成 GoAccess 配置、`<app-name>-goaccess.service`、`/var/lib/<app-name>/goaccess/report.html` 报表，以及启用 `persist true` 和 `restore true` 的 GoAccess `db-path` `/var/lib/<app-name>/goaccess/db`；如果使用 Lanpanel 托管的 access log，也会一起配置 `logrotate`。
 
-启用 GoAccess 后始终是实时看板：Nginx 托管 HTML 报表，GoAccess service 通过 loopback WebSocket 提供实时数据，Meshify 在 `nginx.goaccess.websocket_path` 反代这个通道。
+启用 GoAccess 后始终是实时看板：Nginx 托管 HTML 报表，GoAccess service 通过 loopback WebSocket 提供实时数据，Lanpanel 在 `nginx.goaccess.websocket_path` 反代这个通道。
 
 ```yaml
 nginx:
@@ -431,8 +432,8 @@ nginx:
     log_format: "enhanced" # enhanced | combined
     auth_basic_user_file: "/etc/example-app/goaccess.htpasswd"
     auth_cidr_allowlist: [] # 可选 CIDR；basic auth 仍然必须通过
-    # path: "/_meshify/apps/example-app/goaccess"
-    # websocket_path: "/_meshify/apps/example-app/goaccess/ws"
+    # path: "/_lanpanel/apps/example-app/goaccess"
+    # websocket_path: "/_lanpanel/apps/example-app/goaccess/ws"
     websocket_listen: "" # 通常留空；默认 127.0.0.1:<app-derived-port>
 ```
 
@@ -458,7 +459,7 @@ sudo chmod 0640 /etc/example-app/goaccess.htpasswd
 sudo htpasswd -m /etc/example-app/goaccess.htpasswd another-user
 ```
 
-Meshify 不提供可复制的 htpasswd 模板，也不要复用示例 hash；这个文件本质上是看板密码库，必须按部署现场生成。
+Lanpanel 不提供可复制的 htpasswd 模板，也不要复用示例 hash；这个文件本质上是看板密码库，必须按部署现场生成。
 
 GoAccess 还需要 `nginx.goaccess.language` 对应的系统 locale。Debian/Ubuntu 通常自带 `C.UTF-8`；使用 `language: "zh-CN"` 时，部署前需要生成 `zh_CN.UTF-8`：
 
@@ -469,15 +470,15 @@ sudo locale-gen zh_CN.UTF-8
 locale -a | grep -Ei '^(C|C\.utf8|zh_CN\.utf8|zh_CN\.UTF-8)$'
 ```
 
-登录 shell 自身的 locale 也要有效。例如 `env` 显示 `LANG=en_US.UTF-8` 时，`locale -a` 必须包含 `en_US.utf8`；否则生成它，或用 `sudo update-locale LANG=C.UTF-8` 把主机默认值改成 `C.UTF-8`。Meshify 会用 `LANG=C LC_ALL=C` 运行 GoAccess 的 `--version`、`--help` 和兼容性探测，避免依赖操作者 SSH 会话的 locale；真正部署出来的 GoAccess systemd service 仍会使用 `nginx.goaccess.language` 选择的 UTF-8 locale。
+登录 shell 自身的 locale 也要有效。例如 `env` 显示 `LANG=en_US.UTF-8` 时，`locale -a` 必须包含 `en_US.utf8`；否则生成它，或用 `sudo update-locale LANG=C.UTF-8` 把主机默认值改成 `C.UTF-8`。Lanpanel 会用 `LANG=C LC_ALL=C` 运行 GoAccess 的 `--version`、`--help` 和兼容性探测，避免依赖操作者 SSH 会话的 locale；真正部署出来的 GoAccess systemd service 仍会使用 `nginx.goaccess.language` 选择的 UTF-8 locale。
 
 关键规则：
 
 | 项目 | 规则 |
 | --- | --- |
 | `nginx.access_log` | 启用 GoAccess 时不能设为 `off`；其它行为见上面的日志路径表 |
-| 外部 `access_log` 安全要求 | 必须预先存在，普通非 symlink，owner 为 root 或 www-data，文件不能被 group/others 写入，父目录必须 root-owned 且不能被 group/others 写入；Meshify 不创建文件、不 chown 外部日志根、不安装托管 logrotate；deploy 会先创建或确认 GoAccess runtime identity，再做最终可读性检查 |
-| 禁用路径 | 外部 access log 不要放在其它 app 的 `/var/log/meshify/apps/`、当前 app 下的嵌套路径、`/home`、`/root`、`/run/user`、`/tmp`、`/var/tmp` 或 `/var/log/nginx`；`/home`、`/root`、`/run/user`、`/tmp`、`/var/tmp` 会被 `ProtectHome=true` 或 `PrivateTmp=true` 隔离，`/var/log/nginx` 通常由发行版 logrotate 管理 |
+| 外部 `access_log` 安全要求 | 必须预先存在，普通非 symlink，owner 为 root 或 www-data，文件不能被 group/others 写入，父目录必须 root-owned 且不能被 group/others 写入；Lanpanel 不创建文件、不 chown 外部日志根、不安装托管 logrotate；deploy 会先创建或确认 GoAccess runtime identity，再做最终可读性检查 |
+| 禁用路径 | 外部 access log 不要放在其它 app 的 `/var/log/lanpanel/apps/`、当前 app 下的嵌套路径、`/home`、`/root`、`/run/user`、`/tmp`、`/var/tmp` 或 `/var/log/nginx`；`/home`、`/root`、`/run/user`、`/tmp`、`/var/tmp` 会被 `ProtectHome=true` 或 `PrivateTmp=true` 隔离，`/var/log/nginx` 通常由发行版 logrotate 管理 |
 | `error_log` | GoAccess 不解析它；它不能等于 canonical access log 或 htpasswd 文件，也不能放在 app/GoAccess 生成目录下 |
 | `path` / `websocket_path` | 通常留空，由 `app.name` 派生；显式设置后同步更新书签和监控探测 |
 | `websocket_listen` | 通常留空；显式设置时必须是 loopback IP literal，不能使用 `localhost`、wildcard 或冲突端口；其它 loopback IP literal 也有效 |
@@ -489,10 +490,10 @@ locale -a | grep -Ei '^(C|C\.utf8|zh_CN\.utf8|zh_CN\.UTF-8)$'
 部署或刷新后检查：
 
 ```bash
-meshify app verify --config meshify-apps/example-app.yaml
+lanpanel app verify --config lanpanel-apps/example-app.yaml
 sudo nginx -t
 systemctl status example-app-goaccess.service --no-pager --full
-curl -I https://app.example.com/_meshify/apps/example-app/goaccess
+curl -I https://app.example.com/_lanpanel/apps/example-app/goaccess
 ```
 
 常用排障命令：
@@ -517,19 +518,106 @@ journalctl -u <app-name>.service -e
 curl -I http://<app.upstream>
 ```
 
-`<canonical-access-log>` 使用配置里的 `nginx.access_log`；如果为空，则使用 `/var/log/meshify/apps/<app-name>/access.log`。`<error-log>` 使用配置里的 `nginx.error_log`；如果为空，则查看 Nginx 默认 error log。
+`<canonical-access-log>` 使用配置里的 `nginx.access_log`；如果为空，则使用 `/var/log/lanpanel/apps/<app-name>/access.log`。`<error-log>` 使用配置里的 `nginx.error_log`；如果为空，则查看 Nginx 默认 error log。
+
+#### EdgeOne 真实客户端 IP
+
+腾讯云 EdgeOne 场景下，真实客户端 IP 还原必须显式启用，并且只作用于引用该 profile 的 app：
+
+```yaml
+app:
+  acme_challenge: "dns-01"
+nginx:
+  realip_profile: "edgeone-prod"
+realip:
+  profiles:
+    edgeone-prod:
+      enabled: true
+      provider: "edgeone"
+      refresh_interval: "72h"
+      edgeone:
+        zone_id: "zone-xxxxxxxx"
+        env_file: "/etc/lanpanel/realip/edgeone-prod.env"
+```
+
+EdgeOne realip 的 env file 必须 root-owned、root-only，并且只使用 `_FILE` 变量：
+
+```bash
+TENCENTCLOUD_SECRET_ID_FILE=/etc/lanpanel/realip/edgeone-prod-secret-id
+TENCENTCLOUD_SECRET_KEY_FILE=/etc/lanpanel/realip/edgeone-prod-secret-key
+# 腾讯云临时凭据可选：
+TENCENTCLOUD_SESSION_TOKEN_FILE=/etc/lanpanel/realip/edgeone-prod-session-token
+```
+
+如果 HTTPS 证书的 DNS-01 已按上文使用腾讯云凭据，可以让 EdgeOne realip 共用同一组 SecretId/SecretKey 文件；不要直接共用含有 lego DNS 调参的 `dns01.env_file` 本身，单独创建 realip env file，只引用同一组密钥文件：
+
+```bash
+sudo install -d -o root -g root -m 0700 /etc/lanpanel/realip
+sudo install -o root -g root -m 0600 /dev/null /etc/lanpanel/realip/edgeone-prod.env
+sudo tee /etc/lanpanel/realip/edgeone-prod.env >/dev/null <<'EOF'
+TENCENTCLOUD_SECRET_ID_FILE=/etc/lanpanel/dns01/tencentcloud-secret-id
+TENCENTCLOUD_SECRET_KEY_FILE=/etc/lanpanel/dns01/tencentcloud-secret-key
+EOF
+```
+
+EdgeOne realip 凭据准备示例，结构和上文 DNSPod 示例一致：把 SecretId 和 SecretKey 放进 root-owned、root-only 文件，再由 realip env file 引用这些文件。
+
+```bash
+sudo install -d -o root -g root -m 0700 /etc/lanpanel/realip
+sudo install -o root -g root -m 0600 /dev/null /etc/lanpanel/realip/edgeone-prod-secret-id
+sudo install -o root -g root -m 0600 /dev/null /etc/lanpanel/realip/edgeone-prod-secret-key
+printf '%s' '<腾讯云 SecretId>' | sudo tee /etc/lanpanel/realip/edgeone-prod-secret-id >/dev/null
+printf '%s' '<腾讯云 SecretKey>' | sudo tee /etc/lanpanel/realip/edgeone-prod-secret-key >/dev/null
+
+sudo install -o root -g root -m 0600 /dev/null /etc/lanpanel/realip/edgeone-prod.env
+sudo tee /etc/lanpanel/realip/edgeone-prod.env >/dev/null <<'EOF'
+TENCENTCLOUD_SECRET_ID_FILE=/etc/lanpanel/realip/edgeone-prod-secret-id
+TENCENTCLOUD_SECRET_KEY_FILE=/etc/lanpanel/realip/edgeone-prod-secret-key
+EOF
+```
+
+首版 EdgeOne realip 实现调用腾讯云中国区 EdgeOne API endpoint `teo.tencentcloudapi.com`；需要 `teo.intl.tencentcloudapi.com` 的国际站 EdgeOne 账号暂不支持。
+
+然后在 app 配置里加入上面的 `nginx.realip_profile` 和 `realip.profiles.edgeone-prod`，并保持 DNS-01 已按上文配置完成。首次启用时运行：
+
+```bash
+lanpanel app verify --config lanpanel-apps/example-app.yaml
+sudo lanpanel app deploy --config lanpanel-apps/example-app.yaml
+```
+
+需要立刻同步 EdgeOne OriginACL 时再运行：
+
+```bash
+sudo lanpanel app realip refresh --profile edgeone-prod --format human
+sudo lanpanel app realip diagnostics --profile edgeone-prod --format human
+```
+
+`upstream` 模式使用同一套 realip profile；把 app 配置里的 `listen` 置空、填写固定 tailnet `upstream`，并按前文准备 Tailscale client 即可。首次 deploy 和每次 refresh 后，都要根据 Lanpanel 输出的 EdgeOne OriginACL current+next CIDR 更新腾讯云安全组、主机防火墙或等价边界，只允许这些 CIDR 访问源站 `80/443`；这个动作必须人工完成，脚本不会也不应该调用 `ConfirmOriginACLUpdate`。
+
+如果 EdgeOne realip 使用独立腾讯云凭据，建议只授予目标 EdgeOne zone 的 `DescribeOriginACL` 权限；如果与 DNS-01 共用凭据，则需要同时具备 DNSPod 记录管理权限和目标 EdgeOne zone 的 `DescribeOriginACL` 权限。Lanpanel 不调用 `ConfirmOriginACLUpdate`，不修改 EdgeOne 站点、DNS 或证书配置，也不支持非 EdgeOne provider、manual CIDRs、`trust_all`、自定义真实 IP header、把 `X-Forwarded-For` 作为 realip 输入、Headscale realip 或全局 Nginx realip。首版客户端 IP header 固定为 `EO-Connecting-IP`。
+
+启用后，Lanpanel 只在目标 app site 渲染 `set_real_ip_from`/`real_ip_header`，把上游 `X-Real-IP` 和 `X-Forwarded-For` 重建为 canonical `$remote_addr`，`X-Forwarded-Proto` 仍保持源站 Nginx 的 `$scheme` 语义，并清空入站 `Forwarded`、`X-Original-Forwarded-For`、`X-Client-IP`、`EO-Connecting-IP`、`EO-Client-IP` 等 forwarded/client-IP header。非可信直连请求会被生成的 app site 拒绝，并以 `untrusted_source_ip` 记录到拒绝日志。不要直接修改 Lanpanel 生成的 app Nginx site；需要重新生成 app site 模板时，运行 `sudo lanpanel app deploy --config lanpanel-apps/example-app.yaml`。EdgeOne OriginACL CIDR 变化后，刷新 shared realip profile artifacts，再用 diagnostics 检查：
+
+```bash
+sudo lanpanel app realip refresh --profile edgeone-prod --format human
+sudo lanpanel app realip diagnostics --profile edgeone-prod --format human
+```
+
+需要机器可读输出时，把 `--format human` 改成 `--format json`。
+
+刷新 timer 默认 `72h`，且 `refresh_interval` 最小为 `1h`，因为 EdgeOne 回源 IP 变更是低频事件。请订阅 EdgeOne OriginACL/回源 IP 变更通知，并用 Lanpanel refresh 或 diagnostics 输出跟踪已部署 current+next CIDR。EdgeOne 返回 `NextOriginACL` 时，Lanpanel 会把 current+next CIDR 都同步进 Nginx 信任列表。操作者仍必须在腾讯云安全组、主机防火墙或等价边界上只允许 EdgeOne OriginACL current+next CIDR 访问源站 `80/443`，确认边界更新后，再在 Lanpanel 之外完成 EdgeOne 回源 IP 更新确认。Lanpanel 会把防火墙/安全组作为人工确认项报告，不会声称已经管理云防火墙。
 
 #### app verify 和状态
 
-`meshify app verify` 是 app 流程的静态配置和模板检查，状态通过时 CLI 输出 `static-passed`。它会校验 app schema、模板渲染、Nginx Host/SNI guard、证书路径、systemd 计划、Tailscale 需求推导、启用时的 GoAccess dashboard/WebSocket runtime 文件和敏感值泄露；它不读取宿主机上的已部署文件、systemd 状态、证书 SAN、Nginx runtime、GoAccess 进程状态或 Tailscale 在线状态。`meshify app deploy` 也会执行同类静态检查。
+`lanpanel app verify` 是 app 流程的静态配置和模板检查，状态通过时 CLI 输出 `static-passed`。它会校验 app schema、模板渲染、Nginx Host/SNI guard、证书路径、systemd 计划、Tailscale 需求推导、启用时的 GoAccess dashboard/WebSocket runtime 文件和敏感值泄露；它不读取宿主机上的已部署文件、systemd 状态、证书 SAN、Nginx runtime、GoAccess 进程状态或 Tailscale 在线状态。`lanpanel app deploy` 也会执行同类静态检查。
 
-主流程的 `meshify status` 读取主部署 checkpoint、activation history 和上次可恢复失败；app 首版没有独立 checkpoint store，因此不提供 `meshify app status`。
+主流程的 `lanpanel status` 读取主部署 checkpoint、activation history 和上次可恢复失败；app 首版没有独立 checkpoint store，因此不提供 `lanpanel app status`。
 
-release binary 的 app runtime 模板唯一来源是 `deploy/templates/app/`，并由 `meshify app deploy` 自动渲染和安装。
+release binary 的 app site runtime 模板来自 `deploy/templates/app/`；EdgeOne realip profile runtime 模板来自 `deploy/templates/realip/`。`lanpanel app deploy` 会自动渲染并安装所需的 app 和 realip 模板。
 
 #### app 部署前检查
 
-- `app.domains` 都解析到当前云服务器，且不要复用主 Headscale 的 `server_url` 主机名。
+- `app.domains` 都解析到当前云服务器，且不要复用主 Headscale 的 `server_url` 主机名。使用 EdgeOne realip profile 时，公网 DNS 可以解析到 EdgeOne；deploy 会检查 DNS-01 凭据和 EdgeOne OriginACL 覆盖，而不是要求 A/AAAA 直连源站。
 - 对 app 站点，公网只通过 Nginx 开放 `80/tcp` 和 `443/tcp`，不开放 `18001` 这类 app 端口；如果同机也运行主 Headscale 部署，`3478/udp` 仍然需要留给 STUN。
 - 同机也管理主 Headscale 时，`app.listen` 和 `nginx.goaccess.websocket_listen` 不要复用 Headscale metrics 端口。
 - `listen` 模式业务二进制已经安装，且 `service.exec_start` 的第一个 token 是可执行文件绝对路径。
@@ -537,7 +625,7 @@ release binary 的 app runtime 模板唯一来源是 `deploy/templates/app/`，�
 - 如启用 `nginx.goaccess.enabled`，按上文准备 htpasswd；显式外部 `nginx.access_log` 必须已存在并满足外部日志安全要求。
 - `nginx.static_locations` 的 alias 指向已经随 app release 发布的文件或目录。
 - `upstream` 模式后端是固定 `100.64.x.y:port`，并且从云服务器可以访问。
-- DNS-01 的 `dns01.env_file` 和 Tailscale 的 `tailscale.auth_key_file` 都是 root-only 文件。
+- DNS-01 的 `dns01.env_file` 和 Tailscale 的 `tailscale.auth_key_file` 都是 root-owned、root-only 文件。
 
 已部署宿主机状态仍用 `curl`、`nginx -t`、证书检查和 `systemctl` 验证。只有 `upstream` 模式或设置了 `tailscale.enabled_for_listen: true` 的 `listen` app 才需要看 `tailscale status`。`upstream` 模式没有本机 app service，可跳过 `<app-name>.service` 检查，并改为从云服务器确认固定 tailnet upstream 可访问。
 
@@ -547,12 +635,12 @@ release binary 的 app runtime 模板唯一来源是 `deploy/templates/app/`，�
 - 公网 HTTP/HTTPS 只到 Nginx；Headscale 控制面不绑定公网网卡。
 - 明确的 HTTP/HTTPS `default_server` catch-all 会拒绝不匹配 Host/SNI 的流量，而不是转发给 Headscale。
 - Headscale 管理默认只走本机 unix socket；不要开放远程 gRPC 或 API-key 管理，除非你明确需要并自行配置。
-- DNS-01 服务商敏感值不能写入 `meshify.yaml`、渲染模板、deploy/status 输出或 systemd unit。
+- DNS-01 服务商敏感值不能写入 `lanpanel.yaml`、渲染模板、deploy/status 输出或 systemd unit。
 - app 端口应只监听 loopback 或固定 tailnet upstream，不要把业务私有端口直接暴露公网。
 
 ### 服务端排障
 
-先看失败的命令。`meshify deploy`、`meshify verify`、`meshify status` 会在可恢复时输出失败步骤、影响、修复建议和重试命令。
+先看失败的命令。`lanpanel deploy`、`lanpanel verify`、`lanpanel status` 会在可恢复时输出失败步骤、影响、修复建议和重试命令。
 
 配置检查：
 
@@ -565,7 +653,7 @@ release binary 的 app runtime 模板唯一来源是 `deploy/templates/app/`，�
 
 - DNS 必须先把公网 Headscale 域名解析到目标服务器。
 - 本机和云安全组都要允许 `80/tcp`、`443/tcp`、`3478/udp`。
-- 已有 Nginx 可按 `server_name` 共存，但 Meshify 会管理 HTTP/HTTPS `default_server` catch-all。部署前迁移冲突的默认站点。
+- 已有 Nginx 可按 `server_name` 共存，但 Lanpanel 会管理 HTTP/HTTPS `default_server` catch-all。部署前迁移冲突的默认站点。
 
 软件包和 lego：
 
@@ -593,11 +681,11 @@ app 运行时失败：
 - app 域名证书或反代异常时运行 `nginx -t`，并检查 `/etc/nginx/sites-available/<app-name>.conf`。
 - 静态文件 404 时确认 `nginx.static_locations` 的 `alias` 文件已经由业务发布流程放好。
 
-排障时请收集完整的 `meshify deploy`、`meshify verify` 或 `meshify status` 输出、`default` 里改过的值、Headscale 来源模式，以及失败影响的是 deploy、证书签发、Nginx、Headscale、MagicDNS、直连路径选择，还是 DERP 兜底。
+排障时请收集完整的 `lanpanel deploy`、`lanpanel verify` 或 `lanpanel status` 输出、`default` 里改过的值、Headscale 来源模式，以及失败影响的是 deploy、证书签发、Nginx、Headscale、MagicDNS、直连路径选择，还是 DERP 兜底。
 
 ## 客户端指南
 
-请在 `meshify deploy` 和 `meshify verify` 通过后使用本章节。
+请在 `lanpanel deploy` 和 `lanpanel verify` 通过后使用本章节。
 
 ### 运维交接
 
@@ -612,17 +700,17 @@ Headscale 管理保持在本机。默认配置使用 `/var/run/headscale/headsca
 
 ### 生成新的 preauth key
 
-`meshify deploy` 会在 Headscale 运行后创建初始 `meshify` 用户和一次性 preauth key。Headscale 的 preauth key 默认不可复用：下面这条命令创建的 key 只能接入一台客户端，并在 24 小时后过期。要接入更多客户端，就再次执行命令，为每台客户端分别发一个不同的 key。
+`lanpanel deploy` 会在 Headscale 运行后创建初始 `lanpanel` 用户和一次性 preauth key。Headscale 的 preauth key 默认不可复用：下面这条命令创建的 key 只能接入一台客户端，并在 24 小时后过期。要接入更多客户端，就再次执行命令，为每台客户端分别发一个不同的 key。
 
 ```bash
 sudo headscale --config /etc/headscale/config.yaml users list
-# Only if the meshify user is missing from users list:
-sudo headscale --config /etc/headscale/config.yaml users create meshify
+# 只有 users list 中没有 lanpanel 用户时才执行：
+sudo headscale --config /etc/headscale/config.yaml users create lanpanel
 sudo headscale --config /etc/headscale/config.yaml users list
 sudo headscale --config /etc/headscale/config.yaml preauthkeys create --user <ID> --expiration 24h
 ```
 
-`<ID>` 使用 `users list` 中 `meshify` 用户对应的数字 ID。一次性接入建议使用短有效期。只有明确想让多个客户端共用同一个 key 时，才额外加 `--reusable`：
+`<ID>` 使用 `users list` 中 `lanpanel` 用户对应的数字 ID。一次性接入建议使用短有效期。只有明确想让多个客户端共用同一个 key 时，才额外加 `--reusable`：
 
 ```bash
 sudo headscale --config /etc/headscale/config.yaml preauthkeys create --user <ID> --expiration 24h --reusable

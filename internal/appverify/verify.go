@@ -2,10 +2,10 @@ package appverify
 
 import (
 	"fmt"
-	"meshify/internal/appassets"
-	"meshify/internal/appconfig"
-	"meshify/internal/apprender"
-	"meshify/internal/components/appsvc"
+	"lanpanel/internal/appassets"
+	"lanpanel/internal/appconfig"
+	"lanpanel/internal/apprender"
+	"lanpanel/internal/components/appsvc"
 	"strings"
 	"unicode"
 )
@@ -86,7 +86,7 @@ func StaticReport(cfg appconfig.Config, staged []apprender.StagedFile) Report {
 			}
 		}
 	}
-	add("ownership", StatusPass, "rendered files contain the Meshify-managed marker for this app")
+	add("ownership", StatusPass, "rendered files contain the Lanpanel-managed marker for this app")
 	add("secrets", StatusPass, "rendered files do not contain Tailscale auth keys or DNS tokens")
 	add("lego-v5", StatusPass, "rendered files do not contain lego v4 renew or legacy hook syntax")
 	if err := validateStagedRuntimeSet(cfg, staged); err != nil {
@@ -153,7 +153,7 @@ func validateGoAccessStatic(cfg appconfig.Config, names appsvc.Names, staged []a
 		"persist":           "true",
 		"restore":           "true",
 		"db-path":           names.GoAccessDBPath,
-		"html-report-title": "Meshify-GoAccess-" + names.AppName,
+		"html-report-title": "Lanpanel-GoAccess-" + names.AppName,
 	}
 	for key, want := range expectedConfig {
 		if err := requireSingleGoAccessConfigValue(configText, key, want); err != nil {

@@ -4,8 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"meshify/internal/output"
-	"meshify/internal/verify"
+	"lanpanel/internal/output"
+	"lanpanel/internal/verify"
 	"os"
 	"strings"
 )
@@ -21,7 +21,7 @@ func newStatusCommand() command {
 func runStatus(ctx context, args []string) error {
 	flagSet := newFlagSet("status")
 	options := sharedOptions{configPath: DefaultConfigPath, formatValue: string(output.FormatHuman)}
-	options.bind(flagSet, "Path to the meshify config file.")
+	options.bind(flagSet, "Path to the lanpanel config file.")
 
 	shown, err := parseFlags(flagSet, args, writeStatusHelp, ctx.stdout)
 	if err != nil {
@@ -51,7 +51,7 @@ func runStatus(ctx context, args []string) error {
 					{Label: "happy path", Value: "init -> deploy -> verify"},
 				},
 				NextSteps: []string{
-					fmt.Sprintf("Run 'meshify init --config %s' to generate a starter config.", options.configPath),
+					fmt.Sprintf("Run 'lanpanel init --config %s' to generate a starter config.", options.configPath),
 				},
 			})
 		}
@@ -69,7 +69,7 @@ func runStatus(ctx context, args []string) error {
 				{Label: "details", Value: err.Error()},
 			},
 			NextSteps: []string{
-				fmt.Sprintf("Fix the config at %s and rerun 'meshify verify --config %s'.", options.configPath, options.configPath),
+				fmt.Sprintf("Fix the config at %s and rerun 'lanpanel verify --config %s'.", options.configPath, options.configPath),
 			},
 		})
 	}
@@ -92,11 +92,11 @@ func runStatus(ctx context, args []string) error {
 			Summary: "config is valid; persisted deploy context is missing its desired-state fingerprint",
 			Fields: statusFields(
 				output.Field{Label: "checkpoint path", Value: checkpointPath},
-				output.Field{Label: "stale context", Value: "checkpoint data has no desired-state fingerprint; meshify will ignore that recovery data on the next deploy"},
+				output.Field{Label: "stale context", Value: "checkpoint data has no desired-state fingerprint; lanpanel will ignore that recovery data on the next deploy"},
 			),
 			NextSteps: []string{
-				fmt.Sprintf("Use 'meshify deploy --config %s' to regenerate recovery state for the current runtime asset set.", options.configPath),
-				fmt.Sprintf("Use 'meshify verify --config %s' to inspect runtime readiness.", options.configPath),
+				fmt.Sprintf("Use 'lanpanel deploy --config %s' to regenerate recovery state for the current runtime asset set.", options.configPath),
+				fmt.Sprintf("Use 'lanpanel verify --config %s' to inspect runtime readiness.", options.configPath),
 			},
 		})
 	}
@@ -118,11 +118,11 @@ func runStatus(ctx context, args []string) error {
 				Summary: "config is valid; persisted deploy context is stale for the current desired state",
 				Fields: statusFields(
 					output.Field{Label: "checkpoint path", Value: checkpointPath},
-					output.Field{Label: "stale context", Value: "config changed since the recorded deploy context was saved; meshify will ignore that recovery data on the next deploy"},
+					output.Field{Label: "stale context", Value: "config changed since the recorded deploy context was saved; lanpanel will ignore that recovery data on the next deploy"},
 				),
 				NextSteps: []string{
-					fmt.Sprintf("Use 'meshify deploy --config %s' to record a fresh recovery point for the current runtime asset set.", options.configPath),
-					fmt.Sprintf("Use 'meshify verify --config %s' to re-run runtime asset and onboarding readiness checks.", options.configPath),
+					fmt.Sprintf("Use 'lanpanel deploy --config %s' to record a fresh recovery point for the current runtime asset set.", options.configPath),
+					fmt.Sprintf("Use 'lanpanel verify --config %s' to re-run runtime asset and onboarding readiness checks.", options.configPath),
 				},
 			})
 		}
@@ -159,8 +159,8 @@ func runStatus(ctx context, args []string) error {
 			Summary: "config is valid; resumable deploy checkpoint is available",
 			Fields:  statusFields(checkpointFields...),
 			NextSteps: []string{
-				fmt.Sprintf("Use 'meshify deploy --config %s' to resume from the recorded host checkpoint.", options.configPath),
-				fmt.Sprintf("Use 'meshify verify --config %s' to inspect runtime readiness.", options.configPath),
+				fmt.Sprintf("Use 'lanpanel deploy --config %s' to resume from the recorded host checkpoint.", options.configPath),
+				fmt.Sprintf("Use 'lanpanel verify --config %s' to inspect runtime readiness.", options.configPath),
 			},
 		})
 	}
@@ -172,8 +172,8 @@ func runStatus(ctx context, args []string) error {
 			Summary: "config is valid; last deploy context is available",
 			Fields:  statusFields(checkpointFields...),
 			NextSteps: []string{
-				fmt.Sprintf("Use 'meshify deploy --config %s' to apply the current runtime asset set again.", options.configPath),
-				fmt.Sprintf("Use 'meshify verify --config %s' to inspect runtime readiness and client-version requirements.", options.configPath),
+				fmt.Sprintf("Use 'lanpanel deploy --config %s' to apply the current runtime asset set again.", options.configPath),
+				fmt.Sprintf("Use 'lanpanel verify --config %s' to inspect runtime readiness and client-version requirements.", options.configPath),
 			},
 		})
 	}
@@ -184,8 +184,8 @@ func runStatus(ctx context, args []string) error {
 		Summary: "config file is present and valid; no persisted deploy context yet",
 		Fields:  statusFields(checkpointFields...),
 		NextSteps: []string{
-			fmt.Sprintf("Use 'meshify deploy --config %s' to apply the current runtime asset set.", options.configPath),
-			fmt.Sprintf("Use 'meshify verify --config %s' for runtime asset and onboarding readiness checks.", options.configPath),
+			fmt.Sprintf("Use 'lanpanel deploy --config %s' to apply the current runtime asset set.", options.configPath),
+			fmt.Sprintf("Use 'lanpanel verify --config %s' for runtime asset and onboarding readiness checks.", options.configPath),
 		},
 	})
 }
@@ -195,10 +195,10 @@ func writeStatusHelp(stdout io.Writer) error {
 		"Show config readiness and persisted deploy context.",
 		"",
 		"Usage:",
-		"  meshify status [--config path] [--format human|json]",
+		"  lanpanel status [--config path] [--format human|json]",
 		"",
 		"Flags:",
-		"  --config string   Path to the meshify config file.",
+		"  --config string   Path to the lanpanel config file.",
 		"  --format string   Output format: human | json",
 	)
 }

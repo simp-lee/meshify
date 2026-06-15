@@ -3,8 +3,8 @@ package apprender
 import (
 	"bytes"
 	"fmt"
-	"meshify/internal/appassets"
-	"meshify/internal/assets"
+	"lanpanel/internal/appassets"
+	"lanpanel/internal/assets"
 	"text/template"
 )
 

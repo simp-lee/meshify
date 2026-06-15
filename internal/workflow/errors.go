@@ -1,7 +1,7 @@
 package workflow
 
 import (
-	"meshify/internal/output"
+	"lanpanel/internal/output"
 	"strings"
 )
 

@@ -163,7 +163,7 @@ func TestValidateDNSProviderEnvironment(t *testing.T) {
 		{
 			name: "route53 config file with ambient credentials",
 			prov: "route53",
-			env:  map[string]string{"AWS_CONFIG_FILE": "/root/.aws/config", "AWS_PROFILE": "meshify"},
+			env:  map[string]string{"AWS_CONFIG_FILE": "/root/.aws/config", "AWS_PROFILE": "lanpanel"},
 		},
 		{
 			name:    "route53 key pair rejected for systemd renewal",
@@ -227,7 +227,7 @@ func TestValidateDNSProviderEnvironment(t *testing.T) {
 		{
 			name: "gcloud zone id with ambient credentials",
 			prov: "gcloud",
-			env:  map[string]string{"GCE_ZONE_ID": "meshify-zone"},
+			env:  map[string]string{"GCE_ZONE_ID": "lanpanel-zone"},
 		},
 		{
 			name: "gcloud zone id file with ambient credentials",

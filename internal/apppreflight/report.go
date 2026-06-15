@@ -2,8 +2,8 @@ package apppreflight
 
 import (
 	"fmt"
-	"meshify/internal/appconfig"
-	"meshify/internal/preflight"
+	"lanpanel/internal/appconfig"
+	"lanpanel/internal/preflight"
 	"net/netip"
 	"strings"
 )
@@ -71,7 +71,7 @@ func BuildReport(cfg appconfig.Config, inputs Inputs) Report {
 	if inputs.Permissions.IsRoot {
 		add("permissions", StatusPass, "Current command has root privileges")
 	} else {
-		add("permissions", StatusFail, "app deploy requires root privileges", "Rerun with sudo meshify app deploy.")
+		add("permissions", StatusFail, "app deploy requires root privileges", "Rerun with sudo lanpanel app deploy.")
 	}
 
 	for _, domain := range cfg.App.Domains {
@@ -172,6 +172,9 @@ func BuildReport(cfg appconfig.Config, inputs Inputs) Report {
 			addGoAccessCheck(&checks, "goaccess-log-file", inputs.GoAccessLogFileChecked, inputs.GoAccessLogFileReady, inputs.GoAccessLogFileDetail, "GoAccess canonical access log was not validated automatically", "Prepare explicit nginx.access_log: the file must already exist, be a regular non-symlink file, and not be writable by group/others; parent directories must be root-owned and not writable by group/others. Deploy creates or confirms the GoAccess runtime user before checking that user can read the file and enter parent directories.")
 		}
 	}
+	if cfg.RealIPEnabled() {
+		add("realip-firewall", StatusWarn, "EdgeOne realip restores canonical client IP but does not manage cloud security groups or host firewalls", "Manually restrict origin 80/443 ingress to EdgeOne OriginACL current+next CIDRs in Tencent Cloud security groups, host firewall, or equivalent boundary.")
+	}
 
 	return Report{Checks: checks}
 }
@@ -193,7 +196,7 @@ func addAppListenCheck(checks *[]Check, ready bool, detail string) {
 		Status:  StatusFail,
 		Summary: summary,
 		Remediations: []string{
-			"Free the conflicting app.listen address, or stop the unmanaged service before rerunning sudo meshify app deploy.",
+			"Free the conflicting app.listen address, or stop the unmanaged service before rerunning sudo lanpanel app deploy.",
 		},
 	})
 }
@@ -224,6 +227,9 @@ func addGoAccessCheck(checks *[]Check, id string, checked bool, ready bool, deta
 func evaluateDNSProbe(cfg appconfig.Config, domain string, probe preflight.DNSProbe, ok bool) (Status, string, string) {
 	if !ok || strings.TrimSpace(probe.LookupError) != "" || len(probe.ResolvedIPs) == 0 {
 		if cfg.App.ACMEChallenge == appconfig.ACMEChallengeDNS01 {
+			if cfg.RealIPEnabled() {
+				return StatusWarn, fmt.Sprintf("%s public DNS resolution is unconfirmed; DNS-01 mode does not block deploy for this", domain), "Confirm public DNS points to EdgeOne, DNS-01 provider/env_file covers this domain, and origin firewall allows only EdgeOne OriginACL CIDRs."
+			}
 			return StatusWarn, fmt.Sprintf("%s DNS resolution is unconfirmed; DNS-01 mode does not block deploy for this", domain), "Confirm dns01.provider/env_file covers this domain, and point the app domain to this cloud server before traffic cutover."
 		}
 		return StatusFail, fmt.Sprintf("%s DNS resolution is unconfirmed", domain), "Fix public DNS for app.domains, then rerun."
@@ -231,16 +237,22 @@ func evaluateDNSProbe(cfg appconfig.Config, domain string, probe preflight.DNSPr
 	public := publicRoutableIPs(probe.ResolvedIPs)
 	if len(public) == 0 {
 		if cfg.App.ACMEChallenge == appconfig.ACMEChallengeDNS01 {
+			if cfg.RealIPEnabled() {
+				return StatusWarn, fmt.Sprintf("%s did not resolve to a public routable address: %s; DNS-01 mode does not block deploy for this", domain, strings.Join(probe.ResolvedIPs, ", ")), "Confirm public DNS points to EdgeOne and DNS-01 provider/env_file covers this domain before traffic cutover."
+			}
 			return StatusWarn, fmt.Sprintf("%s did not resolve to a public routable address: %s; DNS-01 mode does not block deploy for this", domain, strings.Join(probe.ResolvedIPs, ", ")), "Confirm DNS-01 provider/env_file covers this domain, and point the app domain to this cloud server before traffic cutover."
 		}
 		return StatusFail, fmt.Sprintf("%s did not resolve to a public routable address: %s", domain, strings.Join(probe.ResolvedIPs, ", ")), "Point the app domain to this cloud server's public A or AAAA address."
 	}
+	if cfg.App.ACMEChallenge == appconfig.ACMEChallengeDNS01 && cfg.RealIPEnabled() {
+		return StatusWarn, fmt.Sprintf("%s resolved to public DNS address %s; EdgeOne realip mode does not require DNS to match the origin address", domain, strings.Join(public, ", ")), "Confirm public DNS points to EdgeOne, EdgeOne routes this domain to the origin, DNS-01 provider/env_file is authorized, and origin firewall allows only EdgeOne OriginACL CIDRs."
+	}
 	hasExpectedAddress := strings.TrimSpace(probe.ExpectedIPv4) != "" || strings.TrimSpace(probe.ExpectedIPv6) != ""
 	if !hasExpectedAddress {
 		if cfg.App.ACMEChallenge == appconfig.ACMEChallengeHTTP01 {
-			return StatusFail, fmt.Sprintf("%s resolved to public address %s, but Meshify could not confirm these addresses belong to the current cloud server", domain, strings.Join(public, ", ")), "Ensure the current host can reach public IP detection services, or record this server's public address in advanced.network.public_ipv4/public_ipv6 in the main meshify.yaml, then rerun."
+			return StatusFail, fmt.Sprintf("%s resolved to public address %s, but Lanpanel could not confirm these addresses belong to the current cloud server", domain, strings.Join(public, ", ")), "Ensure the current host can reach public IP detection services, or record this server's public address in advanced.network.public_ipv4/public_ipv6 in the main lanpanel.yaml, then rerun."
 		}
-		return StatusWarn, fmt.Sprintf("%s resolved to public address %s, but Meshify could not confirm whether these addresses belong to the current cloud server", domain, strings.Join(public, ", ")), "To let Meshify confirm DNS points to this cloud server, record this host's public address in advanced.network.public_ipv4 or public_ipv6 in the main meshify.yaml."
+		return StatusWarn, fmt.Sprintf("%s resolved to public address %s, but Lanpanel could not confirm whether these addresses belong to the current cloud server", domain, strings.Join(public, ", ")), "To let Lanpanel confirm DNS points to this cloud server, record this host's public address in advanced.network.public_ipv4 or public_ipv6 in the main lanpanel.yaml."
 	}
 	missing := []string{}
 	if expectedIPv4 := strings.TrimSpace(probe.ExpectedIPv4); expectedIPv4 != "" && !containsString(probe.ResolvedIPs, expectedIPv4) {
@@ -263,13 +275,13 @@ func addPortChecks(checks *[]Check, ports []preflight.PortBinding) {
 		*checks = append(*checks, Check{ID: id, Status: status, Summary: summary, Remediations: compact(remediations)})
 	}
 	if len(ports) == 0 {
-		add("ports", StatusFail, "Could not confirm 80/tcp and 443/tcp port usage", "Confirm ss is executable on the host, then rerun sudo meshify app deploy.")
+		add("ports", StatusFail, "Could not confirm 80/tcp and 443/tcp port usage", "Confirm ss is executable on the host, then rerun sudo lanpanel app deploy.")
 		return
 	}
 	for _, required := range []int{80, 443} {
 		bindings := findPortBindings(ports, required, "tcp")
 		if len(bindings) == 0 {
-			add(fmt.Sprintf("port:%d/tcp", required), StatusFail, fmt.Sprintf("Missing %d/tcp port usage probe result", required), "Rerun sudo meshify app deploy and confirm port usage probing is complete.")
+			add(fmt.Sprintf("port:%d/tcp", required), StatusFail, fmt.Sprintf("Missing %d/tcp port usage probe result", required), "Rerun sudo lanpanel app deploy and confirm port usage probing is complete.")
 			continue
 		}
 		blockingProcesses := []string{}
@@ -289,11 +301,11 @@ func addPortChecks(checks *[]Check, ports []preflight.PortBinding) {
 			blockingProcesses = append(blockingProcesses, process)
 		}
 		if len(blockingProcesses) > 0 {
-			add(fmt.Sprintf("port:%d/tcp", required), StatusFail, fmt.Sprintf("%d/tcp is already used by %s and cannot be taken over by Meshify-managed Nginx", required, strings.Join(blockingProcesses, ", ")), "Stop or migrate non-Nginx services using 80/443, then rerun.")
+			add(fmt.Sprintf("port:%d/tcp", required), StatusFail, fmt.Sprintf("%d/tcp is already used by %s and cannot be taken over by Lanpanel-managed Nginx", required, strings.Join(blockingProcesses, ", ")), "Stop or migrate non-Nginx services using 80/443, then rerun.")
 			continue
 		}
 		if nginxInUse {
-			add(fmt.Sprintf("port:%d/tcp", required), StatusWarn, fmt.Sprintf("%d/tcp is already used by Nginx; Meshify will reuse Nginx virtual hosts", required), "Confirm existing Nginx sites do not claim app.domains.")
+			add(fmt.Sprintf("port:%d/tcp", required), StatusWarn, fmt.Sprintf("%d/tcp is already used by Nginx; Lanpanel will reuse Nginx virtual hosts", required), "Confirm existing Nginx sites do not claim app.domains.")
 			continue
 		}
 		add(fmt.Sprintf("port:%d/tcp", required), StatusPass, fmt.Sprintf("%d/tcp is available", required))

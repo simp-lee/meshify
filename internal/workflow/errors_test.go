@@ -16,7 +16,7 @@ func TestFailureResponseFormatsUserReadableSummary(t *testing.T) {
 			"Check package mirror reachability or switch to a verified offline package.",
 			"Confirm the configured package checksum matches the artifact you expect to install.",
 		},
-		RetryCommand: "meshify deploy --config meshify.yaml",
+		RetryCommand: "lanpanel deploy --config lanpanel.yaml",
 		Cause:        errors.New("apt-get install headscale exited with status 100\nraw shell spew that should stay hidden"),
 	}
 
@@ -42,7 +42,7 @@ func TestFailureResponseFormatsUserReadableSummary(t *testing.T) {
 	if len(response.NextSteps) != 3 {
 		t.Fatalf("len(response.NextSteps) = %d, want 3", len(response.NextSteps))
 	}
-	if response.NextSteps[2] != "Retry after remediation: meshify deploy --config meshify.yaml" {
+	if response.NextSteps[2] != "Retry after remediation: lanpanel deploy --config lanpanel.yaml" {
 		t.Fatalf("retry step = %q, want retry command", response.NextSteps[2])
 	}
 	if failure.Error() != response.Summary {
@@ -60,7 +60,7 @@ func TestFailureSnapshotCarriesSerializableUserContext(t *testing.T) {
 		Remediation: []string{
 			"Check the destination directory permissions.",
 		},
-		RetryCommand: "meshify deploy --config meshify.yaml",
+		RetryCommand: "lanpanel deploy --config lanpanel.yaml",
 		Cause:        errors.New("write failed\nraw shell spew"),
 	}
 
@@ -74,7 +74,7 @@ func TestFailureSnapshotCarriesSerializableUserContext(t *testing.T) {
 	if len(snapshot.Remediation) != 1 || snapshot.Remediation[0] != "Check the destination directory permissions." {
 		t.Fatalf("Remediation = %v, want serialized remediation", snapshot.Remediation)
 	}
-	if snapshot.RetryCommand != "meshify deploy --config meshify.yaml" {
+	if snapshot.RetryCommand != "lanpanel deploy --config lanpanel.yaml" {
 		t.Fatalf("RetryCommand = %q, want serialized retry command", snapshot.RetryCommand)
 	}
 }

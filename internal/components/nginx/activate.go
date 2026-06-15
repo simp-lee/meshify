@@ -3,7 +3,7 @@ package nginx
 import (
 	"context"
 	"fmt"
-	"meshify/internal/host"
+	"lanpanel/internal/host"
 	"strings"
 )
 
@@ -74,7 +74,7 @@ if [ ! -e "$enabled" ] && [ ! -L "$enabled" ]; then
     exit 0
 fi
 if [ ! -L "$enabled" ]; then
-    echo "$enabled exists but is not a symlink; remove or migrate it before enabling meshify's default_server site" >&2
+    echo "$enabled exists but is not a symlink; remove or migrate it before enabling lanpanel's default_server site" >&2
     exit 64
 fi
 target=$(readlink -- "$enabled")
@@ -88,14 +88,14 @@ case "$target" in
         if [ -n "$resolved" ] && [ -n "$resolved_default" ] && [ "$resolved" = "$resolved_default" ]; then
             rm -f -- "$enabled"
         else
-            echo "$enabled points to $target; remove or migrate it before enabling meshify's default_server site" >&2
+            echo "$enabled points to $target; remove or migrate it before enabling lanpanel's default_server site" >&2
             exit 64
         fi
         ;;
 esac`
 	return host.Command{
 		Name:        "sh",
-		Args:        []string{"-c", script, "meshify-disable-nginx-default-site", strings.TrimSpace(enabledPath), strings.TrimSpace(availablePath)},
+		Args:        []string{"-c", script, "lanpanel-disable-nginx-default-site", strings.TrimSpace(enabledPath), strings.TrimSpace(availablePath)},
 		DisplayName: "disable-nginx-default-site",
 		DisplayArgs: []string{strings.TrimSpace(enabledPath)},
 	}

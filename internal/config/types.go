@@ -1,7 +1,7 @@
 package config
 
 const (
-	APIVersion                             = "meshify/v1alpha1"
+	APIVersion                             = "lanpanel/v1alpha1"
 	DefaultHeadscaleVersion                = "0.28.0"
 	DefaultHeadscaleMetricsPort            = 19090
 	DefaultPackageProbeReachabilityTimeout = "30s"

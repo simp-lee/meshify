@@ -3,8 +3,8 @@ package headscale
 import (
 	"context"
 	"errors"
-	"meshify/internal/config"
-	"meshify/internal/host"
+	"lanpanel/internal/config"
+	"lanpanel/internal/host"
 	"strings"
 	"testing"
 )
@@ -39,7 +39,7 @@ func TestNewPackagePlanDirectUsesOfficialReleaseArtifact(t *testing.T) {
 	if plan.RequiresOfficialDigest {
 		t.Fatal("RequiresOfficialDigest = true, want false after digest provided")
 	}
-	if plan.InstallPath() != "/var/cache/meshify/headscale_0.28.0_linux_amd64.deb" {
+	if plan.InstallPath() != "/var/cache/lanpanel/headscale_0.28.0_linux_amd64.deb" {
 		t.Fatalf("InstallPath() = %q", plan.InstallPath())
 	}
 }
@@ -49,7 +49,7 @@ func TestNewInstallPlanBuildsIntegrityCheckedInstallCommands(t *testing.T) {
 
 	cfg := validConfig()
 	plan, err := NewInstallPlan(cfg, InstallPlanOptions{
-		CacheDir:              "/tmp/meshify-packages",
+		CacheDir:              "/tmp/lanpanel-packages",
 		OfficialPackageSHA256: strings.Repeat("b", 64),
 	})
 	if err != nil {
@@ -67,7 +67,7 @@ func TestNewInstallPlanBuildsIntegrityCheckedInstallCommands(t *testing.T) {
 	if plan.Commands[2].Name != "sha256sum" || !strings.Contains(string(plan.Commands[2].Stdin), strings.Repeat("b", 64)) {
 		t.Fatalf("Commands[2] = %#v, want sha256sum check", plan.Commands[2])
 	}
-	if got := strings.Join(plan.Commands[3].Args, " "); got != "install -y /tmp/meshify-packages/headscale_0.28.0_linux_amd64.deb" {
+	if got := strings.Join(plan.Commands[3].Args, " "); got != "install -y /tmp/lanpanel-packages/headscale_0.28.0_linux_amd64.deb" {
 		t.Fatalf("apt args = %q", got)
 	}
 	if got := plan.Commands[3].Env["DEBIAN_FRONTEND"]; got != "noninteractive" {

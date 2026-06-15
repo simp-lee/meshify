@@ -1,9 +1,9 @@
 package nginx
 
 import (
-	"meshify/internal/assets"
-	"meshify/internal/config"
-	"meshify/internal/render"
+	"lanpanel/internal/assets"
+	"lanpanel/internal/config"
+	"lanpanel/internal/render"
 	"strings"
 	"testing"
 )
@@ -19,6 +19,23 @@ func TestValidateRenderedSiteAcceptsRuntimeTemplate(t *testing.T) {
 	content := renderNginxSite(t, cfg)
 	if err := ValidateRenderedSite(site, content); err != nil {
 		t.Fatalf("ValidateRenderedSite() error = %v", err)
+	}
+}
+
+func TestRenderedHeadscaleSiteDoesNotEnableAppRealIP(t *testing.T) {
+	t.Parallel()
+
+	text := string(renderNginxSite(t, validConfig()))
+	for _, forbidden := range []string{
+		"real_ip_header",
+		"set_real_ip_from",
+		"EO-Connecting-IP",
+		"EO-Client-IP",
+		"/etc/nginx/lanpanel/realip/",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("Headscale Nginx site contains app realip token %q\n%s", forbidden, text)
+		}
 	}
 }
 
@@ -144,7 +161,7 @@ func TestValidateRenderedSiteRejectsDefaultCatchAllMissingACMERoute(t *testing.T
 		t.Fatalf("NewSiteConfig() error = %v", err)
 	}
 	content := strings.Replace(string(renderNginxSite(t, cfg)),
-		"    location /.well-known/acme-challenge/ {\n        root /var/lib/meshify/acme-challenges;\n    }\n\n",
+		"    location /.well-known/acme-challenge/ {\n        root /var/lib/lanpanel/acme-challenges;\n    }\n\n",
 		"",
 		1,
 	)
@@ -166,13 +183,13 @@ func TestValidateRenderedSiteRejectsMissingHostSNIGuards(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSiteConfig() error = %v", err)
 	}
-	content := strings.Replace(string(renderNginxSite(t, cfg)), "if ($meshify_host_header_valid = 0)", "if ($meshify_other_guard = 0)", 1)
+	content := strings.Replace(string(renderNginxSite(t, cfg)), "if ($lanpanel_host_header_valid = 0)", "if ($lanpanel_other_guard = 0)", 1)
 
 	err = ValidateRenderedSite(site, []byte(content))
 	if err == nil {
 		t.Fatal("ValidateRenderedSite() error = nil, want failure")
 	}
-	if !strings.Contains(err.Error(), "missing if ($meshify_host_header_valid = 0) guard") {
+	if !strings.Contains(err.Error(), "missing if ($lanpanel_host_header_valid = 0) guard") {
 		t.Fatalf("error = %q, want Host guard failure", err.Error())
 	}
 }
@@ -185,7 +202,7 @@ func TestValidateRenderedSiteRejectsIncompleteSNIGuardMap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSiteConfig() error = %v", err)
 	}
-	content := strings.Replace(string(renderNginxSite(t, cfg)), "map $ssl_server_name $meshify_sni_valid {\n    default 0;\n    \"hs.example.com\" 1;\n}", "map $ssl_server_name $meshify_sni_valid {\n    default 0;\n}", 1)
+	content := strings.Replace(string(renderNginxSite(t, cfg)), "map $ssl_server_name $lanpanel_sni_valid {\n    default 0;\n    \"hs.example.com\" 1;\n}", "map $ssl_server_name $lanpanel_sni_valid {\n    default 0;\n}", 1)
 
 	err = ValidateRenderedSite(site, []byte(content))
 	if err == nil {
@@ -205,8 +222,8 @@ func TestValidateRenderedSiteRejectsHostSNIGuardsAfterProxy(t *testing.T) {
 		t.Fatalf("NewSiteConfig() error = %v", err)
 	}
 	content := strings.Replace(string(renderNginxSite(t, cfg)),
-		"    if ($meshify_sni_valid = 0) {\n        return 421;\n    }\n\n    if ($meshify_host_header_valid = 0) {\n        return 421;\n    }\n\n    location / {\n        proxy_pass http://headscale_upstream;",
-		"    location / {\n        proxy_pass http://headscale_upstream;\n    }\n\n    if ($meshify_sni_valid = 0) {\n        return 421;\n    }\n\n    if ($meshify_host_header_valid = 0) {\n        return 421;\n    }\n\n    location /placeholder {",
+		"    if ($lanpanel_sni_valid = 0) {\n        return 421;\n    }\n\n    if ($lanpanel_host_header_valid = 0) {\n        return 421;\n    }\n\n    location / {\n        proxy_pass http://headscale_upstream;",
+		"    location / {\n        proxy_pass http://headscale_upstream;\n    }\n\n    if ($lanpanel_sni_valid = 0) {\n        return 421;\n    }\n\n    if ($lanpanel_host_header_valid = 0) {\n        return 421;\n    }\n\n    location /placeholder {",
 		1,
 	)
 

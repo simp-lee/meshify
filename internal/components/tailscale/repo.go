@@ -2,8 +2,8 @@ package tailscale
 
 import (
 	"fmt"
-	"meshify/internal/host"
-	"meshify/internal/preflight"
+	"lanpanel/internal/host"
+	"lanpanel/internal/preflight"
 	"strings"
 )
 
@@ -53,12 +53,12 @@ func repositoryFileCommand(displayName string, url string, target string) host.C
 	script := `set -eu
 url=$1
 target=$2
-marker="$target.meshify-managed"
+marker="$target.lanpanel-managed"
 dir=${target%/*}
-expected_marker="Meshify-managed: tailscale repo file"
+expected_marker="Lanpanel-managed: tailscale repo file"
 install -d -m 0755 "$dir"
-tmp=$(mktemp "$dir/.meshify-tailscale.XXXXXX")
-marker_tmp=$(mktemp "$dir/.meshify-tailscale-marker.XXXXXX")
+tmp=$(mktemp "$dir/.lanpanel-tailscale.XXXXXX")
+marker_tmp=$(mktemp "$dir/.lanpanel-tailscale-marker.XXXXXX")
 trap 'rm -f "$tmp" "$marker_tmp"' EXIT INT TERM
 curl -fsSL "$url" -o "$tmp"
 
@@ -70,13 +70,13 @@ if [ -e "$target" ]; then
     if [ -e "$marker" ]; then
         first_line=$(sed -n '1p' "$marker")
         if [ "$first_line" != "$expected_marker" ]; then
-            echo "$marker exists but is not a Meshify marker; refusing to overwrite $target" >&2
+            echo "$marker exists but is not a Lanpanel marker; refusing to overwrite $target" >&2
             exit 1
         fi
     elif cmp -s "$target" "$tmp"; then
         exit 0
     else
-        echo "$target exists and is not Meshify-managed; refusing to overwrite it" >&2
+        echo "$target exists and is not Lanpanel-managed; refusing to overwrite it" >&2
         exit 1
     fi
 fi
@@ -86,7 +86,7 @@ printf '%s\nurl=%s\n' "$expected_marker" "$url" > "$marker_tmp"
 install -m 0644 "$marker_tmp" "$marker"`
 	return host.Command{
 		Name:        "sh",
-		Args:        []string{"-c", script, "meshify-tailscale-repo-file", url, target},
+		Args:        []string{"-c", script, "lanpanel-tailscale-repo-file", url, target},
 		DisplayName: displayName,
 		DisplayArgs: []string{url},
 	}

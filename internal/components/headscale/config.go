@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"meshify/internal/config"
+	"lanpanel/internal/config"
 	"strings"
 
 	"gopkg.in/yaml.v3"

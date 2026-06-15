@@ -3,8 +3,8 @@ package headscale
 import (
 	"context"
 	"fmt"
-	"meshify/internal/config"
-	"meshify/internal/host"
+	"lanpanel/internal/config"
+	"lanpanel/internal/host"
 	"path/filepath"
 	"strings"
 )
@@ -16,7 +16,7 @@ const (
 	ConfigPath  = "/etc/headscale/config.yaml"
 	PolicyPath  = "/etc/headscale/policy.hujson"
 
-	DefaultPackageCacheDir = "/var/cache/meshify"
+	DefaultPackageCacheDir = "/var/cache/lanpanel"
 )
 
 type PackagePlan struct {

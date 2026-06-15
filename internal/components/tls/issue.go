@@ -2,8 +2,8 @@ package tls
 
 import (
 	"fmt"
-	"meshify/internal/config"
-	"meshify/internal/host"
+	"lanpanel/internal/config"
+	"lanpanel/internal/host"
 	"net/url"
 	"strings"
 )
@@ -77,7 +77,7 @@ if [ ! -s "$fullchain" ] || [ ! -s "$privkey" ]; then
 fi`
 	return []host.Command{
 		{Name: "mkdir", Args: []string{"-p", "-m", "0755", "--", WebrootPath, LegoDataPath, StableTLSDir(serverName)}},
-		{Name: "sh", Args: []string{"-c", script, "meshify-tls-bootstrap", fullchain, privKey, serverName}},
+		{Name: "sh", Args: []string{"-c", script, "lanpanel-tls-bootstrap", fullchain, privKey, serverName}},
 	}
 }
 
@@ -85,7 +85,7 @@ func legoCommandWithEnvFile(envFile string, legoArgs []string) host.Command {
 	script := `set -eu
 env_file=$1
 shift
-trim_meshify_env_value() {
+trim_lanpanel_env_value() {
     value=$1
     while :; do
         case "$value" in
@@ -104,7 +104,7 @@ trim_meshify_env_value() {
     printf '%s' "$value"
 }
 while IFS= read -r line || [ -n "$line" ]; do
-    line=$(trim_meshify_env_value "$line")
+    line=$(trim_lanpanel_env_value "$line")
     case "$line" in
         ""|"#"*|";"*) continue ;;
         export\ *)
@@ -114,8 +114,8 @@ while IFS= read -r line || [ -n "$line" ]; do
         *=*) ;;
         *) continue ;;
     esac
-    key=$(trim_meshify_env_value "${line%%=*}")
-    value=$(trim_meshify_env_value "${line#*=}")
+    key=$(trim_lanpanel_env_value "${line%%=*}")
+    value=$(trim_lanpanel_env_value "${line#*=}")
     case "$key" in
         ""|[0-9]*|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_]*)
             echo "unsupported DNS env_file variable name" >&2
@@ -130,7 +130,7 @@ while IFS= read -r line || [ -n "$line" ]; do
     export "$key=$value"
 done < "$env_file"
 exec "$@"`
-	args := []string{"-c", script, "meshify-lego-dns01", strings.TrimSpace(envFile), LegoBinaryPath}
+	args := []string{"-c", script, "lanpanel-lego-dns01", strings.TrimSpace(envFile), LegoBinaryPath}
 	args = append(args, legoArgs...)
 	return host.Command{
 		Name:        "sh",

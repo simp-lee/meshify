@@ -1,8 +1,8 @@
 package apppreflight
 
 import (
-	"meshify/internal/appconfig"
-	"meshify/internal/preflight"
+	"lanpanel/internal/appconfig"
+	"lanpanel/internal/preflight"
 	"slices"
 	"strings"
 	"testing"
@@ -16,7 +16,7 @@ func TestBuildReportChecksAuthKeyFileReadiness(t *testing.T) {
 	cfg.App.Domains = []string{"tailapp.example.com"}
 	cfg.App.CertificateEmail = "ops@example.com"
 	cfg.App.Upstream = "100.64.10.20:18001"
-	cfg.Tailscale.AuthKeyFile = "/run/meshify/auth.key"
+	cfg.Tailscale.AuthKeyFile = "/run/lanpanel/auth.key"
 	report := BuildReport(cfg, Inputs{
 		Permissions:                 preflight.PermissionState{IsRoot: true},
 		DNS:                         map[string]preflight.DNSProbe{"tailapp.example.com": {Host: "tailapp.example.com", ResolvedIPs: []string{"8.8.8.8"}, ExpectedIPv4: "8.8.8.8"}},
@@ -220,6 +220,72 @@ func TestBuildReportDoesNotBlockDNS01WhenPublicDNSIsNotReady(t *testing.T) {
 	}
 }
 
+func TestBuildReportTreatsEdgeOneRealIPDNSAsCDNDNS(t *testing.T) {
+	t.Parallel()
+
+	enabled := true
+	cfg := validAppConfig()
+	cfg.App.ACMEChallenge = appconfig.ACMEChallengeDNS01
+	cfg.Nginx.RealIPProfile = "edgeone-prod"
+	cfg.RealIP.Profiles = map[string]appconfig.RealIPProfileConfig{
+		"edgeone-prod": {
+			Enabled:  &enabled,
+			Provider: appconfig.RealIPProviderEdgeOne,
+			EdgeOne: appconfig.RealIPEdgeOneConfig{
+				ZoneID:  "zone-2abcDEF123",
+				EnvFile: "/etc/lanpanel/realip/edgeone-prod.env",
+			},
+		},
+	}
+	cfg.DNS01.Provider = "tencentcloud"
+	cfg.DNS01.EnvFile = "/etc/lanpanel/dns/tencentcloud.env"
+
+	tests := []struct {
+		name string
+		dns  preflight.DNSProbe
+	}{
+		{
+			name: "no expected origin ip",
+			dns:  preflight.DNSProbe{Host: "app.example.com", ResolvedIPs: []string{"8.8.8.8"}},
+		},
+		{
+			name: "expected origin mismatch",
+			dns:  preflight.DNSProbe{Host: "app.example.com", ResolvedIPs: []string{"8.8.8.8"}, ExpectedIPv4: "1.1.1.1"},
+		},
+		{
+			name: "direct origin match still warned",
+			dns:  preflight.DNSProbe{Host: "app.example.com", ResolvedIPs: []string{"8.8.8.8"}, ExpectedIPv4: "8.8.8.8"},
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			report := BuildReport(cfg, Inputs{
+				Permissions:           preflight.PermissionState{IsRoot: true},
+				DNS:                   map[string]preflight.DNSProbe{"app.example.com": tt.dns},
+				Ports:                 availableAppPorts(),
+				ServiceBinaryOK:       true,
+				DNSCredentialsChecked: true,
+				DNSCredentialsReady:   true,
+			})
+			if report.FailedCount() != 0 {
+				t.Fatalf("FailedCount() = %d, want EdgeOne DNS warning only", report.FailedCount())
+			}
+			summary := checkSummary(report, "dns:app.example.com")
+			if !strings.Contains(summary, "public DNS address") || !strings.Contains(summary, "does not require DNS to match the origin address") {
+				t.Fatalf("dns summary = %q, want EdgeOne realip DNS warning", summary)
+			}
+			for _, forbidden := range []string{"public CDN DNS address", "could not confirm whether these addresses belong to the current cloud server", "missing expected address", "resolved to public address"} {
+				if strings.Contains(summary, forbidden) {
+					t.Fatalf("dns summary = %q, must not use origin-alignment wording %q", summary, forbidden)
+				}
+			}
+		})
+	}
+}
+
 func TestBuildReportChecksAppPorts(t *testing.T) {
 	t.Parallel()
 
@@ -382,7 +448,7 @@ func TestBuildReportChecksGoAccessReadiness(t *testing.T) {
 	}
 
 	explicitLog := cfg
-	explicitLog.Nginx.AccessLog = "/var/log/meshify/custom/app.access.log"
+	explicitLog.Nginx.AccessLog = "/var/log/lanpanel/custom/app.access.log"
 	report = BuildReport(explicitLog, Inputs{
 		Permissions:             preflight.PermissionState{IsRoot: true},
 		DNS:                     validDNS(explicitLog),
@@ -411,7 +477,7 @@ func TestBuildReportChecksGoAccessReadiness(t *testing.T) {
 	}
 
 	explicitManagedLog := cfg
-	explicitManagedLog.Nginx.AccessLog = "/var/log/meshify/apps/app/access.log"
+	explicitManagedLog.Nginx.AccessLog = "/var/log/lanpanel/apps/app/access.log"
 	report = BuildReport(explicitManagedLog, Inputs{
 		Permissions:             preflight.PermissionState{IsRoot: true},
 		DNS:                     validDNS(explicitManagedLog),
@@ -425,7 +491,7 @@ func TestBuildReportChecksGoAccessReadiness(t *testing.T) {
 		GoAccessLocaleReady:     true,
 	})
 	if got := checkSummary(report, "goaccess-log-file"); got != "" {
-		t.Fatalf("goaccess-log-file summary = %q, want no explicit log preflight for Meshify-managed log", got)
+		t.Fatalf("goaccess-log-file summary = %q, want no explicit log preflight for Lanpanel-managed log", got)
 	}
 
 	report = BuildReport(cfg, Inputs{

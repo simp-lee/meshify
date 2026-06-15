@@ -9,17 +9,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"meshify/internal/assets"
-	"meshify/internal/components/headscale"
-	"meshify/internal/components/nginx"
-	"meshify/internal/config"
-	"meshify/internal/host"
-	"meshify/internal/output"
-	"meshify/internal/preflight"
-	"meshify/internal/render"
-	"meshify/internal/state"
-	"meshify/internal/verify"
-	"meshify/internal/workflow"
+	"lanpanel/internal/assets"
+	"lanpanel/internal/components/headscale"
+	"lanpanel/internal/components/nginx"
+	"lanpanel/internal/config"
+	"lanpanel/internal/host"
+	"lanpanel/internal/output"
+	"lanpanel/internal/preflight"
+	"lanpanel/internal/render"
+	"lanpanel/internal/state"
+	"lanpanel/internal/verify"
+	"lanpanel/internal/workflow"
 	"net"
 	"net/http"
 	"net/url"
@@ -34,11 +34,11 @@ import (
 	"strings"
 	"time"
 
-	acmecatalog "meshify/internal/acme"
+	acmecatalog "lanpanel/internal/acme"
 
-	legocomponent "meshify/internal/components/lego"
+	legocomponent "lanpanel/internal/components/lego"
 
-	tlscomponent "meshify/internal/components/tls"
+	tlscomponent "lanpanel/internal/components/tls"
 
 	"golang.org/x/net/http/httpproxy"
 )
@@ -143,7 +143,7 @@ func newDeployCommand() command {
 func runDeploy(ctx context, args []string) error {
 	flagSet := newFlagSet("deploy")
 	options := sharedOptions{configPath: DefaultConfigPath, formatValue: string(output.FormatHuman)}
-	options.bind(flagSet, "Path to the meshify config file.")
+	options.bind(flagSet, "Path to the lanpanel config file.")
 
 	shown, err := parseFlags(flagSet, args, writeDeployHelp, ctx.stdout)
 	if err != nil {
@@ -175,7 +175,7 @@ func runDeploy(ctx context, args []string) error {
 					{Label: "happy path", Value: "init -> deploy -> verify"},
 				},
 				NextSteps: []string{
-					fmt.Sprintf("Run 'meshify init --config %s' to generate a starter config.", options.configPath),
+					fmt.Sprintf("Run 'lanpanel init --config %s' to generate a starter config.", options.configPath),
 				},
 			})
 		}
@@ -193,7 +193,7 @@ func runDeploy(ctx context, args []string) error {
 				{Label: "details", Value: err.Error()},
 			},
 			NextSteps: []string{
-				fmt.Sprintf("Fix the config at %s and rerun 'meshify deploy --config %s'.", options.configPath, options.configPath),
+				fmt.Sprintf("Fix the config at %s and rerun 'lanpanel deploy --config %s'.", options.configPath, options.configPath),
 			},
 		})
 	}
@@ -262,7 +262,7 @@ func runDeploy(ctx context, args []string) error {
 			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 				Step:         "confirm package architecture",
 				Operation:    "collecting host package architecture via dpkg",
-				Impact:       "meshify cannot choose the right package inputs until dpkg reports host architecture",
+				Impact:       "lanpanel cannot choose the right package inputs until dpkg reports host architecture",
 				Remediation:  []string{"Confirm dpkg is installed and reachable in PATH, then rerun deploy."},
 				RetryCommand: deployRetryCommand(options.configPath),
 				Cause:        err,
@@ -273,7 +273,7 @@ func runDeploy(ctx context, args []string) error {
 			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 				Step:      "confirm package architecture",
 				Operation: fmt.Sprintf("matching dpkg architecture %q to config target %q", detectedArch, expectedArch),
-				Impact:    "meshify cannot safely continue until package architecture matches the target host",
+				Impact:    "lanpanel cannot safely continue until package architecture matches the target host",
 				Remediation: []string{
 					fmt.Sprintf("Update advanced.platform.arch to %s or rerun deploy on a matching host.", detectedArch),
 				},
@@ -292,7 +292,7 @@ func runDeploy(ctx context, args []string) error {
 			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 				Step:         "plan host dependencies",
 				Operation:    "selecting Nginx and archive installation helper packages",
-				Impact:       "meshify cannot install HTTPS ingress and pinned release artifacts until host dependencies are known",
+				Impact:       "lanpanel cannot install HTTPS ingress and pinned release artifacts until host dependencies are known",
 				Remediation:  []string{"Use a supported platform architecture or switch Headscale source settings, then rerun deploy."},
 				RetryCommand: deployRetryCommand(options.configPath),
 				Cause:        err,
@@ -302,7 +302,7 @@ func runDeploy(ctx context, args []string) error {
 			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 				Step:         "install host dependencies",
 				Operation:    "refreshing package metadata before installing Nginx and artifact helper packages",
-				Impact:       "meshify cannot install the reverse proxy and pinned release artifacts until package metadata refresh succeeds",
+				Impact:       "lanpanel cannot install the reverse proxy and pinned release artifacts until package metadata refresh succeeds",
 				Remediation:  []string{"Fix apt repository access, proxy settings, or package locks, then rerun deploy."},
 				RetryCommand: deployRetryCommand(options.configPath),
 				Cause:        err,
@@ -313,7 +313,7 @@ func runDeploy(ctx context, args []string) error {
 			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 				Step:         "install host dependencies",
 				Operation:    "installing Nginx and artifact helper packages through apt-get",
-				Impact:       "meshify cannot configure HTTPS ingress or install pinned release artifacts until host dependencies are installed",
+				Impact:       "lanpanel cannot configure HTTPS ingress or install pinned release artifacts until host dependencies are installed",
 				Remediation:  []string{"Fix apt repository access or install the listed dependency packages manually, then rerun deploy."},
 				RetryCommand: deployRetryCommand(options.configPath),
 				Cause:        err,
@@ -330,7 +330,7 @@ func runDeploy(ctx context, args []string) error {
 			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 				Step:         "plan lego install",
 				Operation:    "selecting the pinned lego v5.1.0 Linux archive source and SHA-256 digest",
-				Impact:       "meshify cannot continue certificate automation until the lego release artifact is fully pinned",
+				Impact:       "lanpanel cannot continue certificate automation until the lego release artifact is fully pinned",
 				Remediation:  []string{"Use advanced.platform.arch amd64 or arm64, fix advanced.lego_source settings, then rerun deploy."},
 				RetryCommand: deployRetryCommand(options.configPath),
 				Cause:        err,
@@ -339,8 +339,8 @@ func runDeploy(ctx context, args []string) error {
 		if _, err := newLegoInstallerFn(privilegedExecutor).Install(stdcontext.Background(), installPlan); err != nil {
 			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 				Step:         "install lego binary",
-				Operation:    "verifying and installing the pinned lego v5.1.0 archive to /opt/meshify/bin/lego",
-				Impact:       "meshify cannot continue ACME automation until the pinned lego binary is installed",
+				Operation:    "verifying and installing the pinned lego v5.1.0 archive to /opt/lanpanel/bin/lego",
+				Impact:       "lanpanel cannot continue ACME automation until the pinned lego binary is installed",
 				Remediation:  []string{"Fix GitHub release reachability, proxy settings, advanced.lego_source.file_path, archive permissions, or digest mismatches, then rerun deploy."},
 				RetryCommand: deployRetryCommand(options.configPath),
 				Cause:        err,
@@ -359,7 +359,7 @@ func runDeploy(ctx context, args []string) error {
 			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 				Step:         "plan Headscale package install",
 				Operation:    "building the verified Headscale v0.28.0 package install plan",
-				Impact:       "meshify cannot install Headscale until Headscale source metadata is complete",
+				Impact:       "lanpanel cannot install Headscale until Headscale source metadata is complete",
 				Remediation:  []string{"Fix advanced.headscale_source settings or rerun preflight with reachable package metadata."},
 				RetryCommand: deployRetryCommand(options.configPath),
 				Cause:        err,
@@ -369,7 +369,7 @@ func runDeploy(ctx context, args []string) error {
 			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 				Step:         "install Headscale package",
 				Operation:    "installing the verified Headscale v0.28.0 .deb package",
-				Impact:       "meshify cannot continue to service configuration until Headscale installs successfully",
+				Impact:       "lanpanel cannot continue to service configuration until Headscale installs successfully",
 				Remediation:  []string{"Fix package download, checksum, or apt installation errors, then rerun deploy."},
 				RetryCommand: deployRetryCommand(options.configPath),
 				Cause:        err,
@@ -419,7 +419,7 @@ func runDeploy(ctx context, args []string) error {
 			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 				Step:         "plan HTTP-01 bootstrap",
 				Operation:    "building the temporary certificate and webroot preparation commands",
-				Impact:       "meshify cannot prepare Nginx for first HTTP-01 issuance until TLS inputs are valid",
+				Impact:       "lanpanel cannot prepare Nginx for first HTTP-01 issuance until TLS inputs are valid",
 				Remediation:  []string{"Fix default.server_url, default.certificate_email, or ACME settings, then rerun deploy."},
 				RetryCommand: deployRetryCommand(options.configPath),
 				Cause:        err,
@@ -430,7 +430,7 @@ func runDeploy(ctx context, args []string) error {
 				return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 					Step:         "prepare HTTP-01 bootstrap",
 					Operation:    "creating the ACME webroot and temporary certificate for initial Nginx activation",
-					Impact:       "meshify cannot serve HTTP-01 challenges through Nginx until bootstrap files are ready",
+					Impact:       "lanpanel cannot serve HTTP-01 challenges through Nginx until bootstrap files are ready",
 					Remediation:  []string{"Fix filesystem permissions or openssl availability, then rerun deploy."},
 					RetryCommand: deployRetryCommand(options.configPath),
 					Cause:        err,
@@ -447,7 +447,7 @@ func runDeploy(ctx context, args []string) error {
 			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 				Step:         "activate Nginx site",
 				Operation:    "enabling the Headscale Nginx site, testing config, and reloading Nginx",
-				Impact:       "meshify cannot expose the HTTP-01 webroot, HTTPS control plane, or DERP WebSocket endpoint until Nginx accepts the site",
+				Impact:       "lanpanel cannot expose the HTTP-01 webroot, HTTPS control plane, or DERP WebSocket endpoint until Nginx accepts the site",
 				Remediation:  []string{"Fix the Nginx config test output, conflicting default_server sites, certificate paths, or service reload issue, then rerun deploy."},
 				RetryCommand: deployRetryCommand(options.configPath),
 				Cause:        err,
@@ -467,18 +467,18 @@ func runDeploy(ctx context, args []string) error {
 				}
 				return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 					Step:         "check lego command",
-					Operation:    "running /opt/meshify/bin/lego --version to confirm certificate tooling reachability",
-					Impact:       "meshify cannot issue the public TLS certificate, activate the final HTTPS site, or complete deploy until lego is available",
-					Remediation:  []string{"Rerun deploy so meshify can reinstall the pinned lego binary, or fix /opt/meshify/bin/lego permissions."},
+					Operation:    "running /opt/lanpanel/bin/lego --version to confirm certificate tooling reachability",
+					Impact:       "lanpanel cannot issue the public TLS certificate, activate the final HTTPS site, or complete deploy until lego is available",
+					Remediation:  []string{"Rerun deploy so lanpanel can reinstall the pinned lego binary, or fix /opt/lanpanel/bin/lego permissions."},
 					RetryCommand: deployRetryCommand(options.configPath),
 					Cause:        err,
 				})
 			} else {
 				return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 					Step:         "check lego command",
-					Operation:    "running /opt/meshify/bin/lego --version to confirm certificate tooling reachability",
+					Operation:    "running /opt/lanpanel/bin/lego --version to confirm certificate tooling reachability",
 					Impact:       "certificate-related host changes cannot continue until lego commands succeed",
-					Remediation:  []string{"Rerun deploy so meshify can reinstall the pinned lego binary, or fix /opt/meshify/bin/lego permissions."},
+					Remediation:  []string{"Rerun deploy so lanpanel can reinstall the pinned lego binary, or fix /opt/lanpanel/bin/lego permissions."},
 					RetryCommand: deployRetryCommand(options.configPath),
 					Cause:        err,
 				})
@@ -497,7 +497,7 @@ func runDeploy(ctx context, args []string) error {
 			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 				Step:         "plan certificate issuance",
 				Operation:    "building the lego command for the configured ACME challenge",
-				Impact:       "meshify cannot request the public TLS certificate until ACME inputs are valid",
+				Impact:       "lanpanel cannot request the public TLS certificate until ACME inputs are valid",
 				Remediation:  []string{"Fix default.acme_challenge, default.certificate_email, or DNS-01 provider settings, then rerun deploy."},
 				RetryCommand: deployRetryCommand(options.configPath),
 				Cause:        err,
@@ -507,7 +507,7 @@ func runDeploy(ctx context, args []string) error {
 			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 				Step:         "migrate lego storage",
 				Operation:    "running the guarded lego v5 storage migration before certificate issuance",
-				Impact:       "meshify cannot run lego v5 against existing certificate data until storage migration succeeds",
+				Impact:       "lanpanel cannot run lego v5 against existing certificate data until storage migration succeeds",
 				Remediation:  []string{"Inspect the lego data path, restore from the preserved backup if needed, fix permissions or unsupported legacy storage, then rerun deploy."},
 				RetryCommand: deployRetryCommand(options.configPath),
 				Cause:        err,
@@ -518,7 +518,7 @@ func runDeploy(ctx context, args []string) error {
 			if err != nil {
 				return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 					Step:      "verify HTTP-01 routing",
-					Operation: "checking that meshify-managed Nginx serves the ACME webroot for the Headscale hostname",
+					Operation: "checking that lanpanel-managed Nginx serves the ACME webroot for the Headscale hostname",
 					Impact:    "lego cannot complete HTTP-01 certificate issuance until Nginx serves challenge tokens for the public hostname",
 					Remediation: []string{
 						"Inspect /etc/nginx/sites-available/headscale.conf and run 'nginx -t' to confirm the ACME location is active.",
@@ -541,7 +541,7 @@ func runDeploy(ctx context, args []string) error {
 			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 				Step:         "issue certificate",
 				Operation:    "running lego for the Headscale public hostname",
-				Impact:       "meshify cannot activate the HTTPS Nginx site until a fullchain certificate is available",
+				Impact:       "lanpanel cannot activate the HTTPS Nginx site until a fullchain certificate is available",
 				Remediation:  certificateIssueRemediations(cfg.Default.ACMEChallenge, certificatePlan.ServerName),
 				RetryCommand: deployRetryCommand(options.configPath),
 				Cause:        commandErrorWithOutput(certResult, err),
@@ -557,7 +557,7 @@ func runDeploy(ctx context, args []string) error {
 			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 				Step:         "activate Nginx site",
 				Operation:    "enabling the Headscale Nginx site, testing config, and reloading Nginx",
-				Impact:       "meshify cannot expose the HTTPS control plane or DERP WebSocket endpoint until Nginx accepts the site",
+				Impact:       "lanpanel cannot expose the HTTPS control plane or DERP WebSocket endpoint until Nginx accepts the site",
 				Remediation:  []string{"Fix the Nginx config test output, conflicting default_server sites, certificate paths, or service reload issue, then rerun deploy."},
 				RetryCommand: deployRetryCommand(options.configPath),
 				Cause:        err,
@@ -578,7 +578,7 @@ func runDeploy(ctx context, args []string) error {
 				return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 					Step:         "reload systemd",
 					Operation:    "running systemctl daemon-reload to confirm service manager reachability",
-					Impact:       "meshify cannot enable services, start the renewal timer, or prepare onboarding until systemd is available",
+					Impact:       "lanpanel cannot enable services, start the renewal timer, or prepare onboarding until systemd is available",
 					Remediation:  []string{"Run deploy on a booted systemd host, or fix systemctl bus access, then rerun deploy."},
 					RetryCommand: deployRetryCommand(options.configPath),
 					Cause:        err,
@@ -608,7 +608,7 @@ func runDeploy(ctx context, args []string) error {
 		if _, err := systemd.Enable(stdcontext.Background(), headscale.ServiceName, "nginx.service", tlscomponent.RenewTimer); err != nil {
 			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 				Step:         "enable services",
-				Operation:    "enabling Headscale, Nginx, and meshify lego renewal systemd units",
+				Operation:    "enabling Headscale, Nginx, and lanpanel lego renewal systemd units",
 				Impact:       "services or certificate renewals may not restart after reboot until systemd enablement succeeds",
 				Remediation:  []string{"Fix systemd access or unit availability, then rerun deploy."},
 				RetryCommand: deployRetryCommand(options.configPath),
@@ -618,9 +618,9 @@ func runDeploy(ctx context, args []string) error {
 		if _, err := systemd.Start(stdcontext.Background(), tlscomponent.RenewTimer); err != nil {
 			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 				Step:         "start renewal timer",
-				Operation:    "starting the meshify lego renewal timer",
+				Operation:    "starting the lanpanel lego renewal timer",
 				Impact:       "certificate renewal will not run automatically until the timer starts",
-				Remediation:  []string{"Inspect 'systemctl status meshify-lego-renew.timer', fix the timer unit, and rerun deploy."},
+				Remediation:  []string{"Inspect 'systemctl status lanpanel-lego-renew.timer', fix the timer unit, and rerun deploy."},
 				RetryCommand: deployRetryCommand(options.configPath),
 				Cause:        err,
 			})
@@ -660,7 +660,7 @@ func runDeploy(ctx context, args []string) error {
 			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 				Step:         "plan onboarding",
 				Operation:    "building the local unix-socket onboarding plan",
-				Impact:       "meshify cannot create the first user or preauthkey until onboarding inputs are valid",
+				Impact:       "lanpanel cannot create the first user or preauthkey until onboarding inputs are valid",
 				Remediation:  []string{"Fix onboarding defaults or create the first user manually with headscale, then rerun deploy."},
 				RetryCommand: deployRetryCommand(options.configPath),
 				Cause:        err,
@@ -695,7 +695,7 @@ func runDeploy(ctx context, args []string) error {
 			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 				Step:         "complete deploy prerequisites",
 				Operation:    "checking required deploy checkpoints before static verification",
-				Impact:       "meshify cannot call the deployment ready until certificate issuance, Nginx activation, renewal scheduling, services, and onboarding complete",
+				Impact:       "lanpanel cannot call the deployment ready until certificate issuance, Nginx activation, renewal scheduling, services, and onboarding complete",
 				Remediation:  []string{"Rerun deploy after fixing the earlier deferred or failed host step."},
 				RetryCommand: deployRetryCommand(options.configPath),
 				Cause:        fmt.Errorf("missing required checkpoints: %s", strings.Join(missing, ", ")),
@@ -708,7 +708,7 @@ func runDeploy(ctx context, args []string) error {
 				return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 					Step:         "render runtime assets for verification",
 					Operation:    "building the runtime asset set for static verification",
-					Impact:       "meshify cannot verify runtime readiness until templates render cleanly",
+					Impact:       "lanpanel cannot verify runtime readiness until templates render cleanly",
 					Remediation:  []string{"Fix the config values or runtime templates and rerun deploy."},
 					RetryCommand: deployRetryCommand(options.configPath),
 					Cause:        err,
@@ -720,8 +720,8 @@ func runDeploy(ctx context, args []string) error {
 			return writeDeployFailure(formatter, checkpointStore, checkpoint, workflow.Failure{
 				Step:         "verify runtime assets",
 				Operation:    verifyReport.Summary(),
-				Impact:       "meshify cannot call the deployment ready until static runtime checks pass",
-				Remediation:  []string{"Run 'meshify verify' to inspect failed checks, fix the config or templates, and rerun deploy."},
+				Impact:       "lanpanel cannot call the deployment ready until static runtime checks pass",
+				Remediation:  []string{"Run 'lanpanel verify' to inspect failed checks, fix the config or templates, and rerun deploy."},
 				RetryCommand: deployRetryCommand(options.configPath),
 				Cause:        fmt.Errorf("%s", verify.SummarizeChecks(verifyReport.Checks)),
 			})
@@ -737,7 +737,7 @@ func runDeploy(ctx context, args []string) error {
 				Step:         "finalize deploy checkpoint",
 				Operation:    "retiring resumable deploy state after successful host changes",
 				Impact:       "future deploy runs may continue using stale resume history until checkpoint persistence succeeds",
-				Remediation:  []string{"Ensure the checkpoint directory is writable and rerun deploy so meshify can retire the stale resume state."},
+				Remediation:  []string{"Ensure the checkpoint directory is writable and rerun deploy so lanpanel can retire the stale resume state."},
 				RetryCommand: deployRetryCommand(options.configPath),
 				Cause:        err,
 			})
@@ -773,8 +773,8 @@ func runDeploy(ctx context, args []string) error {
 		Summary: summary,
 		Fields:  fields,
 		NextSteps: []string{
-			fmt.Sprintf("Use 'meshify status --config %s' to inspect persisted deploy context.", options.configPath),
-			fmt.Sprintf("Use 'meshify verify --config %s' to re-run runtime asset and onboarding readiness checks.", options.configPath),
+			fmt.Sprintf("Use 'lanpanel status --config %s' to inspect persisted deploy context.", options.configPath),
+			fmt.Sprintf("Use 'lanpanel verify --config %s' to re-run runtime asset and onboarding readiness checks.", options.configPath),
 			"Join at least two clients from different networks with the preauth key and observe direct or DERP fallback paths.",
 		},
 	})
@@ -785,10 +785,10 @@ func writeDeployHelp(stdout io.Writer) error {
 		"Run preflight checks and apply the Headscale, Nginx, TLS, service, and onboarding workflow.",
 		"",
 		"Usage:",
-		"  meshify deploy [--config path] [--format human|json]",
+		"  lanpanel deploy [--config path] [--format human|json]",
 		"",
 		"Flags:",
-		"  --config string   Path to the meshify config file.",
+		"  --config string   Path to the lanpanel config file.",
 		"  --format string   Output format: human | json",
 	)
 }
@@ -849,8 +849,8 @@ func deployedHeadscaleConfigLooksManaged(content []byte) bool {
 		runtimeConfig.DERP.Server.Enabled &&
 		runtimeConfig.DERP.Server.VerifyClients &&
 		runtimeConfig.DERP.Server.AutomaticallyAddEmbeddedDERPRegion &&
-		strings.TrimSpace(runtimeConfig.DERP.Server.RegionCode) == "meshify" &&
-		strings.TrimSpace(runtimeConfig.DERP.Server.RegionName) == "Meshify Embedded DERP" &&
+		strings.TrimSpace(runtimeConfig.DERP.Server.RegionCode) == "lanpanel" &&
+		strings.TrimSpace(runtimeConfig.DERP.Server.RegionName) == "Lanpanel Embedded DERP" &&
 		strings.TrimSpace(runtimeConfig.DERP.Server.STUNListenAddr) == headscale.STUNListenAddress &&
 		len(runtimeConfig.DERP.URLs) == 0 &&
 		len(runtimeConfig.DERP.Paths) == 0 &&
@@ -864,12 +864,12 @@ func deployedHeadscaleConfigLooksManaged(content []byte) bool {
 func deployedNginxSiteLooksManaged(content []byte) bool {
 	text := string(content)
 	for _, marker := range []string{
-		"map $http_host $meshify_host_header_valid",
-		"map $ssl_server_name $meshify_sni_valid",
+		"map $http_host $lanpanel_host_header_valid",
+		"map $ssl_server_name $lanpanel_sni_valid",
 		"upstream headscale_upstream",
 		"server 127.0.0.1:8080;",
-		"root /var/lib/meshify/acme-challenges;",
-		"ssl_certificate /etc/meshify/tls/",
+		"root /var/lib/lanpanel/acme-challenges;",
+		"ssl_certificate /etc/lanpanel/tls/",
 		"proxy_pass http://headscale_upstream;",
 	} {
 		if !strings.Contains(text, marker) {
@@ -890,8 +890,8 @@ func http01ChallengeRouteCommand(serverName string, webroot string) host.Command
 	script := `set -eu
 server_name=$1
 webroot=$2
-token="meshify-http01-probe-$(date +%s)-$$"
-expected="meshify-http01-ok-$token"
+token="lanpanel-http01-probe-$(date +%s)-$$"
+expected="lanpanel-http01-ok-$token"
 challenge_dir="$webroot/.well-known/acme-challenge"
 challenge_file="$challenge_dir/$token"
 mkdir -p "$challenge_dir"
@@ -904,7 +904,7 @@ if [ "$body" != "$expected" ]; then
 fi`
 	return host.Command{
 		Name:        "sh",
-		Args:        []string{"-c", script, "meshify-http01-route-check", strings.TrimSpace(serverName), strings.TrimSpace(webroot)},
+		Args:        []string{"-c", script, "lanpanel-http01-route-check", strings.TrimSpace(serverName), strings.TrimSpace(webroot)},
 		DisplayName: "curl",
 		DisplayArgs: []string{"--noproxy", "*", "--resolve", strings.TrimSpace(serverName) + ":80:127.0.0.1", "http://" + strings.TrimSpace(serverName) + "/.well-known/acme-challenge/<token>"},
 	}
@@ -916,7 +916,7 @@ func certificateIssueRemediations(acmeChallenge string, serverName string) []str
 		return []string{
 			"Fix public ACME HTTP-01 reachability or rate-limit issues, then rerun deploy.",
 			fmt.Sprintf("For HTTP-01, confirm public port 80 reaches this host and %s is not behind a CDN or proxy that blocks /.well-known/acme-challenge/.", strings.TrimSpace(serverName)),
-			fmt.Sprintf("On the cloud server, confirm the meshify Nginx route with: curl --noproxy '*' --resolve %s:80:127.0.0.1 http://%s/.well-known/acme-challenge/<token>", strings.TrimSpace(serverName), strings.TrimSpace(serverName)),
+			fmt.Sprintf("On the cloud server, confirm the lanpanel Nginx route with: curl --noproxy '*' --resolve %s:80:127.0.0.1 http://%s/.well-known/acme-challenge/<token>", strings.TrimSpace(serverName), strings.TrimSpace(serverName)),
 			fmt.Sprintf("From an external network, confirm http://%s/.well-known/acme-challenge/<token> reaches this server while the challenge file exists, or switch default.acme_challenge to dns-01 when public port 80 cannot be opened reliably.", strings.TrimSpace(serverName)),
 		}
 	case config.ACMEChallengeDNS01:
@@ -1354,7 +1354,7 @@ func detectNFTablesState() preflight.FirewallState {
 	state.MissingPorts = missingFirewallPorts(state.AllowedPorts)
 	if len(state.MissingPorts) > 0 {
 		state.Inspected = false
-		state.DetectionError = "nftables ruleset is present but meshify could not confirm explicit allow rules for all required service ports."
+		state.DetectionError = "nftables ruleset is present but lanpanel could not confirm explicit allow rules for all required service ports."
 	}
 	return state
 }
@@ -1559,7 +1559,7 @@ func detectACMEState(cfg config.Config) preflight.ACMEState {
 		if state.ServerHost == "" {
 			return state
 		}
-		state.HTTP01Detail = "meshify verifies HTTP-01 challenge routing during deploy after installing and activating Nginx."
+		state.HTTP01Detail = "lanpanel verifies HTTP-01 challenge routing during deploy after installing and activating Nginx."
 	case config.ACMEChallengeDNS01:
 		if state.DNSProvider == "" {
 			return state
@@ -1840,7 +1840,7 @@ func hashRemoteArtifact(client *http.Client, rawURL string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	request.Header.Set("User-Agent", "meshify-preflight/1.0")
+	request.Header.Set("User-Agent", "lanpanel-preflight/1.0")
 
 	client = httpClientOrDefault(client, 20*time.Second)
 	response, err := client.Do(request)
@@ -1890,7 +1890,7 @@ func fetchOfficialReleaseChecksums(client *http.Client, version string) (map[str
 	if err != nil {
 		return nil, err
 	}
-	request.Header.Set("User-Agent", "meshify-preflight/1.0")
+	request.Header.Set("User-Agent", "lanpanel-preflight/1.0")
 
 	client = httpClientOrDefault(client, 20*time.Second)
 	response, err := client.Do(request)
@@ -1977,16 +1977,16 @@ func detectDNSCredentialState(dns01 config.DNS01Config) (bool, bool, string) {
 	}
 	env := nonEmptyEnvironmentByKey()
 	if providerInfo.LegoCode == "route53" && route53RawSecretEnvironmentPresent(env) && strings.TrimSpace(env["AWS_SHARED_CREDENTIALS_FILE"]) == "" {
-		return true, false, "Detected Route53 AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY in the current environment, but meshify will not pass raw AWS secrets through sudo or systemd. Use advanced.dns01.env_file for DNS-01 deploy and renewal."
+		return true, false, "Detected Route53 AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY in the current environment, but lanpanel will not pass raw AWS secrets through sudo or systemd. Use advanced.dns01.env_file for DNS-01 deploy and renewal."
 	}
 	if providerInfo.AmbientCredentialsSupported {
-		detail := fmt.Sprintf("Using lego ambient credential chain for DNS provider %q; confirm deploy and meshify-lego-renew.service run with the same host identity.", providerInfo.LegoCode)
+		detail := fmt.Sprintf("Using lego ambient credential chain for DNS provider %q; confirm deploy and lanpanel-lego-renew.service run with the same host identity.", providerInfo.LegoCode)
 		if providerInfo.LegoCode == "gcloud" {
 			detail += " For gcloud, confirm Google Cloud metadata also provides the project, or set advanced.dns01.env_file with GCE_PROJECT."
 		}
 		return true, true, detail
 	}
-	return true, false, fmt.Sprintf("DNS provider %q requires advanced.dns01.env_file so initial issuance and meshify-lego-renew.service use the same provider environment.", providerInfo.LegoCode)
+	return true, false, fmt.Sprintf("DNS provider %q requires advanced.dns01.env_file so initial issuance and lanpanel-lego-renew.service use the same provider environment.", providerInfo.LegoCode)
 }
 
 func inspectDNSCredentialsFile(filePath string) (bool, string) {
@@ -2007,7 +2007,7 @@ func inspectDNSCredentialsFile(filePath string) (bool, string) {
 		return false, fmt.Sprintf("%s must be readable only by root; remove group/other permissions before retrying.", filePath)
 	}
 	if uid, ok := fileOwnerUID(info); ok && uid != 0 {
-		return false, fmt.Sprintf("%s must be owned by root before meshify uses it as a DNS credentials file.", filePath)
+		return false, fmt.Sprintf("%s must be owned by root before lanpanel uses it as a DNS credentials file.", filePath)
 	}
 
 	file, err := os.Open(filePath)
@@ -2254,13 +2254,13 @@ func defaultCheckpointPath(configPath string) string {
 	base := filepath.Base(configPath)
 	name := strings.TrimSuffix(base, filepath.Ext(base))
 	if name == "" {
-		name = "meshify"
+		name = "lanpanel"
 	}
-	return filepath.Join(filepath.Dir(configPath), ".meshify", name+".checkpoint.json")
+	return filepath.Join(filepath.Dir(configPath), ".lanpanel", name+".checkpoint.json")
 }
 
 func deployRetryCommand(configPath string) string {
-	return fmt.Sprintf("meshify deploy --config %s", configPath)
+	return fmt.Sprintf("lanpanel deploy --config %s", configPath)
 }
 
 func deployProxyEnv(cfg config.Config) map[string]string {
@@ -2356,7 +2356,7 @@ func recordDeployCheckpoint(formatter output.Formatter, store state.Store, check
 		return formatDeployFailure(formatter, workflow.Failure{
 			Step:         "persist deploy checkpoint",
 			Operation:    fmt.Sprintf("recording deploy checkpoint %s", name),
-			Impact:       "meshify completed a host phase but could not persist the recovery point",
+			Impact:       "lanpanel completed a host phase but could not persist the recovery point",
 			Remediation:  []string{"Ensure the checkpoint directory is writable and rerun deploy."},
 			RetryCommand: deployRetryCommand(configPath),
 			Cause:        err,
@@ -2381,21 +2381,21 @@ func formatCheckpointLoadFailureWithFields(formatter output.Formatter, command s
 	failure := workflow.Failure{
 		Step:         "load deploy checkpoint",
 		Operation:    "reading persisted deploy recovery state",
-		Impact:       "meshify cannot use the saved recovery state until the checkpoint file can be read",
-		RetryCommand: fmt.Sprintf("meshify %s --config %s", command, configPath),
+		Impact:       "lanpanel cannot use the saved recovery state until the checkpoint file can be read",
+		RetryCommand: fmt.Sprintf("lanpanel %s --config %s", command, configPath),
 		Cause:        err,
 		Remediation: []string{
-			fmt.Sprintf("Repair or remove the checkpoint at %s so meshify can continue.", checkpointPath),
-			fmt.Sprintf("Fix the checkpoint path permissions and rerun 'meshify %s --config %s'.", command, configPath),
+			fmt.Sprintf("Repair or remove the checkpoint at %s so lanpanel can continue.", checkpointPath),
+			fmt.Sprintf("Fix the checkpoint path permissions and rerun 'lanpanel %s --config %s'.", command, configPath),
 		},
 	}
 
 	var loadErr *state.LoadError
 	if errors.As(err, &loadErr) && loadErr.Kind == state.LoadErrorDecode {
-		failure.Impact = "meshify cannot trust the saved recovery state until the checkpoint file is repaired or removed"
+		failure.Impact = "lanpanel cannot trust the saved recovery state until the checkpoint file is repaired or removed"
 		failure.Remediation = []string{
 			fmt.Sprintf("Repair or remove the checkpoint at %s if you do not need to resume the previous deploy.", checkpointPath),
-			fmt.Sprintf("Remove the unreadable checkpoint and rerun 'meshify %s --config %s' to regenerate recovery state.", command, configPath),
+			fmt.Sprintf("Remove the unreadable checkpoint and rerun 'lanpanel %s --config %s' to regenerate recovery state.", command, configPath),
 		}
 	}
 
@@ -2411,16 +2411,16 @@ func formatCheckpointLoadFailureWithFields(formatter output.Formatter, command s
 }
 
 func desiredStateDigestFailure(command string, configPath string, err error) workflow.Failure {
-	impact := "meshify cannot compare or apply the current runtime asset set until the desired state fingerprint succeeds"
+	impact := "lanpanel cannot compare or apply the current runtime asset set until the desired state fingerprint succeeds"
 	if command == "status" {
-		impact = "meshify cannot summarize deploy recovery state until the desired state fingerprint succeeds"
+		impact = "lanpanel cannot summarize deploy recovery state until the desired state fingerprint succeeds"
 	}
 
 	return workflow.Failure{
 		Step:         "fingerprint desired state",
 		Operation:    "building the current runtime asset fingerprint",
 		Impact:       impact,
-		RetryCommand: fmt.Sprintf("meshify %s --config %s", command, configPath),
+		RetryCommand: fmt.Sprintf("lanpanel %s --config %s", command, configPath),
 		Cause:        err,
 		Remediation: []string{
 			"Fix the runtime template or config inputs that prevented staging the current runtime assets.",
@@ -2710,7 +2710,7 @@ func probeURL(client *http.Client, rawURL string, method string) (int, string, e
 	if err != nil {
 		return 0, rawURL, err
 	}
-	request.Header.Set("User-Agent", "meshify-preflight/1.0")
+	request.Header.Set("User-Agent", "lanpanel-preflight/1.0")
 	if method == http.MethodGet {
 		request.Header.Set("Range", "bytes=0-0")
 	}

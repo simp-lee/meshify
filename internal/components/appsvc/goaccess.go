@@ -1,16 +1,16 @@
 package appsvc
 
 import (
-	"meshify/internal/host"
+	"lanpanel/internal/host"
 	"strings"
 )
 
 func GuardGoAccessSystemUserCommand(names Names) host.Command {
-	return guardSystemUserCommand(names.GoAccessSystemUser, names.GoAccessReportDir, "meshify-app-goaccess-user-guard", "guard-goaccess-user")
+	return guardSystemUserCommand(names.GoAccessSystemUser, names.GoAccessReportDir, "lanpanel-app-goaccess-user-guard", "guard-goaccess-user")
 }
 
 func EnsureGoAccessSystemUserCommands(names Names) []host.Command {
-	return []host.Command{ensureSystemUserCommand(names.GoAccessSystemUser, names.GoAccessReportDir, "meshify-app-goaccess-user", "ensure-goaccess-user")}
+	return []host.Command{ensureSystemUserCommand(names.GoAccessSystemUser, names.GoAccessReportDir, "lanpanel-app-goaccess-user", "ensure-goaccess-user")}
 }
 
 func GuardGoAccessLogDirectoryCommand(names Names) host.Command {
@@ -18,7 +18,7 @@ func GuardGoAccessLogDirectoryCommand(names Names) host.Command {
 app_name=$1
 dir=$2
 marker=$3
-expected_marker="Meshify-managed: app.name=$app_name"
+expected_marker="Lanpanel-managed: app.name=$app_name"
 
 fail() {
     echo "$1" >&2
@@ -28,10 +28,10 @@ fail() {
 guard_safe_parent() {
     parent=$1
     if [ -L "$parent" ]; then
-        fail "$parent is a symlink; refusing to use it as a Meshify app log parent"
+        fail "$parent is a symlink; refusing to use it as a Lanpanel app log parent"
     fi
     if [ -e "$parent" ] && [ ! -d "$parent" ]; then
-        fail "$parent exists and is not a directory; refusing to use it as a Meshify app log parent"
+        fail "$parent exists and is not a directory; refusing to use it as a Lanpanel app log parent"
     fi
     if [ ! -e "$parent" ]; then
         return
@@ -49,16 +49,16 @@ guard_safe_parent() {
     fi
 }
 
-meshify_log_root=$(dirname "$(dirname "$dir")")
+lanpanel_log_root=$(dirname "$(dirname "$dir")")
 apps_log_root=$(dirname "$dir")
-guard_safe_parent "$meshify_log_root"
+guard_safe_parent "$lanpanel_log_root"
 guard_safe_parent "$apps_log_root"
 
 if [ -L "$dir" ]; then
-    fail "$dir is a symlink; refusing to use it as a Meshify app log root"
+    fail "$dir is a symlink; refusing to use it as a Lanpanel app log root"
 fi
 if [ -e "$dir" ] && [ ! -d "$dir" ]; then
-    fail "$dir exists and is not a directory; refusing to use it as a Meshify app log root"
+    fail "$dir exists and is not a directory; refusing to use it as a Lanpanel app log root"
 fi
 if [ ! -d "$dir" ]; then
     exit 0
@@ -74,7 +74,7 @@ if [ -L "$marker" ]; then
     fail "$marker is a symlink; refusing to trust GoAccess log ownership"
 fi
 if [ ! -e "$marker" ]; then
-    fail "$dir exists without $marker; refusing to write into a non-Meshify log root"
+    fail "$dir exists without $marker; refusing to write into a non-Lanpanel log root"
 fi
 if [ ! -f "$marker" ]; then
     fail "$marker is not a regular file; refusing to trust GoAccess log ownership"
@@ -88,11 +88,11 @@ if [ -n "$writable" ]; then
 fi
 actual_marker=$(cat "$marker")
 if [ "$actual_marker" != "$expected_marker" ]; then
-    fail "$dir is managed by a different Meshify app; refusing to write into it"
+    fail "$dir is managed by a different Lanpanel app; refusing to write into it"
 fi`
 	return host.Command{
 		Name:        "sh",
-		Args:        []string{"-c", script, "meshify-app-goaccess-log-guard", names.AppName, names.GoAccessLogDir, names.GoAccessLogDirMarkerPath},
+		Args:        []string{"-c", script, "lanpanel-app-goaccess-log-guard", names.AppName, names.GoAccessLogDir, names.GoAccessLogDirMarkerPath},
 		DisplayName: "guard-goaccess-log-directory",
 		DisplayArgs: []string{names.GoAccessLogDir},
 	}
@@ -111,7 +111,7 @@ log_dir=$2
 marker=$3
 log_file=$4
 goaccess_group=$5
-expected_marker="Meshify-managed: app.name=$app_name"
+expected_marker="Lanpanel-managed: app.name=$app_name"
 
 fail() {
     echo "$1" >&2
@@ -121,10 +121,10 @@ fail() {
 ensure_safe_parent() {
     parent=$1
     if [ -L "$parent" ]; then
-        fail "$parent is a symlink; refusing to use it as a Meshify app log parent"
+        fail "$parent is a symlink; refusing to use it as a Lanpanel app log parent"
     fi
     if [ -e "$parent" ] && [ ! -d "$parent" ]; then
-        fail "$parent exists and is not a directory; refusing to use it as a Meshify app log parent"
+        fail "$parent exists and is not a directory; refusing to use it as a Lanpanel app log parent"
     fi
     if [ ! -e "$parent" ]; then
         install -d -m 0755 -o root -g root "$parent"
@@ -142,17 +142,17 @@ ensure_safe_parent() {
     fi
 }
 
-meshify_log_root=$(dirname "$(dirname "$log_dir")")
+lanpanel_log_root=$(dirname "$(dirname "$log_dir")")
 apps_log_root=$(dirname "$log_dir")
-ensure_safe_parent "$meshify_log_root"
+ensure_safe_parent "$lanpanel_log_root"
 ensure_safe_parent "$apps_log_root"
 
 created_dir=0
 if [ -L "$log_dir" ]; then
-    fail "$log_dir is a symlink; refusing to use it as a Meshify app log root"
+    fail "$log_dir is a symlink; refusing to use it as a Lanpanel app log root"
 fi
 if [ -e "$log_dir" ] && [ ! -d "$log_dir" ]; then
-    fail "$log_dir exists and is not a directory; refusing to use it as a Meshify app log root"
+    fail "$log_dir exists and is not a directory; refusing to use it as a Lanpanel app log root"
 fi
 if [ ! -e "$log_dir" ]; then
     install -d -m 0751 -o root -g root "$log_dir"
@@ -169,7 +169,7 @@ if [ -L "$marker" ]; then
     fail "$marker is a symlink; refusing to trust GoAccess log ownership"
 fi
 if [ ! -e "$marker" ] && [ "$created_dir" -ne 1 ]; then
-    fail "$log_dir exists without $marker; refusing to write into a non-Meshify log root"
+    fail "$log_dir exists without $marker; refusing to write into a non-Lanpanel log root"
 fi
 if [ -e "$marker" ] && [ ! -f "$marker" ]; then
     fail "$marker is not a regular file; refusing to trust GoAccess log ownership"
@@ -184,11 +184,11 @@ if [ -f "$marker" ]; then
     fi
     actual_marker=$(cat "$marker")
     if [ "$actual_marker" != "$expected_marker" ]; then
-        fail "$log_dir is managed by a different Meshify app; refusing to write into it"
+        fail "$log_dir is managed by a different Lanpanel app; refusing to write into it"
     fi
 fi
 if [ ! -e "$marker" ]; then
-    tmp=$(mktemp "$log_dir/.meshify-managed.XXXXXX")
+    tmp=$(mktemp "$log_dir/.lanpanel-managed.XXXXXX")
     trap 'rm -f "$tmp"' EXIT INT TERM
     printf '%s\n' "$expected_marker" > "$tmp"
     chmod 0644 "$tmp"
@@ -211,7 +211,7 @@ chown www-data:"$goaccess_group" "$log_file"
 chmod 0640 "$log_file"`
 		commands = append(commands, host.Command{
 			Name:        "sh",
-			Args:        []string{"-c", script, "meshify-app-goaccess-log-dir", names.AppName, names.GoAccessLogDir, names.GoAccessLogDirMarkerPath, names.GoAccessCanonicalAccessLogPath, names.GoAccessSystemGroup},
+			Args:        []string{"-c", script, "lanpanel-app-goaccess-log-dir", names.AppName, names.GoAccessLogDir, names.GoAccessLogDirMarkerPath, names.GoAccessCanonicalAccessLogPath, names.GoAccessSystemGroup},
 			DisplayName: "ensure-goaccess-log-directory",
 			DisplayArgs: []string{names.GoAccessLogDir},
 		})
@@ -241,7 +241,7 @@ chown root:root "$report_dir"
 chmod 0755 "$report_dir"`
 	return host.Command{
 		Name:        "sh",
-		Args:        []string{"-c", script, "meshify-app-goaccess-report-dir", names.GoAccessReportDir},
+		Args:        []string{"-c", script, "lanpanel-app-goaccess-report-dir", names.GoAccessReportDir},
 		DisplayName: "ensure-goaccess-report-directory",
 		DisplayArgs: []string{names.GoAccessReportDir},
 	}
@@ -271,7 +271,7 @@ chown "$goaccess_user:$goaccess_group" "$db_dir"
 chmod 0750 "$db_dir"`
 	return host.Command{
 		Name:        "sh",
-		Args:        []string{"-c", script, "meshify-app-goaccess-db-dir", names.GoAccessDBPath, names.GoAccessSystemUser, names.GoAccessSystemGroup},
+		Args:        []string{"-c", script, "lanpanel-app-goaccess-db-dir", names.GoAccessDBPath, names.GoAccessSystemUser, names.GoAccessSystemGroup},
 		DisplayName: "ensure-goaccess-db-directory",
 		DisplayArgs: []string{names.GoAccessDBPath},
 	}
@@ -301,7 +301,7 @@ chown "$goaccess_user:$nginx_group" "$report_file"
 chmod 0640 "$report_file"`
 	return host.Command{
 		Name:        "sh",
-		Args:        []string{"-c", script, "meshify-app-goaccess-report-file", names.GoAccessReportPath, names.GoAccessSystemUser, "www-data"},
+		Args:        []string{"-c", script, "lanpanel-app-goaccess-report-file", names.GoAccessReportPath, names.GoAccessSystemUser, "www-data"},
 		DisplayName: "ensure-goaccess-report-file",
 		DisplayArgs: []string{names.GoAccessReportPath},
 	}
@@ -322,7 +322,7 @@ if ! runuser -u "$nginx_user" -- test -r "$auth_file"; then
 fi`
 	return host.Command{
 		Name:        "sh",
-		Args:        []string{"-c", script, "meshify-app-goaccess-auth-file", strings.TrimSpace(authFile), "www-data"},
+		Args:        []string{"-c", script, "lanpanel-app-goaccess-auth-file", strings.TrimSpace(authFile), "www-data"},
 		DisplayName: "guard-goaccess-auth-file",
 		DisplayArgs: []string{strings.TrimSpace(authFile)},
 	}
@@ -331,7 +331,7 @@ fi`
 func GuardGoAccessAuthFileMetadataCommand(names Names, authFile string) host.Command {
 	return host.Command{
 		Name:        "sh",
-		Args:        []string{"-c", goAccessAuthFileMetadataGuardScript(), "meshify-app-goaccess-auth-file-metadata", strings.TrimSpace(authFile)},
+		Args:        []string{"-c", goAccessAuthFileMetadataGuardScript(), "lanpanel-app-goaccess-auth-file-metadata", strings.TrimSpace(authFile)},
 		DisplayName: "guard-goaccess-auth-file-metadata",
 		DisplayArgs: []string{strings.TrimSpace(authFile)},
 	}
@@ -445,7 +445,7 @@ if ! runuser -u "$user" -- test -r "$log_file"; then
 fi`
 	return host.Command{
 		Name:        "sh",
-		Args:        []string{"-c", script, "meshify-app-goaccess-log-readable", names.GoAccessSystemUser, names.GoAccessCanonicalAccessLogPath},
+		Args:        []string{"-c", script, "lanpanel-app-goaccess-log-readable", names.GoAccessSystemUser, names.GoAccessCanonicalAccessLogPath},
 		DisplayName: "guard-goaccess-log-readable",
 		DisplayArgs: []string{names.GoAccessCanonicalAccessLogPath},
 	}
@@ -479,7 +479,7 @@ if ! runuser -u "$user" -- test -r "$log_file"; then
 fi`
 	return host.Command{
 		Name:        "sh",
-		Args:        []string{"-c", script, "meshify-app-goaccess-managed-log-readable", names.GoAccessSystemUser, names.GoAccessCanonicalAccessLogPath},
+		Args:        []string{"-c", script, "lanpanel-app-goaccess-managed-log-readable", names.GoAccessSystemUser, names.GoAccessCanonicalAccessLogPath},
 		DisplayName: "guard-goaccess-managed-log-readable",
 		DisplayArgs: []string{names.GoAccessCanonicalAccessLogPath},
 	}
@@ -615,7 +615,7 @@ fi`
 	return host.Command{
 		Name: "sh",
 		Args: []string{
-			"-c", script, "meshify-app-goaccess-runtime-access",
+			"-c", script, "lanpanel-app-goaccess-runtime-access",
 			names.GoAccessSystemUser, names.GoAccessSystemGroup, "www-data", names.GoAccessConfigPath,
 			names.GoAccessReportDir, names.GoAccessDBPath, names.GoAccessReportPath,
 		},
@@ -630,7 +630,7 @@ rm -f -- "$logrotate_path"
 printf '%s\n' "$logrotate_path"`
 	return host.Command{
 		Name:        "sh",
-		Args:        []string{"-c", script, "meshify-app-remove-goaccess-logrotate", names.GoAccessLogrotatePath, names.AppName},
+		Args:        []string{"-c", script, "lanpanel-app-remove-goaccess-logrotate", names.GoAccessLogrotatePath, names.AppName},
 		DisplayName: "remove-stale-goaccess-logrotate",
 		DisplayArgs: []string{names.GoAccessLogrotatePath},
 	}
@@ -639,7 +639,7 @@ printf '%s\n' "$logrotate_path"`
 func GuardManagedGoAccessLogrotateRemovalCommand(names Names) host.Command {
 	return host.Command{
 		Name:        "sh",
-		Args:        []string{"-c", managedGoAccessLogrotateRemovalGuardScript(), "meshify-app-guard-goaccess-logrotate-removal", names.GoAccessLogrotatePath, names.AppName},
+		Args:        []string{"-c", managedGoAccessLogrotateRemovalGuardScript(), "lanpanel-app-guard-goaccess-logrotate-removal", names.GoAccessLogrotatePath, names.AppName},
 		DisplayName: "guard-stale-goaccess-logrotate",
 		DisplayArgs: []string{names.GoAccessLogrotatePath},
 	}
@@ -649,7 +649,7 @@ func managedGoAccessLogrotateRemovalGuardScript() string {
 	return `set -eu
 logrotate_path=$1
 app_name=$2
-marker="Meshify-managed: app.name=$app_name"
+marker="Lanpanel-managed: app.name=$app_name"
 
 fail() {
     echo "$1" >&2
@@ -663,7 +663,7 @@ managed_marker_matches() {
         normalized=${line#"#"}
         normalized=$(printf '%s' "$normalized" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
         case "$normalized" in
-            Meshify-managed:*)
+            Lanpanel-managed:*)
                 if [ "$normalized" != "$marker" ]; then
                     return 1
                 fi
@@ -675,16 +675,16 @@ managed_marker_matches() {
 }
 
 if [ -L "$logrotate_path" ]; then
-    fail "$logrotate_path is a symlink; refusing to remove it as Meshify-managed GoAccess logrotate"
+    fail "$logrotate_path is a symlink; refusing to remove it as Lanpanel-managed GoAccess logrotate"
 fi
 if [ ! -e "$logrotate_path" ]; then
     exit 0
 fi
 if [ ! -f "$logrotate_path" ]; then
-    fail "$logrotate_path is not a regular file; refusing to remove it as Meshify-managed GoAccess logrotate"
+    fail "$logrotate_path is not a regular file; refusing to remove it as Lanpanel-managed GoAccess logrotate"
 fi
 if ! managed_marker_matches "$logrotate_path"; then
-    fail "$logrotate_path exists but is not a Meshify-managed GoAccess logrotate file for app $app_name; refusing to remove it"
+    fail "$logrotate_path exists but is not a Lanpanel-managed GoAccess logrotate file for app $app_name; refusing to remove it"
 fi`
 }
 
@@ -701,7 +701,7 @@ func GuardManagedGoAccessRuntimeRemovalCommand(names Names) host.Command {
 func guardManagedGoAccessRuntimeRemovalCommand(names Names, unitPath string) host.Command {
 	return host.Command{
 		Name:        "sh",
-		Args:        []string{"-c", managedGoAccessRuntimeRemovalGuardScript(), "meshify-app-guard-goaccess-runtime-removal", names.GoAccessServiceUnit, unitPath, names.GoAccessConfigPath, names.GoAccessLogrotatePath, names.AppName},
+		Args:        []string{"-c", managedGoAccessRuntimeRemovalGuardScript(), "lanpanel-app-guard-goaccess-runtime-removal", names.GoAccessServiceUnit, unitPath, names.GoAccessConfigPath, names.GoAccessLogrotatePath, names.AppName},
 		DisplayName: "guard-stale-goaccess-runtime",
 		DisplayArgs: []string{unitPath, names.GoAccessConfigPath, names.GoAccessLogrotatePath},
 	}
@@ -724,7 +724,7 @@ if is_managed_file "$logrotate_path"; then
 fi`
 	return host.Command{
 		Name:        "sh",
-		Args:        []string{"-c", script, "meshify-app-remove-goaccess-runtime", names.GoAccessServiceUnit, unitPath, names.GoAccessConfigPath, names.GoAccessLogrotatePath, names.AppName},
+		Args:        []string{"-c", script, "lanpanel-app-remove-goaccess-runtime", names.GoAccessServiceUnit, unitPath, names.GoAccessConfigPath, names.GoAccessLogrotatePath, names.AppName},
 		DisplayName: "remove-stale-goaccess-runtime",
 		DisplayArgs: []string{unitPath, names.GoAccessConfigPath, names.GoAccessLogrotatePath},
 	}
@@ -737,7 +737,7 @@ unit_path=$2
 config_path=$3
 logrotate_path=$4
 app_name=$5
-marker="Meshify-managed: app.name=$app_name"
+marker="Lanpanel-managed: app.name=$app_name"
 
 managed_marker_matches() {
     path=$1
@@ -746,7 +746,7 @@ managed_marker_matches() {
         normalized=${line#"#"}
         normalized=$(printf '%s' "$normalized" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
         case "$normalized" in
-            Meshify-managed:*)
+            Lanpanel-managed:*)
                 if [ "$normalized" != "$marker" ]; then
                     return 1
                 fi
@@ -775,18 +775,18 @@ guard_removable_candidate() {
     path=$1
     label=$2
     if [ -L "$path" ]; then
-        echo "$path is a symlink; refusing to remove it as Meshify-managed GoAccess $label" >&2
+        echo "$path is a symlink; refusing to remove it as Lanpanel-managed GoAccess $label" >&2
         exit 1
     fi
     if [ ! -e "$path" ]; then
         return
     fi
     if [ ! -f "$path" ]; then
-        echo "$path is not a regular file; refusing to remove it as Meshify-managed GoAccess $label" >&2
+        echo "$path is not a regular file; refusing to remove it as Lanpanel-managed GoAccess $label" >&2
         exit 1
     fi
     if ! is_managed_file "$path"; then
-        echo "$path exists but is not a Meshify-managed GoAccess $label for app $app_name; refusing to remove it" >&2
+        echo "$path exists but is not a Lanpanel-managed GoAccess $label for app $app_name; refusing to remove it" >&2
         exit 1
     fi
 }

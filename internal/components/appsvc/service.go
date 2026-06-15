@@ -1,12 +1,12 @@
 package appsvc
 
 import (
-	"meshify/internal/host"
+	"lanpanel/internal/host"
 	"strings"
 )
 
 func EnsureSystemUserCommands(names Names) []host.Command {
-	return []host.Command{ensureSystemUserCommand(names.SystemUser, names.VarLibDir, "meshify-app-user", "ensure-app-user")}
+	return []host.Command{ensureSystemUserCommand(names.SystemUser, names.VarLibDir, "lanpanel-app-user", "ensure-app-user")}
 }
 
 func ensureSystemUserCommand(name string, home string, arg0 string, displayName string) host.Command {
@@ -64,7 +64,7 @@ useradd --system --gid "$name" --home-dir "$home" --shell "$shell" "$name"`
 }
 
 func GuardSystemUserCommand(names Names) host.Command {
-	return guardSystemUserCommand(names.SystemUser, names.VarLibDir, "meshify-app-user-guard", "guard-app-user")
+	return guardSystemUserCommand(names.SystemUser, names.VarLibDir, "lanpanel-app-user-guard", "guard-app-user")
 }
 
 func guardSystemUserCommand(name string, home string, arg0 string, displayName string) host.Command {
@@ -136,7 +136,7 @@ etc_marker=$5
 hook_dir=$6
 hook_marker=$7
 bootstrap_file=$8
-expected_marker="Meshify-managed: app.name=$app_name"
+expected_marker="Lanpanel-managed: app.name=$app_name"
 suggested_auth_file="$etc_dir/goaccess.htpasswd"
 
 fail() {
@@ -165,7 +165,7 @@ require_root_owned() {
 write_marker() {
     dir=$1
     marker=$2
-    tmp=$(mktemp "$dir/.meshify-managed.XXXXXX")
+    tmp=$(mktemp "$dir/.lanpanel-managed.XXXXXX")
     trap 'rm -f "$tmp"' EXIT INT TERM
     printf '%s\n' "$expected_marker" > "$tmp"
     chmod 0644 "$tmp"
@@ -192,7 +192,7 @@ validate_bootstrap_file() {
     fi
     require_root_owned "$file" "GoAccess auth bootstrap file"
     refuse_writable "$file" "GoAccess auth bootstrap file"
-    extra=$(find "$dir" -mindepth 1 -maxdepth 1 ! -name "$name" ! -name ".meshify-managed" -print -quit) || fail "failed to inspect GoAccess auth bootstrap directory $dir"
+    extra=$(find "$dir" -mindepth 1 -maxdepth 1 ! -name "$name" ! -name ".lanpanel-managed" -print -quit) || fail "failed to inspect GoAccess auth bootstrap directory $dir"
     if [ -n "$extra" ]; then
         fail "$dir exists without $expected_marker and contains files other than the expected GoAccess auth bootstrap file"
     fi
@@ -203,10 +203,10 @@ check_existing_root() {
     marker=$2
 
     if [ -L "$dir" ]; then
-        fail "$dir is a symlink; refusing to use it as a Meshify app root"
+        fail "$dir is a symlink; refusing to use it as a Lanpanel app root"
     fi
     if [ -e "$dir" ] && [ ! -d "$dir" ]; then
-        fail "$dir exists and is not a directory; refusing to use it as a Meshify app root"
+        fail "$dir exists and is not a directory; refusing to use it as a Lanpanel app root"
     fi
     if [ ! -d "$dir" ]; then
         return
@@ -222,7 +222,7 @@ check_existing_root() {
             write_marker "$dir" "$marker"
             return
         fi
-        fail "$dir exists without $marker; refusing to write into a non-Meshify app root"
+        fail "$dir exists without $marker; refusing to write into a non-Lanpanel app root"
     fi
     if [ ! -f "$marker" ]; then
         fail "$marker is not a regular file; refusing to trust app root ownership"
@@ -231,7 +231,7 @@ check_existing_root() {
     refuse_writable "$marker" "app root marker"
     actual_marker=$(cat "$marker")
     if [ "$actual_marker" != "$expected_marker" ]; then
-        fail "$dir is managed by a different Meshify app; refusing to write into it"
+        fail "$dir is managed by a different Lanpanel app; refusing to write into it"
     fi
 }
 
@@ -254,7 +254,7 @@ create_missing_root "$var_lib_dir" "$var_lib_marker"
 create_missing_root "$etc_dir" "$etc_marker"
 create_missing_root "$hook_dir" "$hook_marker"`
 	args := []string{
-		"-c", script, "meshify-app-root-dirs", names.AppName,
+		"-c", script, "lanpanel-app-root-dirs", names.AppName,
 		names.VarLibDir, names.VarLibMarkerPath,
 		names.EtcDir, names.EtcMarkerPath,
 		names.HookDir, names.HookDirMarkerPath,
@@ -301,7 +301,7 @@ if [ -n "$working_dir" ]; then
 fi`
 	return host.Command{
 		Name:        "sh",
-		Args:        []string{"-c", script, "meshify-app-service-access", names.SystemUser, strings.TrimSpace(binaryPath), strings.TrimSpace(workingDirectory)},
+		Args:        []string{"-c", script, "lanpanel-app-service-access", names.SystemUser, strings.TrimSpace(binaryPath), strings.TrimSpace(workingDirectory)},
 		DisplayName: "guard-app-service-access",
 		DisplayArgs: []string{names.SystemUser, strings.TrimSpace(binaryPath)},
 	}
@@ -313,13 +313,13 @@ func RemoveManagedServiceUnitCommand(names Names) host.Command {
 unit=$1
 unit_path=$2
 app_name=$3
-marker="Meshify-managed: app.name=$app_name"
+marker="Lanpanel-managed: app.name=$app_name"
 
 if [ ! -e "$unit_path" ]; then
     exit 0
 fi
 if ! grep -Fqx "# $marker" "$unit_path" && ! grep -Fqx "$marker" "$unit_path"; then
-    echo "$unit_path exists but is not a Meshify-managed service for app $app_name; refusing to remove it" >&2
+    echo "$unit_path exists but is not a Lanpanel-managed service for app $app_name; refusing to remove it" >&2
     exit 1
 fi
 
@@ -328,7 +328,7 @@ rm -f -- "$unit_path"
 printf '%s\n' "$unit_path"`
 	return host.Command{
 		Name:        "sh",
-		Args:        []string{"-c", script, "meshify-app-remove-stale-service", names.ServiceUnit, unitPath, names.AppName},
+		Args:        []string{"-c", script, "lanpanel-app-remove-stale-service", names.ServiceUnit, unitPath, names.AppName},
 		DisplayName: "remove-stale-app-service",
 		DisplayArgs: []string{unitPath},
 	}

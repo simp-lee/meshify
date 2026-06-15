@@ -2,7 +2,7 @@ package config
 
 import (
 	"fmt"
-	"meshify/internal/acme"
+	"lanpanel/internal/acme"
 	"net"
 	"net/mail"
 	"net/url"
@@ -119,7 +119,7 @@ func validateHeadscale(errs *validationErrors, headscale HeadscaleConfig) {
 	}
 	switch port {
 	case 80, 443, 3478, 8080, 50443:
-		*errs = append(*errs, "advanced.headscale.metrics_port must not reuse meshify public, Headscale control-plane, gRPC, or STUN ports")
+		*errs = append(*errs, "advanced.headscale.metrics_port must not reuse lanpanel public, Headscale control-plane, gRPC, or STUN ports")
 	}
 }
 

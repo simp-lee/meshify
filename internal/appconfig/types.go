@@ -1,13 +1,14 @@
 package appconfig
 
 const (
-	APIVersion               = "meshify/app/v1alpha1"
-	DefaultConfigPath        = "meshify-app.yaml"
-	DefaultMeshifyConfigPath = "meshify.yaml"
+	APIVersion                = "lanpanel/app/v1alpha1"
+	DefaultConfigPath         = "lanpanel-app.yaml"
+	DefaultLanpanelConfigPath = "lanpanel.yaml"
 
 	DefaultNginxClientMaxBodySize = "20m"
 	DefaultNginxProxyReadTimeout  = "600s"
 	DefaultNginxProxySendTimeout  = "600s"
+	DefaultRealIPRefreshInterval  = "72h"
 
 	DefaultNginxGoAccessLanguage            = "en"
 	DefaultNginxGoAccessLogFormat           = NginxGoAccessLogFormatEnhanced
@@ -27,6 +28,9 @@ const (
 	ACMEChallengeHTTP01 = "http-01"
 	ACMEChallengeDNS01  = "dns-01"
 
+	RealIPProviderEdgeOne = "edgeone"
+	RealIPHeaderEdgeOne   = "EO-Connecting-IP"
+
 	ModeListen   Mode = "listen"
 	ModeUpstream Mode = "upstream"
 )
@@ -38,6 +42,7 @@ type Config struct {
 	App        AppConfig       `yaml:"app"`
 	Service    ServiceConfig   `yaml:"service"`
 	Nginx      NginxConfig     `yaml:"nginx"`
+	RealIP     RealIPConfig    `yaml:"realip"`
 	DNS01      DNS01Config     `yaml:"dns01"`
 	Tailscale  TailscaleConfig `yaml:"tailscale"`
 }
@@ -60,11 +65,28 @@ type ServiceConfig struct {
 type NginxConfig struct {
 	ClientMaxBodySize string                      `yaml:"client_max_body_size"`
 	HTTP2             *bool                       `yaml:"http2"`
+	RealIPProfile     string                      `yaml:"realip_profile"`
 	AccessLog         string                      `yaml:"access_log"`
 	ErrorLog          string                      `yaml:"error_log"`
 	GoAccess          NginxGoAccessConfig         `yaml:"goaccess"`
 	Proxy             NginxProxyConfig            `yaml:"proxy"`
 	StaticLocations   []NginxStaticLocationConfig `yaml:"static_locations"`
+}
+
+type RealIPConfig struct {
+	Profiles map[string]RealIPProfileConfig `yaml:"profiles"`
+}
+
+type RealIPProfileConfig struct {
+	Enabled         *bool               `yaml:"enabled"`
+	Provider        string              `yaml:"provider"`
+	RefreshInterval string              `yaml:"refresh_interval"`
+	EdgeOne         RealIPEdgeOneConfig `yaml:"edgeone"`
+}
+
+type RealIPEdgeOneConfig struct {
+	ZoneID  string `yaml:"zone_id"`
+	EnvFile string `yaml:"env_file"`
 }
 
 type NginxGoAccessConfig struct {
@@ -105,7 +127,7 @@ type DNS01Config struct {
 
 type TailscaleConfig struct {
 	EnabledForListen bool   `yaml:"enabled_for_listen"`
-	MeshifyConfig    string `yaml:"meshify_config"`
+	LanpanelConfig   string `yaml:"lanpanel_config"`
 	LoginServer      string `yaml:"login_server"`
 	Hostname         string `yaml:"hostname"`
 	AuthKeyFile      string `yaml:"auth_key_file"`

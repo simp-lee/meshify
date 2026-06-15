@@ -1,10 +1,10 @@
 package appverify
 
 import (
-	"meshify/internal/appassets"
-	"meshify/internal/appconfig"
-	"meshify/internal/apprender"
-	"meshify/internal/components/appsvc"
+	"lanpanel/internal/appassets"
+	"lanpanel/internal/appconfig"
+	"lanpanel/internal/apprender"
+	"lanpanel/internal/components/appsvc"
 	"strings"
 	"testing"
 )
@@ -31,7 +31,7 @@ func TestStaticReportRejectsForeignMarkerPrefix(t *testing.T) {
 	if report.FailedCount() == 0 {
 		t.Fatal("FailedCount() = 0, want foreign marker failure")
 	}
-	if got := checkSummary(report, "ownership"); !strings.Contains(got, "different Meshify app") {
+	if got := checkSummary(report, "ownership"); !strings.Contains(got, "different Lanpanel app") {
 		t.Fatalf("ownership summary = %q, want foreign marker detail", got)
 	}
 }
@@ -131,7 +131,7 @@ func TestStaticReportRejectsLegacyLegoV4Forms(t *testing.T) {
 	report := StaticReport(cfg, []apprender.StagedFile{{
 		SourcePath: "templates/app/lego-renew.service.tmpl",
 		HostPath:   "/etc/systemd/system/api-lego-renew.service",
-		Content:    []byte("# " + appsvc.ManagedMarker("api") + "\nExecStart=/opt/meshify/bin/lego renew --renew-hook /hook\n"),
+		Content:    []byte("# " + appsvc.ManagedMarker("api") + "\nExecStart=/opt/lanpanel/bin/lego renew --renew-hook /hook\n"),
 	}})
 	if report.FailedCount() == 0 {
 		t.Fatal("FailedCount() = 0, want legacy lego v4 failure")
@@ -239,7 +239,7 @@ func TestStaticReportValidatesGoAccessRuntime(t *testing.T) {
 	}
 
 	explicitLog := cfg
-	explicitLog.Nginx.AccessLog = "/var/log/meshify/custom/api.access.log"
+	explicitLog.Nginx.AccessLog = "/var/log/lanpanel/custom/api.access.log"
 	report = StaticReport(explicitLog, mustStageRuntime(t, explicitLog))
 	if report.FailedCount() != 0 {
 		t.Fatalf("FailedCount() = %d, want explicit-log GoAccess static checks pass: %#v", report.FailedCount(), report.Checks)
@@ -564,9 +564,9 @@ func TestStaticReportRejectsGoAccessRuntimeDrift(t *testing.T) {
 			name:   "service root user",
 			source: appassets.GoAccessServiceTemplate,
 			mutate: func(content string) string {
-				return strings.Replace(content, "User=meshify-goaccess-api", "User=root", 1)
+				return strings.Replace(content, "User=lanpanel-goaccess-api", "User=root", 1)
 			},
-			want: "GoAccess service must run as dedicated user meshify-goaccess-api",
+			want: "GoAccess service must run as dedicated user lanpanel-goaccess-api",
 		},
 		{
 			name:   "service spaced root user",
@@ -574,23 +574,23 @@ func TestStaticReportRejectsGoAccessRuntimeDrift(t *testing.T) {
 			mutate: func(content string) string {
 				return content + "\nUser = root\n"
 			},
-			want: "GoAccess service must run as dedicated user meshify-goaccess-api",
+			want: "GoAccess service must run as dedicated user lanpanel-goaccess-api",
 		},
 		{
 			name:   "service app user reuse",
 			source: appassets.GoAccessServiceTemplate,
 			mutate: func(content string) string {
-				return strings.Replace(content, "User=meshify-goaccess-api", "User=api", 1)
+				return strings.Replace(content, "User=lanpanel-goaccess-api", "User=api", 1)
 			},
-			want: "GoAccess service must run as dedicated user meshify-goaccess-api",
+			want: "GoAccess service must run as dedicated user lanpanel-goaccess-api",
 		},
 		{
 			name:   "service missing user",
 			source: appassets.GoAccessServiceTemplate,
 			mutate: func(content string) string {
-				return strings.Replace(content, "User=meshify-goaccess-api\n", "", 1)
+				return strings.Replace(content, "User=lanpanel-goaccess-api\n", "", 1)
 			},
-			want: "GoAccess service must run as dedicated user meshify-goaccess-api",
+			want: "GoAccess service must run as dedicated user lanpanel-goaccess-api",
 		},
 		{
 			name:   "service user reset",
@@ -598,31 +598,31 @@ func TestStaticReportRejectsGoAccessRuntimeDrift(t *testing.T) {
 			mutate: func(content string) string {
 				return content + "\nUser=\n"
 			},
-			want: "GoAccess service must run as dedicated user meshify-goaccess-api",
+			want: "GoAccess service must run as dedicated user lanpanel-goaccess-api",
 		},
 		{
 			name:   "service root group",
 			source: appassets.GoAccessServiceTemplate,
 			mutate: func(content string) string {
-				return strings.Replace(content, "Group=meshify-goaccess-api", "Group=root", 1)
+				return strings.Replace(content, "Group=lanpanel-goaccess-api", "Group=root", 1)
 			},
-			want: "GoAccess service must run as dedicated group meshify-goaccess-api",
+			want: "GoAccess service must run as dedicated group lanpanel-goaccess-api",
 		},
 		{
 			name:   "service app group reuse",
 			source: appassets.GoAccessServiceTemplate,
 			mutate: func(content string) string {
-				return strings.Replace(content, "Group=meshify-goaccess-api", "Group=api", 1)
+				return strings.Replace(content, "Group=lanpanel-goaccess-api", "Group=api", 1)
 			},
-			want: "GoAccess service must run as dedicated group meshify-goaccess-api",
+			want: "GoAccess service must run as dedicated group lanpanel-goaccess-api",
 		},
 		{
 			name:   "service missing group",
 			source: appassets.GoAccessServiceTemplate,
 			mutate: func(content string) string {
-				return strings.Replace(content, "Group=meshify-goaccess-api\n", "", 1)
+				return strings.Replace(content, "Group=lanpanel-goaccess-api\n", "", 1)
 			},
-			want: "GoAccess service must run as dedicated group meshify-goaccess-api",
+			want: "GoAccess service must run as dedicated group lanpanel-goaccess-api",
 		},
 		{
 			name:   "service group reset",
@@ -630,7 +630,7 @@ func TestStaticReportRejectsGoAccessRuntimeDrift(t *testing.T) {
 			mutate: func(content string) string {
 				return content + "\nGroup=\n"
 			},
-			want: "GoAccess service must run as dedicated group meshify-goaccess-api",
+			want: "GoAccess service must run as dedicated group lanpanel-goaccess-api",
 		},
 		{
 			name:   "service broad writable path drift",
@@ -740,17 +740,17 @@ func TestStaticReportRejectsGoAccessRuntimeDrift(t *testing.T) {
 			name:   "logrotate broad path",
 			source: appassets.GoAccessLogrotateTemplate,
 			mutate: func(content string) string {
-				return strings.Replace(content, "/var/log/meshify/apps/api/access.log {", "/var/log/meshify/apps/api/*.log {", 1)
+				return strings.Replace(content, "/var/log/lanpanel/apps/api/access.log {", "/var/log/lanpanel/apps/api/*.log {", 1)
 			},
-			want: "GoAccess logrotate must rotate exactly /var/log/meshify/apps/api/access.log",
+			want: "GoAccess logrotate must rotate exactly /var/log/lanpanel/apps/api/access.log",
 		},
 		{
 			name:   "logrotate unrelated path",
 			source: appassets.GoAccessLogrotateTemplate,
 			mutate: func(content string) string {
-				return strings.Replace(content, "/var/log/meshify/apps/api/access.log {", "/var/log/nginx/*.log {", 1)
+				return strings.Replace(content, "/var/log/lanpanel/apps/api/access.log {", "/var/log/nginx/*.log {", 1)
 			},
-			want: "GoAccess logrotate must rotate exactly /var/log/meshify/apps/api/access.log",
+			want: "GoAccess logrotate must rotate exactly /var/log/lanpanel/apps/api/access.log",
 		},
 		{
 			name:   "logrotate extra unrelated block",
@@ -764,25 +764,25 @@ func TestStaticReportRejectsGoAccessRuntimeDrift(t *testing.T) {
 			name:   "logrotate create mode drift",
 			source: appassets.GoAccessLogrotateTemplate,
 			mutate: func(content string) string {
-				return strings.Replace(content, "create 0640 www-data meshify-goaccess-api", "create 0644 www-data meshify-goaccess-api", 1)
+				return strings.Replace(content, "create 0640 www-data lanpanel-goaccess-api", "create 0644 www-data lanpanel-goaccess-api", 1)
 			},
-			want: "GoAccess logrotate must set create 0640 www-data meshify-goaccess-api",
+			want: "GoAccess logrotate must set create 0640 www-data lanpanel-goaccess-api",
 		},
 		{
 			name:   "logrotate create owner drift",
 			source: appassets.GoAccessLogrotateTemplate,
 			mutate: func(content string) string {
-				return strings.Replace(content, "create 0640 www-data meshify-goaccess-api", "create 0640 root meshify-goaccess-api", 1)
+				return strings.Replace(content, "create 0640 www-data lanpanel-goaccess-api", "create 0640 root lanpanel-goaccess-api", 1)
 			},
-			want: "GoAccess logrotate must set create 0640 www-data meshify-goaccess-api",
+			want: "GoAccess logrotate must set create 0640 www-data lanpanel-goaccess-api",
 		},
 		{
 			name:   "logrotate missing create",
 			source: appassets.GoAccessLogrotateTemplate,
 			mutate: func(content string) string {
-				return strings.Replace(content, "    create 0640 www-data meshify-goaccess-api\n", "", 1)
+				return strings.Replace(content, "    create 0640 www-data lanpanel-goaccess-api\n", "", 1)
 			},
-			want: "GoAccess logrotate must set create 0640 www-data meshify-goaccess-api",
+			want: "GoAccess logrotate must set create 0640 www-data lanpanel-goaccess-api",
 		},
 		{
 			name:   "logrotate missing sharedscripts",

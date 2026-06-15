@@ -1,5 +1,5 @@
 # Build outputs
-/meshify
+/lanpanel
 /bin/
 /build/
 /dist/
@@ -12,8 +12,8 @@
 coverage.*
 
 # Local runtime config and secrets
-/meshify.yaml
-/deploy/config/meshify.yaml
+/lanpanel.yaml
+/deploy/config/lanpanel.yaml
 .env
 .env.*
 !.env.example

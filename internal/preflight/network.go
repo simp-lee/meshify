@@ -2,7 +2,7 @@ package preflight
 
 import (
 	"fmt"
-	"meshify/internal/config"
+	"lanpanel/internal/config"
 	"net/netip"
 	"sort"
 	"strings"
@@ -242,7 +242,7 @@ func checkPortAvailability(bindings []PortBinding, requirements []PortRequiremen
 				process = "another process"
 			}
 			if isManagedPortBinding(required, binding, process, managed) {
-				managedActive = append(managedActive, fmt.Sprintf("%s is already in use by meshify-managed %s from the current deploy context.", label, process))
+				managedActive = append(managedActive, fmt.Sprintf("%s is already in use by lanpanel-managed %s from the current deploy context.", label, process))
 				continue
 			}
 			if required.Reviewable && isReviewableHTTPPortBinding(binding, process) {
@@ -435,7 +435,7 @@ func CheckServiceConflictsWithManagedServices(services []ServiceState, managed M
 		}
 		if isManagedServiceName(name, managed) {
 			managedActive = true
-			findings = append(findings, fmt.Sprintf("Active meshify-managed service detected: %s.", line))
+			findings = append(findings, fmt.Sprintf("Active lanpanel-managed service detected: %s.", line))
 			continue
 		}
 		findings = append(findings, fmt.Sprintf("Active service detected: %s.", line))
@@ -452,15 +452,15 @@ func CheckServiceConflictsWithManagedServices(services []ServiceState, managed M
 	}
 
 	if len(blockingHeadscale) > 0 || len(blockingWeb) > 0 {
-		summary := "Incompatible local services would conflict with a fresh meshify deployment."
+		summary := "Incompatible local services would conflict with a fresh lanpanel deployment."
 		remediations := []string{"Stop or migrate the incompatible local services before deploy."}
 		switch {
 		case len(blockingHeadscale) > 0 && len(blockingWeb) == 0:
-			summary = "Existing Headscale services would conflict with a fresh meshify deployment."
+			summary = "Existing Headscale services would conflict with a fresh lanpanel deployment."
 			remediations = []string{"Stop or migrate the existing Headscale service before deploy."}
 		case len(blockingHeadscale) == 0 && len(blockingWeb) > 0:
-			summary = "Existing non-Nginx web services would conflict with meshify-managed Nginx and ACME."
-			remediations = []string{"Stop or move Apache, Caddy, or Traefik listeners from 80/443 before deploy, or migrate the site behind meshify-managed Nginx."}
+			summary = "Existing non-Nginx web services would conflict with lanpanel-managed Nginx and ACME."
+			remediations = []string{"Stop or move Apache, Caddy, or Traefik listeners from 80/443 before deploy, or migrate the site behind lanpanel-managed Nginx."}
 		}
 		return newCheckResult(
 			"services",
@@ -554,14 +554,14 @@ func portRequirementLabel(requirement PortRequirement) string {
 
 func portAvailabilityPassSummary(managedActive []string) string {
 	if len(managedActive) > 0 {
-		return "Required service ports are available or already held by meshify-managed services."
+		return "Required service ports are available or already held by lanpanel-managed services."
 	}
 	return "Required service ports are available."
 }
 
 func serviceConflictsPassSummary(managedActive bool) string {
 	if managedActive {
-		return "No blocking local service conflicts were reported; meshify-managed services are active."
+		return "No blocking local service conflicts were reported; lanpanel-managed services are active."
 	}
 	return "No blocking local service conflicts were reported."
 }

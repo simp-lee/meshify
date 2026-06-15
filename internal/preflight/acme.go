@@ -2,10 +2,10 @@ package preflight
 
 import (
 	"fmt"
-	"meshify/internal/config"
+	"lanpanel/internal/config"
 	"strings"
 
-	acmecatalog "meshify/internal/acme"
+	acmecatalog "lanpanel/internal/acme"
 )
 
 type ACMEState struct {
@@ -59,15 +59,15 @@ func CheckACMEPrerequisites(state ACMEState) CheckResult {
 				"ACME prerequisites",
 				StatusWarn,
 				SeverityWarning,
-				"HTTP-01 challenge routing was not reachable before deploy; meshify will verify it after Nginx is installed.",
+				"HTTP-01 challenge routing was not reachable before deploy; lanpanel will verify it after Nginx is installed.",
 				findings,
-				[]string{"If lego later fails, confirm public port 80 reaches the meshify-managed Nginx challenge path."},
+				[]string{"If lego later fails, confirm public port 80 reaches the lanpanel-managed Nginx challenge path."},
 			)
 		}
 		if detail := strings.TrimSpace(state.HTTP01Detail); detail != "" {
 			findings = append(findings, fmt.Sprintf("HTTP-01 detail: %s.", detail))
 		}
-		return newCheckResult("acme", "ACME prerequisites", StatusPass, SeverityInfo, "HTTP-01 challenge routing will be verified after meshify installs and activates Nginx.", findings, nil)
+		return newCheckResult("acme", "ACME prerequisites", StatusPass, SeverityInfo, "HTTP-01 challenge routing will be verified after lanpanel installs and activates Nginx.", findings, nil)
 	case config.ACMEChallengeDNS01:
 		provider := strings.TrimSpace(state.DNSProvider)
 		if provider == "" {
@@ -93,7 +93,7 @@ func CheckACMEPrerequisites(state ACMEState) CheckResult {
 				"ACME prerequisites",
 				StatusFail,
 				SeverityError,
-				"DNS-01 provider is not supported by meshify.",
+				"DNS-01 provider is not supported by lanpanel.",
 				findings,
 				[]string{"Use one of the supported DNS-01 providers for the selected server platform."},
 			)

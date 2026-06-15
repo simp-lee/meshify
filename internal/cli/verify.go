@@ -4,9 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"meshify/internal/output"
-	"meshify/internal/render"
-	"meshify/internal/verify"
+	"lanpanel/internal/output"
+	"lanpanel/internal/render"
+	"lanpanel/internal/verify"
 	"os"
 )
 
@@ -21,7 +21,7 @@ func newVerifyCommand() command {
 func runVerify(ctx context, args []string) error {
 	flagSet := newFlagSet("verify")
 	options := sharedOptions{configPath: DefaultConfigPath, formatValue: string(output.FormatHuman)}
-	options.bind(flagSet, "Path to the meshify config file.")
+	options.bind(flagSet, "Path to the lanpanel config file.")
 
 	shown, err := parseFlags(flagSet, args, writeVerifyHelp, ctx.stdout)
 	if err != nil {
@@ -50,7 +50,7 @@ func runVerify(ctx context, args []string) error {
 					{Label: "happy path", Value: "init -> deploy -> verify"},
 				},
 				NextSteps: []string{
-					fmt.Sprintf("Run 'meshify init --config %s' to generate a starter config.", options.configPath),
+					fmt.Sprintf("Run 'lanpanel init --config %s' to generate a starter config.", options.configPath),
 				},
 			})
 		}
@@ -68,7 +68,7 @@ func runVerify(ctx context, args []string) error {
 				{Label: "details", Value: err.Error()},
 			},
 			NextSteps: []string{
-				fmt.Sprintf("Fix the config at %s and rerun 'meshify verify --config %s'.", options.configPath, options.configPath),
+				fmt.Sprintf("Fix the config at %s and rerun 'lanpanel verify --config %s'.", options.configPath, options.configPath),
 			},
 		})
 	}
@@ -82,7 +82,7 @@ func runVerify(ctx context, args []string) error {
 			Fields: append(configFields(options.configPath, cfg),
 				output.Field{Label: "details", Value: err.Error()},
 			),
-			NextSteps: []string{fmt.Sprintf("Fix config/template inputs and rerun 'meshify verify --config %s'.", options.configPath)},
+			NextSteps: []string{fmt.Sprintf("Fix config/template inputs and rerun 'lanpanel verify --config %s'.", options.configPath)},
 		})
 	}
 	report := verify.StaticReport(cfg, staged)
@@ -97,7 +97,7 @@ func runVerify(ctx context, args []string) error {
 	}
 
 	nextSteps := []string{
-		fmt.Sprintf("Use 'meshify deploy --config %s' to apply or refresh server runtime state.", options.configPath),
+		fmt.Sprintf("Use 'lanpanel deploy --config %s' to apply or refresh server runtime state.", options.configPath),
 		"After deploy, join at least two clients from different networks and observe direct or DERP fallback paths.",
 	}
 	return formatter.Write(output.Response{
@@ -114,10 +114,10 @@ func writeVerifyHelp(stdout io.Writer) error {
 		"Validate config, runtime assets, and onboarding readiness.",
 		"",
 		"Usage:",
-		"  meshify verify [--config path] [--format human|json]",
+		"  lanpanel verify [--config path] [--format human|json]",
 		"",
 		"Flags:",
-		"  --config string   Path to the meshify config file.",
+		"  --config string   Path to the lanpanel config file.",
 		"  --format string   Output format: human | json",
 	)
 }

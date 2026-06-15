@@ -101,14 +101,14 @@ func TestCommandMissingDoesNotTreatMissingSudoAsWrappedCommand(t *testing.T) {
 	result := Result{
 		Command: Command{
 			Name:        "sudo",
-			Args:        []string{"-n", "/opt/meshify/bin/lego", "--version"},
-			DisplayName: "/opt/meshify/bin/lego",
+			Args:        []string{"-n", "/opt/lanpanel/bin/lego", "--version"},
+			DisplayName: "/opt/lanpanel/bin/lego",
 			DisplayArgs: []string{"--version"},
 		},
 	}
 	err := &CommandError{Result: result, Err: exec.ErrNotFound}
 
-	if CommandMissing(result, err, "/opt/meshify/bin/lego") {
+	if CommandMissing(result, err, "/opt/lanpanel/bin/lego") {
 		t.Fatal("CommandMissing() = true, want false when sudo is the missing executable")
 	}
 	if !CommandMissing(result, err, "sudo") {

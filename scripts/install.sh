@@ -8,8 +8,8 @@ Usage:
   VERSION=vX.Y.Z sh install.sh
 
 Environment:
-  MESHIFY_INSTALL_DIR  Install directory, default: /usr/local/bin
-  MESHIFY_REPO         GitHub repository, default: simp-lee/meshify
+  LANPANEL_INSTALL_DIR  Install directory, default: /usr/local/bin
+  LANPANEL_REPO         GitHub repository, default: simp-lee/lanpanel
 EOF
 }
 
@@ -42,18 +42,18 @@ need_command sha256sum
 need_command install
 need_command id
 
-repo="${MESHIFY_REPO:-simp-lee/meshify}"
-install_dir="${MESHIFY_INSTALL_DIR:-/usr/local/bin}"
-binary_name="meshify"
+repo="${LANPANEL_REPO:-simp-lee/lanpanel}"
+install_dir="${LANPANEL_INSTALL_DIR:-/usr/local/bin}"
+binary_name="lanpanel"
 
 arch="$(uname -m)"
 case "$arch" in
-  x86_64) asset="meshify_linux_amd64" ;;
-  aarch64|arm64) asset="meshify_linux_arm64" ;;
+  x86_64) asset="lanpanel_linux_amd64" ;;
+  aarch64|arm64) asset="lanpanel_linux_arm64" ;;
   *) echo "unsupported architecture: $arch" >&2; exit 1 ;;
 esac
 
-tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/meshify-install.XXXXXX")"
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/lanpanel-install.XXXXXX")"
 cleanup() {
   rm -rf "$tmpdir"
 }
@@ -105,4 +105,4 @@ fi
 
 echo "Installed ${target}"
 "$target" --help >/dev/null
-echo "meshify is ready."
+echo "lanpanel is ready."

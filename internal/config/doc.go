@@ -1,2 +1,2 @@
-// Package config defines meshify configuration loading, validation, and defaults.
+// Package config defines lanpanel configuration loading, validation, and defaults.
 package config

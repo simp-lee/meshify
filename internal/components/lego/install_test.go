@@ -3,8 +3,8 @@ package lego
 import (
 	"context"
 	"errors"
-	"meshify/internal/config"
-	"meshify/internal/host"
+	"lanpanel/internal/config"
+	"lanpanel/internal/host"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -41,7 +41,7 @@ func TestNewArchivePlanDirectPinsOfficialReleaseArtifact(t *testing.T) {
 	if plan.ExpectedSHA256 != sha256LinuxAMD64 {
 		t.Fatalf("ExpectedSHA256 = %q", plan.ExpectedSHA256)
 	}
-	if plan.InstallPath() != "/var/cache/meshify/lego_v5.1.0_linux_amd64.tar.gz" {
+	if plan.InstallPath() != "/var/cache/lanpanel/lego_v5.1.0_linux_amd64.tar.gz" {
 		t.Fatalf("InstallPath() = %q", plan.InstallPath())
 	}
 	if plan.BinaryPath != BinaryPath {
@@ -82,32 +82,32 @@ func TestNewArchivePlanRejectsLatestAndUnknownArchitecture(t *testing.T) {
 func TestNewInstallPlanBuildsVerifiedInstallCommands(t *testing.T) {
 	t.Parallel()
 
-	plan, err := NewInstallPlan(validConfig(), InstallPlanOptions{CacheDir: "/tmp/meshify-cache"})
+	plan, err := NewInstallPlan(validConfig(), InstallPlanOptions{CacheDir: "/tmp/lanpanel-cache"})
 	if err != nil {
 		t.Fatalf("NewInstallPlan() error = %v", err)
 	}
 	if len(plan.Commands) != 7 {
 		t.Fatalf("len(Commands) = %d, want 7", len(plan.Commands))
 	}
-	if plan.Commands[0].Name != "mkdir" || !strings.Contains(strings.Join(plan.Commands[0].Args, " "), "/tmp/meshify-cache") {
+	if plan.Commands[0].Name != "mkdir" || !strings.Contains(strings.Join(plan.Commands[0].Args, " "), "/tmp/lanpanel-cache") {
 		t.Fatalf("Commands[0] = %#v, want cache mkdir", plan.Commands[0])
 	}
 	if plan.Commands[1].Name != "curl" || !strings.Contains(strings.Join(plan.Commands[1].Args, " "), plan.Archive.SourceURL) {
 		t.Fatalf("Commands[1] = %#v, want curl download", plan.Commands[1])
 	}
-	if plan.Commands[2].Name != "sha256sum" || !strings.Contains(string(plan.Commands[2].Stdin), sha256LinuxAMD64+"  /tmp/meshify-cache/lego_v5.1.0_linux_amd64.tar.gz") {
+	if plan.Commands[2].Name != "sha256sum" || !strings.Contains(string(plan.Commands[2].Stdin), sha256LinuxAMD64+"  /tmp/lanpanel-cache/lego_v5.1.0_linux_amd64.tar.gz") {
 		t.Fatalf("Commands[2] = %#v, want sha256 check before install", plan.Commands[2])
 	}
-	if got := plan.Commands[3].String(); got != "mkdir -p -m 0755 -- /opt/meshify/bin" {
+	if got := plan.Commands[3].String(); got != "mkdir -p -m 0755 -- /opt/lanpanel/bin" {
 		t.Fatalf("Commands[3] = %q", got)
 	}
-	if got := plan.Commands[4].String(); got != "tar -xzf /tmp/meshify-cache/lego_v5.1.0_linux_amd64.tar.gz -C /opt/meshify/bin lego" {
+	if got := plan.Commands[4].String(); got != "tar -xzf /tmp/lanpanel-cache/lego_v5.1.0_linux_amd64.tar.gz -C /opt/lanpanel/bin lego" {
 		t.Fatalf("Commands[4] = %q", got)
 	}
-	if got := plan.Commands[5].String(); got != "chmod 0755 /opt/meshify/bin/lego" {
+	if got := plan.Commands[5].String(); got != "chmod 0755 /opt/lanpanel/bin/lego" {
 		t.Fatalf("Commands[5] = %q", got)
 	}
-	if got := plan.Commands[6].String(); got != "/opt/meshify/bin/lego --version" {
+	if got := plan.Commands[6].String(); got != "/opt/lanpanel/bin/lego --version" {
 		t.Fatalf("Commands[6] = %q", got)
 	}
 }
@@ -212,7 +212,7 @@ printf 'stdin=%s args=%s\n' "$answer" "$*" >> "`+legoLog+`"
 	if _, err := os.Stat(filepath.Join(dataPath, MigrationMarkerName)); err != nil {
 		t.Fatalf("marker missing after migration: %v", err)
 	}
-	matches, err := filepath.Glob(dataPath + ".meshify-v4-backup.*")
+	matches, err := filepath.Glob(dataPath + ".lanpanel-v4-backup.*")
 	if err != nil {
 		t.Fatalf("Glob() error = %v", err)
 	}

@@ -1,8 +1,8 @@
 package appsvc
 
 import (
-	"meshify/internal/appconfig"
-	"meshify/internal/host"
+	"lanpanel/internal/appconfig"
+	"lanpanel/internal/host"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -64,10 +64,12 @@ func TestNewNamesDerivesAppResourcePaths(t *testing.T) {
 		"GoAccessLogrotatePath":          names.GoAccessLogrotatePath,
 		"GoAccessWebSocketListen":        names.GoAccessWebSocketListen,
 		"GoAccessNginxLogFormatName":     names.GoAccessNginxLogFormatName,
+		"RealIPRejectionLogPath":         names.RealIPRejectionLogPath,
+		"RealIPRejectionLogFormatName":   names.RealIPRejectionLogFormatName,
 	}
 	for field, got := range tests {
-		if strings.Contains(got, "meshify/tls") {
-			t.Fatalf("%s = %q, must not use main meshify TLS path", field, got)
+		if strings.Contains(got, "lanpanel/tls") {
+			t.Fatalf("%s = %q, must not use main lanpanel TLS path", field, got)
 		}
 	}
 	if names.ServiceUnit != "example-app.service" {
@@ -76,19 +78,19 @@ func TestNewNamesDerivesAppResourcePaths(t *testing.T) {
 	if names.TLSDir != "/etc/example-app/tls/abc.com" {
 		t.Fatalf("TLSDir = %q, want app-specific cert dir", names.TLSDir)
 	}
-	if names.TLSMarkerPath != "/etc/example-app/tls/abc.com/.meshify-managed" {
+	if names.TLSMarkerPath != "/etc/example-app/tls/abc.com/.lanpanel-managed" {
 		t.Fatalf("TLSMarkerPath = %q, want app-specific TLS marker", names.TLSMarkerPath)
 	}
-	if names.VarLibMarkerPath != "/var/lib/example-app/.meshify-managed" {
+	if names.VarLibMarkerPath != "/var/lib/example-app/.lanpanel-managed" {
 		t.Fatalf("VarLibMarkerPath = %q, want app root marker", names.VarLibMarkerPath)
 	}
-	if names.EtcMarkerPath != "/etc/example-app/.meshify-managed" {
+	if names.EtcMarkerPath != "/etc/example-app/.lanpanel-managed" {
 		t.Fatalf("EtcMarkerPath = %q, want app etc marker", names.EtcMarkerPath)
 	}
-	if names.HookDirMarkerPath != "/usr/local/lib/meshify/apps/example-app/.meshify-managed" {
+	if names.HookDirMarkerPath != "/usr/local/lib/lanpanel/apps/example-app/.lanpanel-managed" {
 		t.Fatalf("HookDirMarkerPath = %q, want app hook dir marker", names.HookDirMarkerPath)
 	}
-	if names.GoAccessSystemUser != "meshify-goaccess-example-app" || names.GoAccessSystemGroup != names.GoAccessSystemUser {
+	if names.GoAccessSystemUser != "lanpanel-goaccess-example-app" || names.GoAccessSystemGroup != names.GoAccessSystemUser {
 		t.Fatalf("GoAccess identity = %q/%q, want dedicated app-scoped identity", names.GoAccessSystemUser, names.GoAccessSystemGroup)
 	}
 	if names.GoAccessServiceUnit != "example-app-goaccess.service" {
@@ -103,13 +105,13 @@ func TestNewNamesDerivesAppResourcePaths(t *testing.T) {
 	if names.GoAccessDBPath != "/var/lib/example-app/goaccess/db" {
 		t.Fatalf("GoAccessDBPath = %q, want app-specific db path", names.GoAccessDBPath)
 	}
-	if names.GoAccessLogDir != "/var/log/meshify/apps/example-app" {
+	if names.GoAccessLogDir != "/var/log/lanpanel/apps/example-app" {
 		t.Fatalf("GoAccessLogDir = %q, want app-specific log dir", names.GoAccessLogDir)
 	}
-	if names.GoAccessLogDirMarkerPath != "/var/log/meshify/apps/example-app/.meshify-managed" {
+	if names.GoAccessLogDirMarkerPath != "/var/log/lanpanel/apps/example-app/.lanpanel-managed" {
 		t.Fatalf("GoAccessLogDirMarkerPath = %q, want app-specific log marker", names.GoAccessLogDirMarkerPath)
 	}
-	if names.GoAccessCanonicalAccessLogPath != "/var/log/meshify/apps/example-app/access.log" {
+	if names.GoAccessCanonicalAccessLogPath != "/var/log/lanpanel/apps/example-app/access.log" {
 		t.Fatalf("GoAccessCanonicalAccessLogPath = %q, want derived access log", names.GoAccessCanonicalAccessLogPath)
 	}
 	if names.GoAccessLogrotatePath != "/etc/logrotate.d/example-app-goaccess" {
@@ -121,8 +123,354 @@ func TestNewNamesDerivesAppResourcePaths(t *testing.T) {
 	if names.GoAccessWebSocketHost != "127.0.0.1" || names.GoAccessWebSocketPort == 7890 || names.GoAccessWebSocketListen == "0.0.0.0:7890" {
 		t.Fatalf("GoAccess websocket listen = %q (%s:%d), want stable loopback non-default", names.GoAccessWebSocketListen, names.GoAccessWebSocketHost, names.GoAccessWebSocketPort)
 	}
-	if names.GoAccessNginxLogFormatName != "meshify_app_example_app_enhanced" {
+	if names.GoAccessNginxLogFormatName != "lanpanel_app_example_app_enhanced" {
 		t.Fatalf("GoAccessNginxLogFormatName = %q, want app scoped enhanced format", names.GoAccessNginxLogFormatName)
+	}
+	if names.RealIPRejectionLogPath != "/var/log/nginx/example-app-realip-rejections.log" {
+		t.Fatalf("RealIPRejectionLogPath = %q, want Nginx-managed rejection log path", names.RealIPRejectionLogPath)
+	}
+	if names.RealIPRejectionLogFormatName != "lanpanel_app_example_app_realip_rejection" {
+		t.Fatalf("RealIPRejectionLogFormatName = %q, want app scoped realip rejection format", names.RealIPRejectionLogFormatName)
+	}
+}
+
+func TestNewRealIPProfileNamesDerivesSharedProfilePaths(t *testing.T) {
+	t.Parallel()
+
+	names, err := NewRealIPProfileNames("edgeone-prod", appconfig.RealIPProviderEdgeOne, "example-app")
+	if err != nil {
+		t.Fatalf("NewRealIPProfileNames() error = %v", err)
+	}
+	if names.NginxIncludePath != "/etc/nginx/lanpanel/realip/edgeone-prod/active.conf" {
+		t.Fatalf("NginxIncludePath = %q", names.NginxIncludePath)
+	}
+	if names.TrustedCIDRPath != "/etc/nginx/lanpanel/realip/edgeone-prod/trusted-cidrs.conf" {
+		t.Fatalf("TrustedCIDRPath = %q", names.TrustedCIDRPath)
+	}
+	if names.StatePath != "/var/lib/lanpanel/realip/edgeone-prod/state.json" {
+		t.Fatalf("StatePath = %q", names.StatePath)
+	}
+	if names.ReferencePathForApp != "/var/lib/lanpanel/realip/edgeone-prod/references/example-app.json" {
+		t.Fatalf("ReferencePathForApp = %q", names.ReferencePathForApp)
+	}
+	if names.RefreshServiceUnit != "lanpanel-realip-edgeone-prod-refresh.service" {
+		t.Fatalf("RefreshServiceUnit = %q", names.RefreshServiceUnit)
+	}
+	if names.RefreshTimerUnit != "lanpanel-realip-edgeone-prod-refresh.timer" {
+		t.Fatalf("RefreshTimerUnit = %q", names.RefreshTimerUnit)
+	}
+
+	if _, err := NewRealIPProfileNames("Bad", appconfig.RealIPProviderEdgeOne, "example-app"); err == nil {
+		t.Fatal("NewRealIPProfileNames() unsafe profile name error = nil, want non-nil")
+	}
+	if _, err := NewRealIPProfileNames("edgeone-prod", "custom", "example-app"); err == nil {
+		t.Fatal("NewRealIPProfileNames() unsupported provider error = nil, want non-nil")
+	}
+}
+
+func TestNginxRealIPDetectionParsesDirectiveContext(t *testing.T) {
+	t.Parallel()
+
+	text := `
+server {
+    # real_ip_recursive off;
+    location /real_ip_header/ {
+        alias /opt/example-app/web/set_real_ip_from/;
+        add_header X-Note "real_ip_recursive";
+    }
+}
+`
+	for _, name := range []string{"real_ip_header", "set_real_ip_from", "real_ip_recursive"} {
+		if nginxHasDirectiveName(text, name) {
+			t.Fatalf("nginxHasDirectiveName(%q) = true for directive name inside values/comments", name)
+		}
+	}
+	if nginxHasVariableReference(text, "$example_app_realip_reject_reason") {
+		t.Fatal("nginxHasVariableReference() = true for variable name without nginx variable token")
+	}
+
+	if !nginxHasDirectiveName("server {\n    real_ip_recursive off;\n}\n", "real_ip_recursive") {
+		t.Fatal("nginxHasDirectiveName(real_ip_recursive) = false for actual directive")
+	}
+	if !nginxHasVariableReference("map $http_eo_connecting_ip $example_app_realip_reject_reason {\n    default \"\";\n}\n", "$example_app_realip_reject_reason") {
+		t.Fatal("nginxHasVariableReference() = false for variable in map header")
+	}
+}
+
+func TestGuardRealIPConflictsCommandChecksTargetSiteAndSkipsManagedRoot(t *testing.T) {
+	t.Parallel()
+
+	names, err := NewNames(testConfig())
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+	realIPNames, err := NewRealIPProfileNames("edgeone-prod", appconfig.RealIPProviderEdgeOne, names.AppName)
+	if err != nil {
+		t.Fatalf("NewRealIPProfileNames() error = %v", err)
+	}
+	command := GuardRealIPConflictsCommand(names, realIPNames)
+	if command.Name != "sh" || len(command.Args) < 2 {
+		t.Fatalf("GuardRealIPConflictsCommand() = %#v, want sh script", command)
+	}
+	script := command.Args[1]
+	for _, want := range []string{
+		`managed_realip_root=$(dirname "$managed_realip_dir")`,
+		`function count_char`,
+		`server_depth`,
+		`current_file_managed_realip = managed_realip_files[current_file]`,
+		`current_file_managed_app = managed_app_files[current_file]`,
+		`index(current_file, managed_realip_root "/") == 1 && index($0, "Lanpanel-managed: realip.profile=") > 0`,
+		`index($0, app_marker) > 0`,
+		`managed_app_files[current_file] = 1`,
+		`index(current_file, managed_realip_root "/") == 1 && current_file_managed_realip`,
+		`current_file_managed_app && normalized == "real_ip_header EO-Connecting-IP;"`,
+		`scan_file "$current_available"`,
+		`contains multi-line include directive; refusing realip conflict scan`,
+		`contains dynamic include`,
+		`contains non-absolute include`,
+		`did not match a file; refusing realip conflict scan`,
+		`contains non-Lanpanel realip directive`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("realip conflict guard script missing %q\n%s", want, script)
+		}
+	}
+	if strings.Contains(script, `current_file == current_enabled || current_file == current_available { next }`) {
+		t.Fatalf("realip conflict guard must inspect target app site for non-Lanpanel realip directives\n%s", script)
+	}
+}
+
+func TestGuardRealIPConflictsCommandRejectsTargetMultiLineInclude(t *testing.T) {
+	t.Parallel()
+
+	names, err := NewNames(testConfig())
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+	realIPNames, err := NewRealIPProfileNames("edgeone-prod", appconfig.RealIPProviderEdgeOne, names.AppName)
+	if err != nil {
+		t.Fatalf("NewRealIPProfileNames() error = %v", err)
+	}
+	command := GuardRealIPConflictsCommand(names, realIPNames)
+	script := command.Args[1]
+
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(binDir) error = %v", err)
+	}
+	availablePath := filepath.Join(dir, "example-app.conf")
+	snippetPath := filepath.Join(dir, "realip.conf")
+	fakeNginx := filepath.Join(binDir, "nginx")
+	nginxDump := `# configuration file /etc/nginx/nginx.conf:
+http {
+# configuration file ` + availablePath + `:
+# Lanpanel-managed: app.name=example-app
+server {
+}
+}
+`
+	if err := os.WriteFile(fakeNginx, []byte("#!/bin/sh\ncat <<'EOF'\n"+nginxDump+"EOF\n"), 0o755); err != nil {
+		t.Fatalf("write fake nginx: %v", err)
+	}
+	if err := os.WriteFile(snippetPath, []byte("real_ip_header X-Forwarded-For;\n"), 0o644); err != nil {
+		t.Fatalf("write realip snippet: %v", err)
+	}
+	available := "# " + ManagedMarker(names.AppName) + "\nserver {\n    include\n        " + snippetPath + ";\n    real_ip_header EO-Connecting-IP;\n}\n"
+	if err := os.WriteFile(availablePath, []byte(available), 0o644); err != nil {
+		t.Fatalf("write available site: %v", err)
+	}
+
+	cmd := exec.Command("sh", "-c", script, "lanpanel-app-realip-conflict-guard", fakeNginx, filepath.Join(dir, "enabled.conf"), availablePath, realIPNames.NginxDir, names.AppName)
+	cmd.Env = append(os.Environ(), "PATH="+binDir+":"+os.Getenv("PATH"))
+	output, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "contains multi-line include directive") {
+		t.Fatalf("guard error = %v output=%s, want multi-line include refusal", err, output)
+	}
+}
+
+func TestGuardRealIPConflictsCommandScansTargetSameLineInclude(t *testing.T) {
+	t.Parallel()
+
+	names, err := NewNames(testConfig())
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+	realIPNames, err := NewRealIPProfileNames("edgeone-prod", appconfig.RealIPProviderEdgeOne, names.AppName)
+	if err != nil {
+		t.Fatalf("NewRealIPProfileNames() error = %v", err)
+	}
+	command := GuardRealIPConflictsCommand(names, realIPNames)
+	script := command.Args[1]
+
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(binDir) error = %v", err)
+	}
+	availablePath := filepath.Join(dir, "example-app.conf")
+	snippetPath := filepath.Join(dir, "realip.conf")
+	fakeNginx := filepath.Join(binDir, "nginx")
+	nginxDump := `# configuration file /etc/nginx/nginx.conf:
+http {
+# configuration file ` + availablePath + `:
+# Lanpanel-managed: app.name=example-app
+server {
+}
+}
+`
+	if err := os.WriteFile(fakeNginx, []byte("#!/bin/sh\ncat <<'EOF'\n"+nginxDump+"EOF\n"), 0o755); err != nil {
+		t.Fatalf("write fake nginx: %v", err)
+	}
+	if err := os.WriteFile(snippetPath, []byte("set_real_ip_from 203.0.113.1;\n"), 0o644); err != nil {
+		t.Fatalf("write realip snippet: %v", err)
+	}
+	available := "# " + ManagedMarker(names.AppName) + "\nserver { include " + snippetPath + "; }\n"
+	if err := os.WriteFile(availablePath, []byte(available), 0o644); err != nil {
+		t.Fatalf("write available site: %v", err)
+	}
+
+	cmd := exec.Command("sh", "-c", script, "lanpanel-app-realip-conflict-guard", fakeNginx, filepath.Join(dir, "enabled.conf"), availablePath, realIPNames.NginxDir, names.AppName)
+	cmd.Env = append(os.Environ(), "PATH="+binDir+":"+os.Getenv("PATH"))
+	output, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "contains non-Lanpanel realip directive") {
+		t.Fatalf("guard error = %v output=%s, want included realip directive refusal", err, output)
+	}
+}
+
+func TestGuardRealIPConflictsCommandAllowsUnrelatedServerRealIPButRejectsGlobalRealIP(t *testing.T) {
+	t.Parallel()
+
+	names, err := NewNames(testConfig())
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+	realIPNames, err := NewRealIPProfileNames("edgeone-prod", appconfig.RealIPProviderEdgeOne, names.AppName)
+	if err != nil {
+		t.Fatalf("NewRealIPProfileNames() error = %v", err)
+	}
+	command := GuardRealIPConflictsCommand(names, realIPNames)
+	script := command.Args[1]
+
+	for _, tt := range []struct {
+		name      string
+		nginxDump string
+		wantErr   string
+	}{
+		{
+			name: "unrelated server realip is scoped away",
+			nginxDump: `# configuration file /etc/nginx/nginx.conf:
+http {
+# configuration file /etc/nginx/sites-enabled/other-app.conf:
+# Lanpanel-managed: app.name=other-app
+server {
+    real_ip_header EO-Connecting-IP;
+}
+# configuration file /etc/nginx/sites-enabled/foreign.conf:
+server {
+    real_ip_header X-Forwarded-For;
+}
+}
+`,
+		},
+		{
+			name: "unrelated split server block realip is scoped away",
+			nginxDump: `# configuration file /etc/nginx/nginx.conf:
+http {
+# configuration file /etc/nginx/sites-enabled/foreign.conf:
+server
+{
+    real_ip_header X-Forwarded-For;
+}
+}
+`,
+		},
+		{
+			name: "unrelated server included realip is scoped away",
+			nginxDump: `# configuration file /etc/nginx/nginx.conf:
+http {
+# configuration file /etc/nginx/sites-enabled/foreign.conf:
+server {
+    include /etc/nginx/snippets/realip.conf;
+# configuration file /etc/nginx/snippets/realip.conf:
+    real_ip_header X-Forwarded-For;
+    set_real_ip_from 203.0.113.1;
+# configuration file /etc/nginx/sites-enabled/foreign.conf:
+}
+}
+`,
+		},
+		{
+			name: "global realip affects target",
+			nginxDump: `# configuration file /etc/nginx/nginx.conf:
+http {
+    real_ip_header X-Forwarded-For;
+}
+`,
+			wantErr: "contains non-Lanpanel realip directive",
+		},
+		{
+			name: "http included realip affects target",
+			nginxDump: `# configuration file /etc/nginx/nginx.conf:
+http {
+    include /etc/nginx/snippets/global-realip.conf;
+# configuration file /etc/nginx/snippets/global-realip.conf:
+    real_ip_header X-Forwarded-For;
+}
+`,
+			wantErr: "contains non-Lanpanel realip directive",
+		},
+		{
+			name: "managed app marker survives managed realip include roundtrip",
+			nginxDump: `# configuration file /etc/nginx/nginx.conf:
+http {
+# configuration file {{AVAILABLE}}:
+# Lanpanel-managed: app.name=example-app
+server {
+    include /etc/nginx/lanpanel/realip/edgeone-prod/active.conf;
+# configuration file /etc/nginx/lanpanel/realip/edgeone-prod/active.conf:
+# Lanpanel-managed: realip.profile=edgeone-prod provider=edgeone
+    set_real_ip_from 8.8.8.8/32;
+# configuration file {{AVAILABLE}}:
+    real_ip_header EO-Connecting-IP;
+}
+}
+`,
+		},
+	} {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := t.TempDir()
+			binDir := filepath.Join(dir, "bin")
+			if err := os.MkdirAll(binDir, 0o755); err != nil {
+				t.Fatalf("MkdirAll() error = %v", err)
+			}
+			availablePath := filepath.Join(dir, "example-app.conf")
+			fakeNginx := filepath.Join(binDir, "nginx")
+			nginxDump := strings.ReplaceAll(tt.nginxDump, "{{AVAILABLE}}", availablePath)
+			if err := os.WriteFile(fakeNginx, []byte("#!/bin/sh\ncat <<'EOF'\n"+nginxDump+"EOF\n"), 0o755); err != nil {
+				t.Fatalf("write fake nginx: %v", err)
+			}
+			available := "# " + ManagedMarker(names.AppName) + "\nserver {\n    real_ip_header EO-Connecting-IP;\n}\n"
+			if err := os.WriteFile(availablePath, []byte(available), 0o644); err != nil {
+				t.Fatalf("write available site: %v", err)
+			}
+
+			cmd := exec.Command("sh", "-c", script, "lanpanel-app-realip-conflict-guard", fakeNginx, filepath.Join(dir, "enabled.conf"), availablePath, realIPNames.NginxDir, names.AppName)
+			cmd.Env = append(os.Environ(), "PATH="+binDir+":"+os.Getenv("PATH"))
+			output, err := cmd.CombinedOutput()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("guard error = %v output=%s", err, output)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(string(output), tt.wantErr) {
+				t.Fatalf("guard error = %v output=%s, want %q", err, output, tt.wantErr)
+			}
+		})
 	}
 }
 
@@ -130,7 +478,7 @@ func TestNewNamesGoAccessCanonicalLogAndWebSocketOverrides(t *testing.T) {
 	t.Parallel()
 
 	cfg := testConfig()
-	cfg.Nginx.AccessLog = "/var/log/meshify/custom/example-app.access.log"
+	cfg.Nginx.AccessLog = "/var/log/lanpanel/custom/example-app.access.log"
 	cfg.Nginx.GoAccess.Enabled = true
 	cfg.Nginx.GoAccess.AuthBasicUserFile = "/etc/example-app/goaccess.htpasswd"
 	cfg.Nginx.GoAccess.WebSocketListen = "127.0.0.1:40123"
@@ -138,7 +486,7 @@ func TestNewNamesGoAccessCanonicalLogAndWebSocketOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewNames() error = %v", err)
 	}
-	if names.GoAccessCanonicalAccessLogPath != "/var/log/meshify/custom/example-app.access.log" {
+	if names.GoAccessCanonicalAccessLogPath != "/var/log/lanpanel/custom/example-app.access.log" {
 		t.Fatalf("GoAccessCanonicalAccessLogPath = %q, want explicit access log", names.GoAccessCanonicalAccessLogPath)
 	}
 	if names.GoAccessWebSocketHost != "127.0.0.1" || names.GoAccessWebSocketPort != 40123 || names.GoAccessWebSocketListen != "127.0.0.1:40123" {
@@ -169,12 +517,12 @@ func TestGoAccessManagesCanonicalAccessLogForCurrentAppLogRoot(t *testing.T) {
 		t.Fatal("GoAccessManagesCanonicalAccessLog(derived) = false, want true")
 	}
 
-	cfg.Nginx.AccessLog = "/var/log/meshify/apps/example-app/access.log"
+	cfg.Nginx.AccessLog = "/var/log/lanpanel/apps/example-app/access.log"
 	if !GoAccessManagesCanonicalAccessLog(cfg) {
 		t.Fatal("GoAccessManagesCanonicalAccessLog(explicit current app log root) = false, want true")
 	}
 
-	cfg.Nginx.AccessLog = "/var/log/meshify/custom/example-app.access.log"
+	cfg.Nginx.AccessLog = "/var/log/lanpanel/custom/example-app.access.log"
 	if GoAccessManagesCanonicalAccessLog(cfg) {
 		t.Fatal("GoAccessManagesCanonicalAccessLog(custom explicit log) = true, want false")
 	}
@@ -284,7 +632,7 @@ func TestGuardServerNameConflictsCommandRejectsEnabledDuplicate(t *testing.T) {
 	}
 }
 
-func TestGuardDefaultServerCommandAllowsOnlyMeshifyCatchAll(t *testing.T) {
+func TestGuardDefaultServerCommandAllowsOnlyLanpanelCatchAll(t *testing.T) {
 	t.Parallel()
 
 	current := "/etc/nginx/sites-enabled/example-app.conf"
@@ -311,7 +659,7 @@ func TestGuardDefaultServerCommandAllowsOnlyMeshifyCatchAll(t *testing.T) {
 		t.Fatalf("guard command error = nil, want multiline custom default_server failure; output:\n%s", output)
 	}
 
-	meshify := `server {
+	lanpanel := `server {
     listen 80 default_server;
     server_name "";
     return 444;
@@ -319,18 +667,18 @@ func TestGuardDefaultServerCommandAllowsOnlyMeshifyCatchAll(t *testing.T) {
 server {
     listen 443 ssl default_server;
     server_name "";
-    ssl_certificate /etc/meshify/tls/hs.example.com/fullchain.pem;
+    ssl_certificate /etc/lanpanel/tls/hs.example.com/fullchain.pem;
     return 421;
 }
 `
 	output, err = runGuardCommandWithNginxDump(t, command, nginxDump(map[string]string{
-		"/etc/nginx/conf.d/meshify-default.conf": meshify,
+		"/etc/nginx/conf.d/lanpanel-default.conf": lanpanel,
 	}))
 	if err != nil {
 		t.Fatalf("guard command error = %v; output:\n%s", err, output)
 	}
 
-	mixed := meshify + `
+	mixed := lanpanel + `
 server {
     listen 8080 default_server;
     server_name custom.example.com;
@@ -374,10 +722,10 @@ func TestGuardGoAccessWebSocketPortAssignmentCommandRejectsExistingProxyTarget(t
 	t.Logf("collision fixture ports: app-139=%d app-1192=%d", names.GoAccessWebSocketPort, otherNames.GoAccessWebSocketPort)
 
 	command := GuardGoAccessWebSocketPortAssignmentCommand(names)
-	conflictingSite := `# Meshify-managed: app.name=app-1192
+	conflictingSite := `# Lanpanel-managed: app.name=app-1192
 server {
     listen 443 ssl;
-    location = /_meshify/apps/example-app/goaccess/ws {
+    location = /_lanpanel/apps/example-app/goaccess/ws {
         proxy_pass http://` + names.GoAccessWebSocketListen + `;
     }
 }
@@ -394,7 +742,7 @@ server {
 
 	output, err = runGuardCommandWithNginxDump(t, command, nginxDump(map[string]string{
 		"/etc/nginx/sites-enabled/app-1192.conf": `server {
-    location = /_meshify/apps/example-app/goaccess/ws {
+    location = /_lanpanel/apps/example-app/goaccess/ws {
         proxy_pass
             http://` + names.GoAccessWebSocketListen + `;
     }
@@ -407,7 +755,7 @@ server {
 
 	output, err = runGuardCommandWithNginxDump(t, command, nginxDump(map[string]string{
 		"/etc/nginx/sites-enabled/app-1192.conf": `server {
-    location = /_meshify/apps/example-app/goaccess/ws {
+    location = /_lanpanel/apps/example-app/goaccess/ws {
         proxy_pass http://` + names.GoAccessWebSocketListen + `/;
     }
 }
@@ -419,7 +767,7 @@ server {
 
 	output, err = runGuardCommandWithNginxDump(t, command, nginxDump(map[string]string{
 		"/etc/nginx/sites-enabled/app-1192.conf": `server {
-    location = /_meshify/apps/example-app/goaccess/ws {
+    location = /_lanpanel/apps/example-app/goaccess/ws {
         proxy_pass http://` + names.GoAccessWebSocketListen + `$request_uri;
     }
 }
@@ -432,7 +780,7 @@ server {
 	localhostProxyTarget := "localhost:" + strconv.Itoa(names.GoAccessWebSocketPort)
 	output, err = runGuardCommandWithNginxDump(t, command, nginxDump(map[string]string{
 		"/etc/nginx/sites-enabled/app-1192.conf": `server {
-    location = /_meshify/apps/example-app/goaccess/ws {
+    location = /_lanpanel/apps/example-app/goaccess/ws {
         proxy_pass http://` + localhostProxyTarget + `;
     }
 }
@@ -451,7 +799,7 @@ server {
 }
 
 server {
-    location = /_meshify/apps/example-app/goaccess/ws {
+    location = /_lanpanel/apps/example-app/goaccess/ws {
         proxy_pass http://leaked_goaccess;
     }
 }
@@ -471,7 +819,7 @@ server {
 }
 
 server {
-    location = /_meshify/apps/example-app/goaccess/ws {
+    location = /_lanpanel/apps/example-app/goaccess/ws {
         proxy_pass http://split_goaccess;
     }
 }
@@ -490,7 +838,7 @@ server {
 }
 
 server {
-    location = /_meshify/apps/example-app/goaccess/ws {
+    location = /_lanpanel/apps/example-app/goaccess/ws {
         proxy_pass http://leaked_localhost_goaccess;
     }
 }
@@ -510,7 +858,7 @@ server {
 }
 
 server {
-    location = /_meshify/apps/example-app/goaccess/ws {
+    location = /_lanpanel/apps/example-app/goaccess/ws {
         proxy_pass http://split_localhost_goaccess;
     }
 }
@@ -525,7 +873,7 @@ server {
 
 	output, err = runGuardCommandWithNginxDump(t, command, nginxDump(map[string]string{
 		names.NginxAvailablePath: `server {
-    location = /_meshify/apps/example-app/goaccess/ws {
+    location = /_lanpanel/apps/example-app/goaccess/ws {
         proxy_pass http://` + names.GoAccessWebSocketListen + `;
     }
 }
@@ -558,7 +906,7 @@ func TestCertificatePlanRepeatsDomainsAndMasksEnvFileDisplay(t *testing.T) {
 		"--domains www.abc.com",
 		"--dns gcloud",
 		"run --path /var/lib/example-app/lego",
-		"--force-cert-domains --deploy-hook /usr/local/lib/meshify/apps/example-app/install-cert-and-reload-nginx.sh",
+		"--force-cert-domains --deploy-hook /usr/local/lib/lanpanel/apps/example-app/install-cert-and-reload-nginx.sh",
 	} {
 		if !strings.Contains(display, want) {
 			t.Fatalf("command = %q, want substring %q", display, want)
@@ -581,7 +929,7 @@ func TestCertificatePlanIssueOrRenewWrapper(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCertificatePlan() error = %v", err)
 	}
-	if plan.Command.Name != "sh" || len(plan.Command.Args) < 8 || plan.Command.Args[2] != "meshify-app-lego-issue-or-renew" {
+	if plan.Command.Name != "sh" || len(plan.Command.Args) < 8 || plan.Command.Args[2] != "lanpanel-app-lego-issue-or-renew" {
 		t.Fatalf("command = %#v, want issue-or-renew shell wrapper", plan.Command)
 	}
 
@@ -717,7 +1065,7 @@ func TestDNS01CommandEnvFileParserMatchesSystemdStyle(t *testing.T) {
 # comment
 ; another comment
 CF_DNS_API_TOKEN_FILE = '`+filepath.Join(dir, "cf token")+`'
-GCE_PROJECT = "meshify-project"
+GCE_PROJECT = "lanpanel-project"
 EMPTY =
 ignored note
 `), 0o600); err != nil {
@@ -730,11 +1078,11 @@ printf 'CF=%s\nGCE=%s\nEMPTY=%s\n' "$CF_DNS_API_TOKEN_FILE" "$GCE_PROJECT" "${EM
 	command := legoCommandWithEnvFile(envFile, []string{"run"})
 	script := command.Args[1]
 
-	output, err := exec.Command("sh", "-c", script, "meshify-app-lego-dns01", envFile, printer).CombinedOutput()
+	output, err := exec.Command("sh", "-c", script, "lanpanel-app-lego-dns01", envFile, printer).CombinedOutput()
 	if err != nil {
 		t.Fatalf("env parser script error = %v; output:\n%s", err, output)
 	}
-	want := "CF=" + filepath.Join(dir, "cf token") + "\nGCE=meshify-project\nEMPTY=unset\n"
+	want := "CF=" + filepath.Join(dir, "cf token") + "\nGCE=lanpanel-project\nEMPTY=unset\n"
 	if string(output) != want {
 		t.Fatalf("output = %q, want %q", output, want)
 	}
@@ -767,7 +1115,7 @@ func TestDNS01CommandEnvFileParserRejectsUnsafeSyntax(t *testing.T) {
 				t.Fatalf("WriteFile(envFile) error = %v", err)
 			}
 			command := legoCommandWithEnvFile(envFile, []string{"run"})
-			output, err := exec.Command("sh", "-c", command.Args[1], "meshify-app-lego-dns01", envFile, "true").CombinedOutput()
+			output, err := exec.Command("sh", "-c", command.Args[1], "lanpanel-app-lego-dns01", envFile, "true").CombinedOutput()
 			if err == nil {
 				t.Fatalf("env parser script error = nil, want failure; output:\n%s", output)
 			}
@@ -806,7 +1154,7 @@ func TestGuardTLSOwnershipCommandProtectsCertificateTargets(t *testing.T) {
 				writeFile(t, names.TLSMarkerPath, ManagedMarker("other-app")+"\n", 0o600)
 			},
 			wantErr: true,
-			want:    "managed by a different Meshify app",
+			want:    "managed by a different Lanpanel app",
 		},
 		{
 			name: "existing cert without marker",
@@ -814,7 +1162,7 @@ func TestGuardTLSOwnershipCommandProtectsCertificateTargets(t *testing.T) {
 				writeFile(t, names.FullchainPath, "foreign cert\n", 0o644)
 			},
 			wantErr: true,
-			want:    "refusing to overwrite non-Meshify TLS file",
+			want:    "refusing to overwrite non-Lanpanel TLS file",
 		},
 	}
 	for _, tt := range tests {
@@ -826,7 +1174,7 @@ func TestGuardTLSOwnershipCommandProtectsCertificateTargets(t *testing.T) {
 			names.TLSDir = filepath.Join(dir, "tls")
 			names.FullchainPath = filepath.Join(names.TLSDir, "fullchain.pem")
 			names.PrivateKeyPath = filepath.Join(names.TLSDir, "privkey.pem")
-			names.TLSMarkerPath = filepath.Join(names.TLSDir, ".meshify-managed")
+			names.TLSMarkerPath = filepath.Join(names.TLSDir, ".lanpanel-managed")
 			if tt.prepare != nil {
 				tt.prepare(t, names)
 			}
@@ -964,9 +1312,9 @@ func TestGuardRootDirectoriesCommandCreatesAndProtectsMarkers(t *testing.T) {
 	names.VarLibDir = filepath.Join(dir, "var-lib", "example-app")
 	names.EtcDir = filepath.Join(dir, "etc", "example-app")
 	names.HookDir = filepath.Join(dir, "hooks", "example-app")
-	names.VarLibMarkerPath = filepath.Join(names.VarLibDir, ".meshify-managed")
-	names.EtcMarkerPath = filepath.Join(names.EtcDir, ".meshify-managed")
-	names.HookDirMarkerPath = filepath.Join(names.HookDir, ".meshify-managed")
+	names.VarLibMarkerPath = filepath.Join(names.VarLibDir, ".lanpanel-managed")
+	names.EtcMarkerPath = filepath.Join(names.EtcDir, ".lanpanel-managed")
+	names.HookDirMarkerPath = filepath.Join(names.HookDir, ".lanpanel-managed")
 
 	command := GuardRootDirectoriesCommand(names)
 	output, err := exec.Command("sh", append([]string{"-c", command.Args[1]}, command.Args[2:]...)...).CombinedOutput()
@@ -987,9 +1335,9 @@ func TestGuardRootDirectoriesCommandCreatesAndProtectsMarkers(t *testing.T) {
 	foreign.VarLibDir = filepath.Join(dir, "foreign-var-lib")
 	foreign.EtcDir = filepath.Join(dir, "foreign-etc")
 	foreign.HookDir = filepath.Join(dir, "foreign-hooks")
-	foreign.VarLibMarkerPath = filepath.Join(foreign.VarLibDir, ".meshify-managed")
-	foreign.EtcMarkerPath = filepath.Join(foreign.EtcDir, ".meshify-managed")
-	foreign.HookDirMarkerPath = filepath.Join(foreign.HookDir, ".meshify-managed")
+	foreign.VarLibMarkerPath = filepath.Join(foreign.VarLibDir, ".lanpanel-managed")
+	foreign.EtcMarkerPath = filepath.Join(foreign.EtcDir, ".lanpanel-managed")
+	foreign.HookDirMarkerPath = filepath.Join(foreign.HookDir, ".lanpanel-managed")
 	if err := os.MkdirAll(foreign.EtcDir, 0o700); err != nil {
 		t.Fatalf("MkdirAll(foreign) error = %v", err)
 	}
@@ -1012,9 +1360,9 @@ func TestGuardRootDirectoriesCommandCreatesAndProtectsMarkers(t *testing.T) {
 	bootstrap.VarLibDir = filepath.Join(dir, "bootstrap-var-lib")
 	bootstrap.EtcDir = filepath.Join(dir, "bootstrap-etc")
 	bootstrap.HookDir = filepath.Join(dir, "bootstrap-hooks")
-	bootstrap.VarLibMarkerPath = filepath.Join(bootstrap.VarLibDir, ".meshify-managed")
-	bootstrap.EtcMarkerPath = filepath.Join(bootstrap.EtcDir, ".meshify-managed")
-	bootstrap.HookDirMarkerPath = filepath.Join(bootstrap.HookDir, ".meshify-managed")
+	bootstrap.VarLibMarkerPath = filepath.Join(bootstrap.VarLibDir, ".lanpanel-managed")
+	bootstrap.EtcMarkerPath = filepath.Join(bootstrap.EtcDir, ".lanpanel-managed")
+	bootstrap.HookDirMarkerPath = filepath.Join(bootstrap.HookDir, ".lanpanel-managed")
 	if err := os.MkdirAll(bootstrap.EtcDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll(bootstrap etc) error = %v", err)
 	}
@@ -1058,9 +1406,9 @@ func TestGuardRootDirectoriesGoAccessAuthBootstrapRequiresSuggestedPath(t *testi
 	names.VarLibDir = filepath.Join(dir, "var-lib", "example-app")
 	names.EtcDir = filepath.Join(dir, "etc", "example-app")
 	names.HookDir = filepath.Join(dir, "hooks", "example-app")
-	names.VarLibMarkerPath = filepath.Join(names.VarLibDir, ".meshify-managed")
-	names.EtcMarkerPath = filepath.Join(names.EtcDir, ".meshify-managed")
-	names.HookDirMarkerPath = filepath.Join(names.HookDir, ".meshify-managed")
+	names.VarLibMarkerPath = filepath.Join(names.VarLibDir, ".lanpanel-managed")
+	names.EtcMarkerPath = filepath.Join(names.EtcDir, ".lanpanel-managed")
+	names.HookDirMarkerPath = filepath.Join(names.HookDir, ".lanpanel-managed")
 	names.GoAccessSuggestedAuthBasicUserFile = filepath.Join(names.EtcDir, "goaccess.htpasswd")
 
 	binDir := t.TempDir()
@@ -1119,9 +1467,9 @@ func TestGuardRootDirectoriesCommandFailsClosedOnFindError(t *testing.T) {
 	names.VarLibDir = filepath.Join(dir, "var-lib", "example-app")
 	names.EtcDir = filepath.Join(dir, "etc", "example-app")
 	names.HookDir = filepath.Join(dir, "hooks", "example-app")
-	names.VarLibMarkerPath = filepath.Join(names.VarLibDir, ".meshify-managed")
-	names.EtcMarkerPath = filepath.Join(names.EtcDir, ".meshify-managed")
-	names.HookDirMarkerPath = filepath.Join(names.HookDir, ".meshify-managed")
+	names.VarLibMarkerPath = filepath.Join(names.VarLibDir, ".lanpanel-managed")
+	names.EtcMarkerPath = filepath.Join(names.EtcDir, ".lanpanel-managed")
+	names.HookDirMarkerPath = filepath.Join(names.HookDir, ".lanpanel-managed")
 	if err := os.MkdirAll(names.VarLibDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll(var lib) error = %v", err)
 	}
@@ -1516,7 +1864,7 @@ func TestGuardGoAccessLogDirectoryCommandRejectsWritableMarker(t *testing.T) {
 	dir := t.TempDir()
 	names := baseNames
 	names.GoAccessLogDir = filepath.Join(dir, "logs")
-	names.GoAccessLogDirMarkerPath = filepath.Join(names.GoAccessLogDir, ".meshify-managed")
+	names.GoAccessLogDirMarkerPath = filepath.Join(names.GoAccessLogDir, ".lanpanel-managed")
 	if err := os.MkdirAll(names.GoAccessLogDir, 0o750); err != nil {
 		t.Fatalf("MkdirAll(log dir) error = %v", err)
 	}
@@ -1627,7 +1975,7 @@ func TestRemoveManagedGoAccessRuntimeCommandRemovesOnlyManagedFiles(t *testing.T
 	if err == nil {
 		t.Fatalf("remove GoAccess runtime with foreign files error = nil, want refusal; output:\n%s", output)
 	}
-	if !strings.Contains(string(output), "not a Meshify-managed GoAccess") {
+	if !strings.Contains(string(output), "not a Lanpanel-managed GoAccess") {
 		t.Fatalf("output = %q, want foreign GoAccess runtime refusal", output)
 	}
 	for _, path := range []string{unitPath, names.GoAccessConfigPath, names.GoAccessLogrotatePath} {
@@ -1653,7 +2001,7 @@ func TestRemoveManagedGoAccessRuntimeCommandRemovesOnlyManagedFiles(t *testing.T
 	if err == nil {
 		t.Fatalf("remove GoAccess runtime with mixed markers error = nil, want refusal; output:\n%s", output)
 	}
-	if !strings.Contains(string(output), "not a Meshify-managed GoAccess") {
+	if !strings.Contains(string(output), "not a Lanpanel-managed GoAccess") {
 		t.Fatalf("output = %q, want mixed marker refusal", output)
 	}
 	for _, path := range []string{unitPath, names.GoAccessConfigPath, names.GoAccessLogrotatePath} {
@@ -1684,7 +2032,7 @@ func TestRemoveManagedGoAccessRuntimeCommandRemovesOnlyManagedFiles(t *testing.T
 	if err == nil {
 		t.Fatalf("remove GoAccess runtime with symlink error = nil, want refusal; output:\n%s", output)
 	}
-	if !strings.Contains(string(output), "is a symlink; refusing to remove it as Meshify-managed GoAccess config") {
+	if !strings.Contains(string(output), "is a symlink; refusing to remove it as Lanpanel-managed GoAccess config") {
 		t.Fatalf("output = %q, want symlink refusal", output)
 	}
 	if info, err := os.Lstat(names.GoAccessConfigPath); err != nil || info.Mode()&os.ModeSymlink == 0 {
@@ -1738,7 +2086,7 @@ func TestRemoveManagedGoAccessLogrotateCommandRemovesOnlyManagedFile(t *testing.
 	if err == nil {
 		t.Fatalf("remove GoAccess logrotate error = nil, want foreign file failure; output:\n%s", output)
 	}
-	if !strings.Contains(string(output), "not a Meshify-managed GoAccess logrotate file") {
+	if !strings.Contains(string(output), "not a Lanpanel-managed GoAccess logrotate file") {
 		t.Fatalf("output = %q, want foreign file refusal", output)
 	}
 
@@ -1750,7 +2098,7 @@ func TestRemoveManagedGoAccessLogrotateCommandRemovesOnlyManagedFile(t *testing.
 	if err == nil {
 		t.Fatalf("remove GoAccess logrotate error = nil, want mixed marker failure; output:\n%s", output)
 	}
-	if !strings.Contains(string(output), "not a Meshify-managed GoAccess logrotate file") {
+	if !strings.Contains(string(output), "not a Lanpanel-managed GoAccess logrotate file") {
 		t.Fatalf("output = %q, want mixed marker refusal", output)
 	}
 
@@ -2016,7 +2364,7 @@ func TestEnsureGoAccessDirectoryCommandsSplitsRuntimePermissions(t *testing.T) {
 
 	logScript := commands[3].Args[1]
 	for _, want := range []string{
-		`ensure_safe_parent "$meshify_log_root"`,
+		`ensure_safe_parent "$lanpanel_log_root"`,
 		`ensure_safe_parent "$apps_log_root"`,
 		`must be searchable by others`,
 		`if [ -L "$log_dir" ]; then`,
@@ -2087,7 +2435,7 @@ func TestEnsureGoAccessLogDirectoryCommandRejectsUnsafeManagedPaths(t *testing.T
 			dir := t.TempDir()
 			names := baseNames
 			names.GoAccessLogDir = filepath.Join(dir, "logs")
-			names.GoAccessLogDirMarkerPath = filepath.Join(names.GoAccessLogDir, ".meshify-managed")
+			names.GoAccessLogDirMarkerPath = filepath.Join(names.GoAccessLogDir, ".lanpanel-managed")
 			names.GoAccessCanonicalAccessLogPath = filepath.Join(names.GoAccessLogDir, "access.log")
 			tt.prepare(t, names)
 
@@ -2112,15 +2460,15 @@ func TestEnsureGoAccessLogDirectoryCommandRejectsUnsafeManagedParents(t *testing
 	}
 	dir := t.TempDir()
 	names := baseNames
-	names.GoAccessLogDir = filepath.Join(dir, "meshify", "apps", "example-app")
-	names.GoAccessLogDirMarkerPath = filepath.Join(names.GoAccessLogDir, ".meshify-managed")
+	names.GoAccessLogDir = filepath.Join(dir, "lanpanel", "apps", "example-app")
+	names.GoAccessLogDirMarkerPath = filepath.Join(names.GoAccessLogDir, ".lanpanel-managed")
 	names.GoAccessCanonicalAccessLogPath = filepath.Join(names.GoAccessLogDir, "access.log")
 	target := filepath.Join(dir, "target")
 	if err := os.Mkdir(target, 0o755); err != nil {
 		t.Fatalf("Mkdir(target) error = %v", err)
 	}
-	if err := os.Symlink(target, filepath.Join(dir, "meshify")); err != nil {
-		t.Fatalf("Symlink(meshify parent) error = %v", err)
+	if err := os.Symlink(target, filepath.Join(dir, "lanpanel")); err != nil {
+		t.Fatalf("Symlink(lanpanel parent) error = %v", err)
 	}
 
 	command := EnsureGoAccessDirectoryCommands(names, true)[3]
@@ -2179,7 +2527,7 @@ func TestEnsureGoAccessLogDirectoryCommandRejectsUnsafeExistingLogFile(t *testin
 			dir := t.TempDir()
 			names := baseNames
 			names.GoAccessLogDir = filepath.Join(dir, "logs")
-			names.GoAccessLogDirMarkerPath = filepath.Join(names.GoAccessLogDir, ".meshify-managed")
+			names.GoAccessLogDirMarkerPath = filepath.Join(names.GoAccessLogDir, ".lanpanel-managed")
 			names.GoAccessCanonicalAccessLogPath = filepath.Join(names.GoAccessLogDir, "access.log")
 			if err := os.MkdirAll(names.GoAccessLogDir, 0o755); err != nil {
 				t.Fatalf("MkdirAll(log dir) error = %v", err)
@@ -2208,9 +2556,9 @@ func TestValidateGoAccessAccessControlsRejectsBypasses(t *testing.T) {
 		AuthBasicUserFile: "/etc/example-app/goaccess.htpasswd",
 		AuthCIDRAllowlist: []string{"203.0.113.0/24"},
 	}
-	validBlock := `location = /_meshify/apps/example-app/goaccess {
+	validBlock := `location = /_lanpanel/apps/example-app/goaccess {
         satisfy all;
-        auth_basic "Meshify GoAccess";
+        auth_basic "Lanpanel GoAccess";
         auth_basic_user_file /etc/example-app/goaccess.htpasswd;
         allow 203.0.113.0/24;
         deny all;
@@ -2241,7 +2589,7 @@ func TestValidateGoAccessAccessControlsRejectsBypasses(t *testing.T) {
 		},
 		{
 			name:  "basic auth disabled",
-			block: strings.Replace(validBlock, `auth_basic "Meshify GoAccess";`, "auth_basic off;", 1),
+			block: strings.Replace(validBlock, `auth_basic "Lanpanel GoAccess";`, "auth_basic off;", 1),
 			want:  "must not disable basic auth",
 		},
 		{
@@ -2256,7 +2604,7 @@ func TestValidateGoAccessAccessControlsRejectsBypasses(t *testing.T) {
 		},
 		{
 			name:  "commented basic auth",
-			block: strings.Replace(validBlock, `        auth_basic "Meshify GoAccess";`, `        # auth_basic "Meshify GoAccess";`, 1),
+			block: strings.Replace(validBlock, `        auth_basic "Lanpanel GoAccess";`, `        # auth_basic "Lanpanel GoAccess";`, 1),
 			want:  "basic auth missing",
 		},
 		{
@@ -2286,9 +2634,9 @@ func TestValidateGoAccessAccessControlsRejectsBypasses(t *testing.T) {
 		},
 		{
 			name: "allow without configured allowlist",
-			block: `location = /_meshify/apps/example-app/goaccess {
+			block: `location = /_lanpanel/apps/example-app/goaccess {
         satisfy all;
-        auth_basic "Meshify GoAccess";
+        auth_basic "Lanpanel GoAccess";
         auth_basic_user_file /etc/example-app/goaccess.htpasswd;
         allow all;
     }`,
@@ -2321,7 +2669,7 @@ func TestValidateGoAccessNginxRejectsNestedAllowDeny(t *testing.T) {
 		t.Fatalf("NewNames() error = %v", err)
 	}
 	dashboardGuard := `if ($host != "abc.com") {
-            return 301 https://abc.com/_meshify/apps/example-app/goaccess;
+            return 301 https://abc.com/_lanpanel/apps/example-app/goaccess;
         }`
 	websocketGuard := `if ($host != "abc.com") {
             return 421;
@@ -2382,7 +2730,7 @@ func TestValidateGoAccessNginxRejectsParentSatisfyAny(t *testing.T) {
 		t.Fatalf("NewNames() error = %v", err)
 	}
 	dashboardGuard := `if ($host != "abc.com") {
-            return 301 https://abc.com/_meshify/apps/example-app/goaccess;
+            return 301 https://abc.com/_lanpanel/apps/example-app/goaccess;
         }`
 	websocketGuard := `if ($host != "abc.com") {
             return 421;
@@ -2431,7 +2779,7 @@ func TestValidateGoAccessNginxRejectsExtraServerAccessLog(t *testing.T) {
 		t.Fatalf("NewNames() error = %v", err)
 	}
 	dashboardGuard := `if ($host != "abc.com") {
-            return 301 https://abc.com/_meshify/apps/example-app/goaccess;
+            return 301 https://abc.com/_lanpanel/apps/example-app/goaccess;
         }`
 	websocketGuard := `if ($host != "abc.com") {
             return 421;
@@ -2441,16 +2789,16 @@ func TestValidateGoAccessNginxRejectsExtraServerAccessLog(t *testing.T) {
 		http bool
 		want string
 	}{
-		{name: "http", http: true, want: "GoAccess HTTP server access_log directives must contain exactly one canonical access_log"},
-		{name: "https", want: "GoAccess HTTPS server access_log directives must contain exactly one canonical access_log"},
+		{name: "http", http: true, want: "GoAccess HTTP server contains unexpected access_log directive"},
+		{name: "https", want: "GoAccess HTTPS server contains unexpected access_log directive"},
 	} {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			_, httpBlock, httpsBlock := minimalGoAccessNginxText(names, dashboardGuard, websocketGuard)
 			if tt.http {
-				httpBlock = strings.Replace(httpBlock, "    location = /_meshify/apps/example-app/goaccess {", "    access_log\t/var/log/nginx/example-app.extra.log;\n\n    location = /_meshify/apps/example-app/goaccess {", 1)
+				httpBlock = strings.Replace(httpBlock, "    location = /_lanpanel/apps/example-app/goaccess {", "    access_log\t/var/log/nginx/example-app.extra.log;\n\n    location = /_lanpanel/apps/example-app/goaccess {", 1)
 			} else {
-				httpsBlock = strings.Replace(httpsBlock, "    location = /_meshify/apps/example-app/goaccess {", "    access_log\t/var/log/nginx/example-app.extra.log;\n\n    location = /_meshify/apps/example-app/goaccess {", 1)
+				httpsBlock = strings.Replace(httpsBlock, "    location = /_lanpanel/apps/example-app/goaccess {", "    access_log\t/var/log/nginx/example-app.extra.log;\n\n    location = /_lanpanel/apps/example-app/goaccess {", 1)
 			}
 			text := goAccessEnhancedLogFormatDirective(names) + "\n" + httpBlock + "\n" + httpsBlock
 
@@ -2474,7 +2822,7 @@ func TestValidateGoAccessNginxRequiresDirectWebSocketHTTP11(t *testing.T) {
 		t.Fatalf("NewNames() error = %v", err)
 	}
 	dashboardGuard := `if ($host != "abc.com") {
-            return 301 https://abc.com/_meshify/apps/example-app/goaccess;
+            return 301 https://abc.com/_lanpanel/apps/example-app/goaccess;
         }`
 	websocketGuard := `if ($host != "abc.com") {
             return 421;
@@ -2520,7 +2868,7 @@ func TestValidateGoAccessNginxIgnoresCommentedGoAccessDirectives(t *testing.T) {
 		t.Fatalf("NewNames() error = %v", err)
 	}
 	dashboardGuard := `if ($host != "abc.com") {
-            return 301 https://abc.com/_meshify/apps/example-app/goaccess;
+            return 301 https://abc.com/_lanpanel/apps/example-app/goaccess;
         }`
 	websocketGuard := `if ($host != "abc.com") {
             return 421;
@@ -2534,8 +2882,8 @@ func TestValidateGoAccessNginxIgnoresCommentedGoAccessDirectives(t *testing.T) {
 		{
 			name: "commented dashboard auth",
 			mutate: func(text string, httpBlock string, httpsBlock string) (string, string, string) {
-				old := `auth_basic "Meshify GoAccess";`
-				new := `# auth_basic "Meshify GoAccess";`
+				old := `auth_basic "Lanpanel GoAccess";`
+				new := `# auth_basic "Lanpanel GoAccess";`
 				return strings.Replace(text, old, new, 1), httpBlock, strings.Replace(httpsBlock, old, new, 1)
 			},
 			want: "GoAccess dashboard basic auth missing",
@@ -2586,6 +2934,15 @@ func TestValidateGoAccessNginxIgnoresCommentedGoAccessDirectives(t *testing.T) {
 			want: "GoAccess WebSocket Connection header missing",
 		},
 		{
+			name: "commented websocket forwarded host",
+			mutate: func(text string, httpBlock string, httpsBlock string) (string, string, string) {
+				old := "proxy_set_header X-Forwarded-Host $" + names.VarPrefix + "_validated_host;"
+				new := "# proxy_set_header X-Forwarded-Host $" + names.VarPrefix + "_validated_host;"
+				return strings.Replace(text, old, new, 1), httpBlock, strings.Replace(httpsBlock, old, new, 1)
+			},
+			want: "GoAccess WebSocket validated X-Forwarded-Host forwarding missing",
+		},
+		{
 			name: "commented websocket read timeout",
 			mutate: func(text string, httpBlock string, httpsBlock string) (string, string, string) {
 				old := "proxy_read_timeout 3600s;"
@@ -2628,7 +2985,7 @@ func TestValidateAppProxyLocationIgnoresGoAccessWebSocketDirectives(t *testing.T
 		t.Fatalf("NewNames() error = %v", err)
 	}
 	httpsBlock := `server {
-    location = /_meshify/apps/example-app/goaccess/ws {
+    location = /_lanpanel/apps/example-app/goaccess/ws {
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $example_app_connection_upgrade;
@@ -2640,7 +2997,10 @@ func TestValidateAppProxyLocationIgnoresGoAccessWebSocketDirectives(t *testing.T
         proxy_set_header Host $example_app_validated_host;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $example_app_connection_upgrade;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Host $example_app_validated_host;
+        proxy_set_header X-Forwarded-Proto $scheme;
         proxy_read_timeout 600s;
         proxy_send_timeout 600s;
     }
@@ -2651,7 +3011,7 @@ func TestValidateAppProxyLocationIgnoresGoAccessWebSocketDirectives(t *testing.T
 		t.Fatalf("valid app proxy errors = %v", errs)
 	}
 
-	broken := strings.Replace(httpsBlock, "        proxy_set_header Upgrade $http_upgrade;\n        proxy_set_header Connection $example_app_connection_upgrade;\n        proxy_set_header X-Forwarded-Host $example_app_validated_host;", "        # proxy_set_header Upgrade $http_upgrade;\n        proxy_set_header Connection $example_app_connection_upgrade;\n        proxy_set_header X-Forwarded-Host $example_app_validated_host;", 1)
+	broken := strings.Replace(httpsBlock, "        proxy_set_header Upgrade $http_upgrade;\n        proxy_set_header Connection $example_app_connection_upgrade;\n        proxy_set_header X-Real-IP $remote_addr;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n        proxy_set_header X-Forwarded-Host $example_app_validated_host;", "        # proxy_set_header Upgrade $http_upgrade;\n        proxy_set_header Connection $example_app_connection_upgrade;\n        proxy_set_header X-Real-IP $remote_addr;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n        proxy_set_header X-Forwarded-Host $example_app_validated_host;", 1)
 	errs = nil
 	validateAppProxyLocation(&errs, broken, cfg, names)
 	if !strings.Contains(strings.Join(errs, "; "), "HTTPS app WebSocket Upgrade header missing") {
@@ -2670,7 +3030,7 @@ func TestValidateGoAccessNginxRequiresFullEnhancedLogFormat(t *testing.T) {
 		t.Fatalf("NewNames() error = %v", err)
 	}
 	dashboardGuard := `if ($host != "abc.com") {
-            return 301 https://abc.com/_meshify/apps/example-app/goaccess;
+            return 301 https://abc.com/_lanpanel/apps/example-app/goaccess;
         }`
 	websocketGuard := `if ($host != "abc.com") {
             return 421;
@@ -2696,7 +3056,7 @@ func TestValidateGoAccessNginxRequiresConditionalPrimaryDomainGuards(t *testing.
 		t.Fatalf("NewNames() error = %v", err)
 	}
 	dashboardGuard := `if ($host != "abc.com") {
-            return 301 https://abc.com/_meshify/apps/example-app/goaccess;
+            return 301 https://abc.com/_lanpanel/apps/example-app/goaccess;
         }`
 	websocketGuard := `if ($host != "abc.com") {
             return 421;
@@ -2716,7 +3076,7 @@ func TestValidateGoAccessNginxRequiresConditionalPrimaryDomainGuards(t *testing.
 	}{
 		{
 			name:           "unconditional dashboard redirect",
-			dashboardGuard: `return 301 https://abc.com/_meshify/apps/example-app/goaccess;`,
+			dashboardGuard: `return 301 https://abc.com/_lanpanel/apps/example-app/goaccess;`,
 			websocketGuard: websocketGuard,
 			want:           "GoAccess dashboard primary-domain redirect guard missing",
 		},
@@ -2729,7 +3089,7 @@ func TestValidateGoAccessNginxRequiresConditionalPrimaryDomainGuards(t *testing.
 		{
 			name: "commented dashboard guard opener",
 			dashboardGuard: `# if ($host != "abc.com") {
-            return 301 https://abc.com/_meshify/apps/example-app/goaccess;
+            return 301 https://abc.com/_lanpanel/apps/example-app/goaccess;
         }`,
 			websocketGuard: websocketGuard,
 			want:           "GoAccess dashboard primary-domain redirect guard missing",
@@ -2768,13 +3128,13 @@ func TestValidateGoAccessNginxDisabledDoesNotRejectAppNameOnly(t *testing.T) {
 		t.Fatalf("NewNames() error = %v", err)
 	}
 	var errs []string
-	validateGoAccessNginx(&errs, "# Meshify-managed: app.name=goaccess-app\nserver_name abc.com;", "", "", cfg, names)
+	validateGoAccessNginx(&errs, "# Lanpanel-managed: app.name=goaccess-app\nserver_name abc.com;", "", "", cfg, names)
 	if len(errs) > 0 {
 		t.Fatalf("disabled GoAccess app-name-only errors = %v", errs)
 	}
 
 	staticLocation := `server {
-    location = /_meshify/apps/example-app/goaccess {
+    location = /_lanpanel/apps/example-app/goaccess {
         alias /opt/goaccess-app/web/static/goaccess.html;
     }
 }`
@@ -2783,7 +3143,7 @@ func TestValidateGoAccessNginxDisabledDoesNotRejectAppNameOnly(t *testing.T) {
 		t.Fatalf("disabled GoAccess static location errors = %v", errs)
 	}
 
-	validateGoAccessNginx(&errs, "location = /_meshify/apps/example-app/goaccess {\n    auth_basic \"Meshify GoAccess\";\n}", "", "", cfg, names)
+	validateGoAccessNginx(&errs, "location = /_lanpanel/apps/example-app/goaccess {\n    auth_basic \"Lanpanel GoAccess\";\n}", "", "", cfg, names)
 	if !strings.Contains(strings.Join(errs, "; "), "GoAccess basic auth must be absent") {
 		t.Fatalf("errors = %v, want disabled GoAccess auth refusal", errs)
 	}
@@ -2801,7 +3161,7 @@ func TestManagedMarkerRejectsForeignFiles(t *testing.T) {
 	if err := CheckManagedContent("example-app", []byte("# "+ManagedMarker("example-app")+"\n# "+ManagedMarker("other-app"))); err == nil {
 		t.Fatal("CheckManagedContent() error = nil, want mixed marker failure")
 	}
-	if err := CheckManagedContent("example-app", []byte("# Meshify-managed: app.name=other")); err == nil {
+	if err := CheckManagedContent("example-app", []byte("# Lanpanel-managed: app.name=other")); err == nil {
 		t.Fatal("CheckManagedContent() error = nil, want foreign marker failure")
 	}
 	if err := CheckManagedContent("example-app", []byte("plain config")); err == nil {
@@ -2865,7 +3225,7 @@ func TestGuardEnabledSiteCommandProtectsForeignEnabledPath(t *testing.T) {
 				}
 			},
 			wantErr: true,
-			want:    "not a Meshify-managed app symlink",
+			want:    "not a Lanpanel-managed app symlink",
 		},
 	}
 	for _, tt := range tests {
@@ -2875,7 +3235,7 @@ func TestGuardEnabledSiteCommandProtectsForeignEnabledPath(t *testing.T) {
 				t.Fatalf("Remove() error = %v", err)
 			}
 			tt.prepare(t)
-			cmd := exec.Command("sh", "-c", script, "meshify-app-nginx-enabled-guard", enabled, available)
+			cmd := exec.Command("sh", "-c", script, "lanpanel-app-nginx-enabled-guard", enabled, available)
 			output, err := cmd.CombinedOutput()
 			if tt.wantErr && err == nil {
 				t.Fatalf("script error = nil, want failure; output:\n%s", output)
@@ -2893,7 +3253,7 @@ func TestGuardEnabledSiteCommandProtectsForeignEnabledPath(t *testing.T) {
 func runServiceAccessScript(t *testing.T, script string, binDir string, scenario string) (string, error) {
 	t.Helper()
 
-	cmd := exec.Command("sh", "-c", script, "meshify-app-service-access", "example-app", "/opt/example-app/example-app", "/opt/example-app")
+	cmd := exec.Command("sh", "-c", script, "lanpanel-app-service-access", "example-app", "/opt/example-app/example-app", "/opt/example-app")
 	cmd.Env = append(os.Environ(), "PATH="+binDir+":"+os.Getenv("PATH"), "SCENARIO="+scenario)
 	output, err := cmd.CombinedOutput()
 	return string(output), err
@@ -2949,7 +3309,7 @@ exit 0
 		path = dir + ":" + path
 	}
 
-	cmd := exec.Command("sh", "-c", script, "meshify-app-goaccess-auth-file", authFile, "www-data")
+	cmd := exec.Command("sh", "-c", script, "lanpanel-app-goaccess-auth-file", authFile, "www-data")
 	cmd.Env = append(os.Environ(),
 		"PATH="+path,
 		"SCENARIO="+scenario,
@@ -2992,7 +3352,7 @@ fi
 exit 0
 `)
 
-	cmd := exec.Command("sh", "-c", script, "meshify-app-goaccess-log-readable", "meshify-goaccess-example-app", logFile)
+	cmd := exec.Command("sh", "-c", script, "lanpanel-app-goaccess-log-readable", "lanpanel-goaccess-example-app", logFile)
 	cmd.Env = []string{
 		"PATH=" + dir + ":/usr/bin:/bin",
 		"SCENARIO=" + scenario,
@@ -3070,7 +3430,7 @@ func runGoAccessRuntimeAccessScript(t *testing.T, command host.Command, scenario
 	}
 	writeExecutable(t, filepath.Join(dir, "getent"), `#!/bin/sh
 case "$1:$2" in
-  passwd:meshify-goaccess-example-app) echo "meshify-goaccess-example-app:x:998:998::/var/lib/example-app/goaccess:/usr/sbin/nologin"; exit 0 ;;
+  passwd:lanpanel-goaccess-example-app) echo "lanpanel-goaccess-example-app:x:998:998::/var/lib/example-app/goaccess:/usr/sbin/nologin"; exit 0 ;;
   passwd:www-data) echo "www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin"; exit 0 ;;
 esac
 exit 2
@@ -3084,12 +3444,12 @@ fi
 mode=$2
 path=$3
 case "$SCENARIO:$user:$mode:$path" in
-  config-unreadable:meshify-goaccess-example-app:-r:"$GOACCESS_CONFIG") exit 1 ;;
-  report-dir-writable:meshify-goaccess-example-app:-w:"$GOACCESS_REPORT_DIR") exit 0 ;;
-  *:meshify-goaccess-example-app:-w:"$GOACCESS_REPORT_DIR") exit 1 ;;
+  config-unreadable:lanpanel-goaccess-example-app:-r:"$GOACCESS_CONFIG") exit 1 ;;
+  report-dir-writable:lanpanel-goaccess-example-app:-w:"$GOACCESS_REPORT_DIR") exit 0 ;;
+  *:lanpanel-goaccess-example-app:-w:"$GOACCESS_REPORT_DIR") exit 1 ;;
   report-dir-unreadable-nginx:www-data:-r:"$GOACCESS_REPORT_DIR") exit 1 ;;
-  db-unwritable:meshify-goaccess-example-app:-w:"$GOACCESS_DB_PATH") exit 1 ;;
-  report-file-unwritable:meshify-goaccess-example-app:-w:"$GOACCESS_REPORT_FILE") exit 1 ;;
+  db-unwritable:lanpanel-goaccess-example-app:-w:"$GOACCESS_DB_PATH") exit 1 ;;
+  report-file-unwritable:lanpanel-goaccess-example-app:-w:"$GOACCESS_REPORT_FILE") exit 1 ;;
   report-file-unreadable:www-data:-r:"$GOACCESS_REPORT_FILE") exit 1 ;;
 esac
 exit 0
@@ -3118,7 +3478,7 @@ case "$1:$2:$3" in
     if [ "$SCENARIO" = "db-wrong-owner" ]; then
       echo root:root
     else
-      echo meshify-goaccess-example-app:meshify-goaccess-example-app
+      echo lanpanel-goaccess-example-app:lanpanel-goaccess-example-app
     fi
     exit 0
     ;;
@@ -3126,7 +3486,7 @@ case "$1:$2:$3" in
     if [ "$SCENARIO" = "report-file-wrong-owner" ]; then
       echo root:root
     else
-      echo meshify-goaccess-example-app:www-data
+      echo lanpanel-goaccess-example-app:www-data
     fi
     exit 0
     ;;
@@ -3210,7 +3570,7 @@ esac
 exit 0
 `)
 
-	cmd := exec.Command("sh", "-c", script, "meshify-app-goaccess-log-guard", names.AppName, names.GoAccessLogDir, names.GoAccessLogDirMarkerPath)
+	cmd := exec.Command("sh", "-c", script, "lanpanel-app-goaccess-log-guard", names.AppName, names.GoAccessLogDir, names.GoAccessLogDirMarkerPath)
 	cmd.Env = append(os.Environ(),
 		"PATH="+dir+":/usr/bin:/bin",
 		"SCENARIO="+scenario,
@@ -3251,7 +3611,7 @@ fi
 exec /usr/bin/install "$@"
 `)
 
-	cmd := exec.Command("sh", "-c", script, "meshify-app-goaccess-log-dir", names.AppName, names.GoAccessLogDir, names.GoAccessLogDirMarkerPath, names.GoAccessCanonicalAccessLogPath, names.GoAccessSystemGroup)
+	cmd := exec.Command("sh", "-c", script, "lanpanel-app-goaccess-log-dir", names.AppName, names.GoAccessLogDir, names.GoAccessLogDirMarkerPath, names.GoAccessCanonicalAccessLogPath, names.GoAccessSystemGroup)
 	cmd.Env = append(os.Environ(),
 		"PATH="+binDir+":/usr/bin:/bin",
 		"GOACCESS_LOG_DIR="+names.GoAccessLogDir,
@@ -3277,7 +3637,7 @@ exit 2
 	writeExecutable(t, filepath.Join(dir, "groupadd"), "#!/bin/sh\necho unexpected groupadd >&2\nexit 99\n")
 	writeExecutable(t, filepath.Join(dir, "useradd"), "#!/bin/sh\necho unexpected useradd >&2\nexit 99\n")
 
-	cmd := exec.Command("sh", "-c", script, "meshify-app-user-guard", "example-app", "/var/lib/example-app")
+	cmd := exec.Command("sh", "-c", script, "lanpanel-app-user-guard", "example-app", "/var/lib/example-app")
 	cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "SCENARIO="+scenario)
 	output, err := cmd.CombinedOutput()
 	return string(output), err
@@ -3309,7 +3669,7 @@ exit 2
 	writeExecutable(t, filepath.Join(dir, "groupadd"), "#!/bin/sh\nexit 0\n")
 	writeExecutable(t, filepath.Join(dir, "useradd"), "#!/bin/sh\nexit 0\n")
 
-	cmd := exec.Command("sh", "-c", script, "meshify-app-user", "example-app", "/var/lib/example-app")
+	cmd := exec.Command("sh", "-c", script, "lanpanel-app-user", "example-app", "/var/lib/example-app")
 	cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "SCENARIO="+scenario)
 	output, err := cmd.CombinedOutput()
 	return string(output), err
@@ -3359,7 +3719,13 @@ fi
 exit 64
 `)
 
-	cmd := exec.Command("sh", append([]string{"-c", command.Args[1]}, command.Args[2:]...)...)
+	args := append([]string{"-c", command.Args[1]}, command.Args[2:]...)
+	for i := range args {
+		if args[i] == NginxBinaryPath {
+			args[i] = filepath.Join(binDir, "nginx")
+		}
+	}
+	cmd := exec.Command("sh", args...)
 	cmd.Env = append(os.Environ(), "PATH="+binDir+":"+os.Getenv("PATH"), "NGINX_DUMP_PATH="+dumpPath)
 	return cmd.CombinedOutput()
 }
@@ -3375,12 +3741,12 @@ func minimalGoAccessNginxText(names Names, dashboardGuard string, websocketGuard
     listen 80;
     access_log ` + names.GoAccessCanonicalAccessLogPath + ` ` + names.GoAccessNginxLogFormatName + `;
 
-    location = /_meshify/apps/example-app/goaccess {
+    location = /_lanpanel/apps/example-app/goaccess {
         access_log off;
-        return 301 https://abc.com/_meshify/apps/example-app/goaccess;
+        return 301 https://abc.com/_lanpanel/apps/example-app/goaccess;
     }
 
-    location = /_meshify/apps/example-app/goaccess/ws {
+    location = /_lanpanel/apps/example-app/goaccess/ws {
         access_log off;
         return 421;
     }
@@ -3393,26 +3759,30 @@ func minimalGoAccessNginxText(names Names, dashboardGuard string, websocketGuard
     listen 443 ssl;
     access_log ` + names.GoAccessCanonicalAccessLogPath + ` ` + names.GoAccessNginxLogFormatName + `;
 
-	    location = /_meshify/apps/example-app/goaccess {
+	    location = /_lanpanel/apps/example-app/goaccess {
 	        ` + dashboardGuard + `
 	        alias ` + names.GoAccessReportPath + `;
 	        default_type text/html;
 	        disable_symlinks on;
 	        satisfy all;
-	        auth_basic "Meshify GoAccess";
+	        auth_basic "Lanpanel GoAccess";
 	        auth_basic_user_file /etc/example-app/goaccess.htpasswd;
 	        access_log off;
     }
 
-    location = /_meshify/apps/example-app/goaccess/ws {
+    location = /_lanpanel/apps/example-app/goaccess/ws {
         ` + websocketGuard + `
         proxy_pass http://` + names.GoAccessWebSocketListen + `;
         proxy_http_version 1.1;
 	        proxy_set_header Upgrade $http_upgrade;
 	        proxy_set_header Connection $` + names.VarPrefix + `_connection_upgrade;
+	        proxy_set_header X-Real-IP $remote_addr;
+	        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+	        proxy_set_header X-Forwarded-Host $` + names.VarPrefix + `_validated_host;
+	        proxy_set_header X-Forwarded-Proto $scheme;
 	        proxy_read_timeout 3600s;
 	        satisfy all;
-	        auth_basic "Meshify GoAccess";
+	        auth_basic "Lanpanel GoAccess";
 	        auth_basic_user_file /etc/example-app/goaccess.htpasswd;
 	        access_log off;
     }

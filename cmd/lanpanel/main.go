@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
-	"meshify/internal/cli"
+	"lanpanel/internal/cli"
 	"os"
 )
 

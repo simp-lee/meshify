@@ -1,8 +1,8 @@
 package state
 
 import (
-	"meshify/internal/assets"
-	"meshify/internal/workflow"
+	"lanpanel/internal/assets"
+	"lanpanel/internal/workflow"
 	"os"
 	"path/filepath"
 	"testing"
@@ -60,7 +60,7 @@ func TestStoreSaveLoadRoundTrip(t *testing.T) {
 		Operation:    "writing /etc/headscale/config.yaml",
 		Impact:       "deploy cannot continue until runtime config is installed",
 		Remediation:  []string{"Check filesystem permissions and rerun deploy."},
-		RetryCommand: "meshify deploy --config meshify.yaml",
+		RetryCommand: "lanpanel deploy --config lanpanel.yaml",
 	}.Snapshot())
 
 	if err := store.Save(checkpoint); err != nil {
@@ -95,7 +95,7 @@ func TestStoreSaveLoadRoundTrip(t *testing.T) {
 	if len(loaded.LastFailure.Remediation) != 1 || loaded.LastFailure.Remediation[0] != "Check filesystem permissions and rerun deploy." {
 		t.Fatalf("LastFailure.Remediation = %v, want persisted remediation", loaded.LastFailure.Remediation)
 	}
-	if loaded.LastFailure.RetryCommand != "meshify deploy --config meshify.yaml" {
+	if loaded.LastFailure.RetryCommand != "lanpanel deploy --config lanpanel.yaml" {
 		t.Fatalf("LastFailure.RetryCommand = %q, want persisted retry command", loaded.LastFailure.RetryCommand)
 	}
 	if loaded.UpdatedAt.IsZero() {

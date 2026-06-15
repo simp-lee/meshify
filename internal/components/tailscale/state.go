@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-const MarkerPath = "/var/lib/meshify/tailscale-client.json"
+const MarkerPath = "/var/lib/lanpanel/tailscale-client.json"
 
 type Status struct {
 	BackendState string
@@ -83,7 +83,7 @@ func ParseMarker(data []byte) (Marker, error) {
 func (marker Marker) Matches(loginServer string, hostname string) bool {
 	requestedHostname := strings.TrimSpace(hostname)
 	hostnameMatches := requestedHostname == "" || marker.Hostname == requestedHostname
-	return marker.ManagedBy == "meshify" &&
+	return marker.ManagedBy == "lanpanel" &&
 		normalizeControlURL(marker.LoginServer) == normalizeControlURL(loginServer) &&
 		hostnameMatches &&
 		!marker.AcceptDNS &&
@@ -98,11 +98,11 @@ func NewMarker(loginServer string, hostname string) Marker {
 		AcceptRoutes: false,
 		ShieldsUp:    true,
 		Hostname:     strings.TrimSpace(hostname),
-		ManagedBy:    "meshify",
+		ManagedBy:    "lanpanel",
 	}
 }
 
-func (prefs Prefs) MatchesMeshifyPolicy() bool {
+func (prefs Prefs) MatchesLanpanelPolicy() bool {
 	return !prefs.RouteAll && !prefs.CorpDNS && prefs.ShieldsUp
 }
 

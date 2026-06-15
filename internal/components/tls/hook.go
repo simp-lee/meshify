@@ -36,7 +36,7 @@ func ValidateReloadHook(content []byte) error {
 		{text: `: "${LEGO_HOOK_CERT_NAME:?}"`, label: "reload hook LEGO_HOOK_CERT_NAME guard"},
 		{text: `: "${LEGO_HOOK_CERT_PATH:?}"`, label: "reload hook LEGO_HOOK_CERT_PATH guard"},
 		{text: `: "${LEGO_HOOK_CERT_KEY_PATH:?}"`, label: "reload hook LEGO_HOOK_CERT_KEY_PATH guard"},
-		{text: `target_dir="/etc/meshify/tls/$LEGO_HOOK_CERT_NAME"`, label: "reload hook stable TLS target directory"},
+		{text: `target_dir="/etc/lanpanel/tls/$LEGO_HOOK_CERT_NAME"`, label: "reload hook stable TLS target directory"},
 		{text: `install -d -m 0755 "$target_dir"`, label: "reload hook stable TLS directory install"},
 		{text: `install -m 0644 "$LEGO_HOOK_CERT_PATH" "$target_dir/fullchain.pem"`, label: "reload hook fullchain install"},
 		{text: `install -m 0600 "$LEGO_HOOK_CERT_KEY_PATH" "$target_dir/privkey.pem"`, label: "reload hook private key install"},

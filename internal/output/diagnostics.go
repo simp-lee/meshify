@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"meshify/internal/preflight"
+	"lanpanel/internal/preflight"
 	"strings"
 )
 
@@ -57,7 +57,7 @@ func writePreflightHuman(writer io.Writer, envelope diagnosticsEnvelope) error {
 	if command == "" {
 		command = "preflight"
 	}
-	if _, err := fmt.Fprintf(writer, "meshify %s: %s\n", command, envelope.Summary); err != nil {
+	if _, err := fmt.Fprintf(writer, "lanpanel %s: %s\n", command, envelope.Summary); err != nil {
 		return err
 	}
 

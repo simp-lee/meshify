@@ -2,14 +2,14 @@ package appconfig
 
 import (
 	"fmt"
-	"meshify/internal/assets"
+	"lanpanel/internal/assets"
 	"os"
 	"path/filepath"
 
 	"gopkg.in/yaml.v3"
 )
 
-const exampleAssetPath = "config/meshify-app.yaml.example"
+const exampleAssetPath = "config/lanpanel-app.yaml.example"
 
 func (c Config) ExportYAML() ([]byte, error) {
 	if err := c.Validate(); err != nil {

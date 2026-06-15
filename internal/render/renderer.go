@@ -3,9 +3,9 @@ package render
 import (
 	"bytes"
 	"fmt"
-	"meshify/internal/acme"
-	"meshify/internal/assets"
-	"meshify/internal/config"
+	"lanpanel/internal/acme"
+	"lanpanel/internal/assets"
+	"lanpanel/internal/config"
 	"net/url"
 	"strings"
 	"text/template"

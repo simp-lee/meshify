@@ -4,9 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"meshify/internal/config"
-	"meshify/internal/output"
-	"meshify/internal/workflow"
+	"lanpanel/internal/config"
+	"lanpanel/internal/output"
+	"lanpanel/internal/workflow"
 	"os"
 )
 
@@ -23,7 +23,7 @@ func runInit(ctx context, args []string) error {
 	options := sharedOptions{configPath: DefaultConfigPath, formatValue: string(output.FormatHuman)}
 	advanced := false
 	example := false
-	options.bind(flagSet, "Path to create the meshify config file.")
+	options.bind(flagSet, "Path to create the lanpanel config file.")
 	flagSet.BoolVar(&advanced, "advanced", false, "Prompt for advanced settings too.")
 	flagSet.BoolVar(&example, "example", false, "Write the example template without guided prompts.")
 
@@ -96,10 +96,10 @@ func writeInitHelp(stdout io.Writer) error {
 		"Generate a guided config or write the example template.",
 		"",
 		"Usage:",
-		"  meshify init [--config path] [--format human|json] [--advanced] [--example]",
+		"  lanpanel init [--config path] [--format human|json] [--advanced] [--example]",
 		"",
 		"Flags:",
-		"  --config string   Path to create the meshify config file.",
+		"  --config string   Path to create the lanpanel config file.",
 		"  --format string   Output format: human | json",
 		"  --advanced        Prompt for advanced settings too.",
 		"  --example         Write the example template without guided prompts.",

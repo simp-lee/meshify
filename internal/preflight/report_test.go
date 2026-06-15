@@ -1,7 +1,7 @@
 package preflight
 
 import (
-	"meshify/internal/config"
+	"lanpanel/internal/config"
 	"strings"
 	"testing"
 )
@@ -68,7 +68,7 @@ func TestBuildReportAllowsDigitalOceanDNS01OnDebian13(t *testing.T) {
 	cfg := config.ExampleConfig()
 	cfg.Default.ACMEChallenge = config.ACMEChallengeDNS01
 	cfg.Advanced.DNS01.Provider = "digitalocean"
-	cfg.Advanced.DNS01.EnvFile = "/etc/meshify/dns01/digitalocean.env"
+	cfg.Advanced.DNS01.EnvFile = "/etc/lanpanel/dns01/digitalocean.env"
 
 	report := BuildReport(cfg, Inputs{
 		Permissions: PermissionState{User: "deployer", SudoWorks: true},

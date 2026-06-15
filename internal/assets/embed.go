@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"io/fs"
 
-	deployembed "meshify"
+	deployembed "lanpanel"
 )
 
 var embeddedFS = mustSubFS(deployembed.Files, "deploy")

@@ -3,14 +3,14 @@ package verify
 import (
 	"bytes"
 	"fmt"
-	"meshify/internal/assets"
-	"meshify/internal/components/headscale"
-	"meshify/internal/components/nginx"
-	"meshify/internal/config"
-	"meshify/internal/render"
+	"lanpanel/internal/assets"
+	"lanpanel/internal/components/headscale"
+	"lanpanel/internal/components/nginx"
+	"lanpanel/internal/config"
+	"lanpanel/internal/render"
 	"strings"
 
-	tlscomponent "meshify/internal/components/tls"
+	tlscomponent "lanpanel/internal/components/tls"
 )
 
 const MinimumTailscaleClientVersion = "1.74.0"
@@ -90,21 +90,21 @@ func StaticReport(cfg config.Config, staged []render.StagedFile) Report {
 		add("nginx-site", nginx.ValidateRenderedSite(site, nginxSite), "Nginx site preserves server_name isolation, fullchain TLS and DERP WebSocket proxy semantics.")
 	}
 
-	hook, ok := stagedContent(staged, "templates/usr/local/lib/meshify/hooks/install-lego-cert-and-reload-nginx.sh")
+	hook, ok := stagedContent(staged, "templates/usr/local/lib/lanpanel/hooks/install-lego-cert-and-reload-nginx.sh")
 	if !ok {
 		add("certificate-hook", fmt.Errorf("lego certificate install hook is missing"), "")
 	} else {
 		add("certificate-hook", tlscomponent.ValidateReloadHook(hook), "lego deploy hook installs the issued certificate and reloads Nginx.")
 	}
 
-	renewService, ok := stagedContent(staged, "templates/etc/systemd/system/meshify-lego-renew.service.tmpl")
+	renewService, ok := stagedContent(staged, "templates/etc/systemd/system/lanpanel-lego-renew.service.tmpl")
 	if !ok {
 		add("renewal-service", fmt.Errorf("lego renewal service is missing"), "")
 	} else {
-		add("renewal-service", validateRenewalServiceForConfig(cfg, renewService), "lego renewal service runs v5 migrate gate and lego run --deploy-hook against meshify-managed certificate paths.")
+		add("renewal-service", validateRenewalServiceForConfig(cfg, renewService), "lego renewal service runs v5 migrate gate and lego run --deploy-hook against lanpanel-managed certificate paths.")
 	}
 
-	renewTimer, ok := stagedContent(staged, "templates/etc/systemd/system/meshify-lego-renew.timer")
+	renewTimer, ok := stagedContent(staged, "templates/etc/systemd/system/lanpanel-lego-renew.timer")
 	if !ok {
 		add("renewal-timer", fmt.Errorf("lego renewal timer is missing"), "")
 	} else {

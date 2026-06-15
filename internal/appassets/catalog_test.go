@@ -1,8 +1,8 @@
 package appassets
 
 import (
-	"meshify/internal/appconfig"
-	"meshify/internal/assets"
+	"lanpanel/internal/appconfig"
+	"lanpanel/internal/assets"
 	"slices"
 	"strings"
 	"testing"
@@ -76,7 +76,7 @@ func TestRuntimeCatalogIncludesGoAccessAssetsOnlyWhenEnabled(t *testing.T) {
 	}
 
 	explicit := enabled
-	explicit.Nginx.AccessLog = "/var/log/meshify/custom/example-app.access.log"
+	explicit.Nginx.AccessLog = "/var/log/lanpanel/custom/example-app.access.log"
 	explicitCatalog, err := RuntimeCatalog(explicit)
 	if err != nil {
 		t.Fatalf("RuntimeCatalog(explicit) error = %v", err)

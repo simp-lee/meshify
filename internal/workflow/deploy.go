@@ -2,7 +2,7 @@ package workflow
 
 import (
 	"fmt"
-	"meshify/internal/config"
+	"lanpanel/internal/config"
 )
 
 type DeployStep struct {

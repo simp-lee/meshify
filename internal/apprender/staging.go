@@ -3,9 +3,9 @@ package apprender
 import (
 	"fmt"
 	"io/fs"
-	"meshify/internal/appassets"
-	"meshify/internal/appconfig"
-	"meshify/internal/assets"
+	"lanpanel/internal/appassets"
+	"lanpanel/internal/appconfig"
+	"lanpanel/internal/assets"
 )
 
 type StagedFile struct {

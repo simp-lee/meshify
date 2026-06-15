@@ -2,20 +2,20 @@ package tls
 
 import (
 	"fmt"
-	"meshify/internal/acme"
-	"meshify/internal/config"
+	"lanpanel/internal/acme"
+	"lanpanel/internal/config"
 	"strings"
 
-	legocomponent "meshify/internal/components/lego"
+	legocomponent "lanpanel/internal/components/lego"
 )
 
 const (
 	LegoBinaryPath = legocomponent.BinaryPath
-	LegoDataPath   = "/var/lib/meshify/lego"
-	WebrootPath    = "/var/lib/meshify/acme-challenges"
-	RunHookPath    = "/usr/local/lib/meshify/hooks/install-lego-cert-and-reload-nginx.sh"
-	RenewService   = "meshify-lego-renew.service"
-	RenewTimer     = "meshify-lego-renew.timer"
+	LegoDataPath   = "/var/lib/lanpanel/lego"
+	WebrootPath    = "/var/lib/lanpanel/acme-challenges"
+	RunHookPath    = "/usr/local/lib/lanpanel/hooks/install-lego-cert-and-reload-nginx.sh"
+	RenewService   = "lanpanel-lego-renew.service"
+	RenewTimer     = "lanpanel-lego-renew.timer"
 )
 
 type ChallengePlan struct {
@@ -48,7 +48,7 @@ func NewChallengePlan(cfg config.Config) (ChallengePlan, error) {
 }
 
 func StableTLSDir(serverName string) string {
-	return "/etc/meshify/tls/" + strings.TrimSpace(serverName)
+	return "/etc/lanpanel/tls/" + strings.TrimSpace(serverName)
 }
 
 func StableFullchainPath(serverName string) string {

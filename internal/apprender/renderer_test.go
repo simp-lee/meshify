@@ -1,8 +1,8 @@
 package apprender
 
 import (
-	"meshify/internal/appconfig"
-	"meshify/internal/components/appsvc"
+	"lanpanel/internal/appconfig"
+	"lanpanel/internal/components/appsvc"
 	"os"
 	"os/exec"
 	"regexp"
@@ -29,7 +29,7 @@ func TestStageRuntimeRendersListenModeAssets(t *testing.T) {
 	staticAccessLog := false
 	proxyBuffering := false
 	cfg.Nginx.ClientMaxBodySize = "100m"
-	cfg.Nginx.AccessLog = "/var/log/meshify/custom/example-app.access.log"
+	cfg.Nginx.AccessLog = "/var/log/lanpanel/custom/example-app.access.log"
 	cfg.Nginx.ErrorLog = "/var/log/nginx/example-app.error.log"
 	cfg.Nginx.Proxy.ConnectTimeout = "30s"
 	cfg.Nginx.Proxy.ReadTimeout = "600s"
@@ -94,7 +94,7 @@ func TestStageRuntimeRendersListenModeAssets(t *testing.T) {
 	}
 	nginxText := string(nginxContent)
 	for _, want := range []string{
-		"access_log /var/log/meshify/custom/example-app.access.log;",
+		"access_log /var/log/lanpanel/custom/example-app.access.log;",
 		"error_log /var/log/nginx/example-app.error.log;",
 		"http2 on;",
 		"client_max_body_size 100m;",
@@ -124,9 +124,9 @@ func TestStageRuntimeRendersListenModeAssets(t *testing.T) {
 	}
 	hookText := string(hookContent)
 	for _, want := range []string{
-		`marker="/etc/example-app/tls/abc.com/.meshify-managed"`,
-		`expected_marker="Meshify-managed: app.name=example-app"`,
-		"certificate target is not owned by Meshify",
+		`marker="/etc/example-app/tls/abc.com/.lanpanel-managed"`,
+		`expected_marker="Lanpanel-managed: app.name=example-app"`,
+		"certificate target is not owned by Lanpanel",
 	} {
 		if !strings.Contains(hookText, want) {
 			t.Fatalf("hook content missing %q\n%s", want, hookText)
@@ -135,6 +135,197 @@ func TestStageRuntimeRendersListenModeAssets(t *testing.T) {
 	serviceText := string(serviceContent)
 	if !strings.Contains(serviceText, "EnvironmentFile=/opt/example-app/web.env") {
 		t.Fatalf("service content missing service env file\n%s", serviceText)
+	}
+}
+
+func TestStageRuntimeAllowsRealIPDirectiveNamesInStaticAliasWhenRealIPDisabled(t *testing.T) {
+	t.Parallel()
+
+	cfg := listenConfig()
+	cfg.Nginx.StaticLocations = []appconfig.NginxStaticLocationConfig{{
+		Path:  "/static/",
+		Alias: "/opt/example-app/web/real_ip_header/set_real_ip_from/",
+	}}
+	staged, err := StageRuntime(cfg)
+	if err != nil {
+		t.Fatalf("StageRuntime() error = %v", err)
+	}
+	var nginxContent []byte
+	for _, file := range staged {
+		if file.SourcePath == "templates/app/nginx.conf.tmpl" {
+			nginxContent = file.Content
+			break
+		}
+	}
+	if len(nginxContent) == 0 {
+		t.Fatal("nginx content not staged")
+	}
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+	if err := appsvc.ValidateRenderedNginx(cfg, names, nginxContent); err != nil {
+		t.Fatalf("ValidateRenderedNginx() error = %v\n%s", err, nginxContent)
+	}
+}
+
+func TestStageRuntimeRendersRealIPScopedDirectivesAndSanitizedHeaders(t *testing.T) {
+	t.Parallel()
+
+	enabled := true
+	cfg := listenConfig()
+	cfg.App.ACMEChallenge = appconfig.ACMEChallengeDNS01
+	cfg.DNS01.Provider = "tencentcloud"
+	cfg.DNS01.EnvFile = "/etc/lanpanel/dns/tencentcloud.env"
+	cfg.Nginx.GoAccess.Enabled = true
+	cfg.Nginx.GoAccess.AuthBasicUserFile = "/etc/example-app/goaccess.htpasswd"
+	cfg.Nginx.RealIPProfile = "edgeone-prod"
+	cfg.RealIP.Profiles = map[string]appconfig.RealIPProfileConfig{
+		"edgeone-prod": {
+			Enabled:  &enabled,
+			Provider: appconfig.RealIPProviderEdgeOne,
+			EdgeOne: appconfig.RealIPEdgeOneConfig{
+				ZoneID:  "zone-2abcDEF123",
+				EnvFile: "/etc/lanpanel/realip/edgeone-prod.env",
+			},
+		},
+	}
+	staged, err := StageRuntime(cfg)
+	if err != nil {
+		t.Fatalf("StageRuntime() error = %v", err)
+	}
+	contentBySource := map[string]string{}
+	for _, file := range staged {
+		contentBySource[file.SourcePath] = string(file.Content)
+	}
+	nginxText := contentBySource["templates/app/nginx.conf.tmpl"]
+	if nginxText == "" {
+		t.Fatal("nginx content not staged")
+	}
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+	if err := appsvc.ValidateRenderedNginx(cfg, names, []byte(nginxText)); err != nil {
+		t.Fatalf("ValidateRenderedNginx() error = %v\n%s", err, nginxText)
+	}
+	for _, want := range []string{
+		`log_format lanpanel_app_example_app_realip_rejection '$time_iso8601 app=example-app profile=edgeone-prod provider=edgeone reason="$example_app_realip_reject_reason" source="$example_app_realip_original_source" remote="$remote_addr" host="$host" status=$status';`,
+		"map $realip_remote_addr $example_app_realip_original_source {",
+		`"" $remote_addr;`,
+		"geo $example_app_realip_original_source $example_app_realip_source_trusted {",
+		"include /etc/nginx/lanpanel/realip/edgeone-prod/trusted-cidrs.conf;",
+		"map $http_eo_connecting_ip $example_app_eo_connecting_ip_is_ip {",
+		`"~^(?:(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})\.){3}(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})$" 1;`,
+		`"~*^(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}$" 1;`,
+		`"::" 1;`,
+		"geo $http_eo_connecting_ip $example_app_eo_connecting_ip_is_public {",
+		"10.0.0.0/8 0;",
+		"127.0.0.0/8 0;",
+		"::1/128 0;",
+		"::ffff:0:0/96 0;",
+		"fc00::/7 0;",
+		`map "$example_app_realip_source_trusted:$example_app_eo_connecting_ip_is_ip:$example_app_eo_connecting_ip_is_public:$http_eo_connecting_ip" $example_app_realip_reject_reason {`,
+		`~^0:[01]:[01]: "untrusted_source_ip";`,
+		`~^1:[01]:[01]:.*,.* "duplicate_eo_connecting_ip";`,
+		`~^1:0:[01]: "missing_or_invalid_eo_connecting_ip";`,
+		`~*^1:1:[01]:::ffff: "missing_or_invalid_eo_connecting_ip";`,
+		`~^1:1:0: "missing_or_invalid_eo_connecting_ip";`,
+		"map $example_app_realip_reject_reason $example_app_realip_reject_log {",
+		`"" 0;`,
+		"include /etc/nginx/lanpanel/realip/edgeone-prod/active.conf;",
+		"real_ip_header EO-Connecting-IP;",
+		"error_page 418 = @example_app_realip_reject;",
+		"location @example_app_realip_reject {\n        internal;\n        access_log /var/log/nginx/example-app-realip-rejections.log lanpanel_app_example_app_realip_rejection if=$example_app_realip_reject_log;",
+		"return 418;",
+		"access_log /var/log/nginx/example-app-realip-rejections.log lanpanel_app_example_app_realip_rejection if=$example_app_realip_reject_log;",
+		`return 400 "lanpanel realip rejected: $example_app_realip_reject_reason\n";`,
+		"proxy_set_header X-Real-IP $remote_addr;",
+		"proxy_set_header X-Forwarded-For $remote_addr;",
+		"proxy_set_header X-Forwarded-Host $example_app_validated_host;",
+		`proxy_set_header Forwarded "";`,
+		`proxy_set_header X-Original-Forwarded-For "";`,
+		`proxy_set_header X-Client-IP "";`,
+		`proxy_set_header Client-IP "";`,
+		`proxy_set_header True-Client-IP "";`,
+		`proxy_set_header EO-Connecting-IP "";`,
+		`proxy_set_header EO-Client-IP "";`,
+		"proxy_set_header X-Forwarded-Proto $scheme;",
+	} {
+		if !strings.Contains(nginxText, want) {
+			t.Fatalf("realip nginx content missing %q\n%s", want, nginxText)
+		}
+	}
+	if strings.Contains(nginxText, "$proxy_add_x_forwarded_for") {
+		t.Fatalf("realip-enabled nginx must not append inbound X-Forwarded-For\n%s", nginxText)
+	}
+	if strings.Contains(nginxText, "proxy_set_header X-Forwarded-Host $host;") {
+		t.Fatalf("realip-enabled GoAccess WebSocket must use validated X-Forwarded-Host\n%s", nginxText)
+	}
+	if got := strings.Count(nginxText, "proxy_set_header X-Forwarded-Host $example_app_validated_host;"); got != 2 {
+		t.Fatalf("realip-enabled nginx X-Forwarded-Host validated count = %d, want app proxy and GoAccess WebSocket\n%s", got, nginxText)
+	}
+	if !strings.Contains(nginxText, "untrusted_source_ip") {
+		t.Fatalf("realip-enabled nginx must reject untrusted origin sources\n%s", nginxText)
+	}
+	if strings.Contains(nginxText, "real_ip_recursive") {
+		t.Fatalf("realip-enabled nginx must not render real_ip_recursive\n%s", nginxText)
+	}
+	if got := strings.Count(nginxText, "access_log /var/log/nginx/example-app-realip-rejections.log lanpanel_app_example_app_realip_rejection if=$example_app_realip_reject_log;"); got != 2 {
+		t.Fatalf("realip rejection log count = %d, want HTTP and HTTPS rejection locations\n%s", got, nginxText)
+	}
+	if got := strings.Count(nginxText, "location @example_app_realip_reject {"); got != 2 {
+		t.Fatalf("realip rejection location count = %d, want HTTP and HTTPS rejection locations\n%s", got, nginxText)
+	}
+}
+
+func TestStageRuntimeKeepsRealIPRejectionLogWhenAccessLogOff(t *testing.T) {
+	t.Parallel()
+
+	enabled := true
+	cfg := listenConfig()
+	cfg.App.ACMEChallenge = appconfig.ACMEChallengeDNS01
+	cfg.DNS01.Provider = "tencentcloud"
+	cfg.DNS01.EnvFile = "/etc/lanpanel/dns/tencentcloud.env"
+	cfg.Nginx.AccessLog = "off"
+	cfg.Nginx.RealIPProfile = "edgeone-prod"
+	cfg.RealIP.Profiles = map[string]appconfig.RealIPProfileConfig{
+		"edgeone-prod": {
+			Enabled:  &enabled,
+			Provider: appconfig.RealIPProviderEdgeOne,
+			EdgeOne: appconfig.RealIPEdgeOneConfig{
+				ZoneID:  "zone-2abcDEF123",
+				EnvFile: "/etc/lanpanel/realip/edgeone-prod.env",
+			},
+		},
+	}
+	staged, err := StageRuntime(cfg)
+	if err != nil {
+		t.Fatalf("StageRuntime() error = %v", err)
+	}
+	contentBySource := map[string]string{}
+	for _, file := range staged {
+		contentBySource[file.SourcePath] = string(file.Content)
+	}
+	nginxText := contentBySource["templates/app/nginx.conf.tmpl"]
+	if nginxText == "" {
+		t.Fatal("nginx content not staged")
+	}
+	names, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+	if err := appsvc.ValidateRenderedNginx(cfg, names, []byte(nginxText)); err != nil {
+		t.Fatalf("ValidateRenderedNginx() error = %v\n%s", err, nginxText)
+	}
+	if got := strings.Count(nginxText, "\n    access_log off;"); got != 2 {
+		t.Fatalf("server-level access_log off count = %d, want HTTP and HTTPS only\n%s", got, nginxText)
+	}
+	if got := strings.Count(nginxText, "access_log /var/log/nginx/example-app-realip-rejections.log lanpanel_app_example_app_realip_rejection if=$example_app_realip_reject_log;"); got != 2 {
+		t.Fatalf("realip rejection log count = %d, want HTTP and HTTPS rejection locations\n%s", got, nginxText)
+	}
+	if strings.Contains(nginxText, "location @example_app_realip_reject {\n        internal;\n        access_log off;") {
+		t.Fatalf("realip rejection location must not inherit access_log off\n%s", nginxText)
 	}
 }
 
@@ -196,20 +387,20 @@ func TestStageRuntimeRendersGoAccessAssetsAndNginxLocations(t *testing.T) {
 		t.Fatalf("ValidateRenderedNginx() error = %v\n%s", err, nginxText)
 	}
 	for _, want := range []string{
-		"log_format meshify_app_example_app_enhanced",
+		"log_format lanpanel_app_example_app_enhanced",
 		`$request_time "$upstream_status" "$upstream_response_time"`,
-		"access_log /var/log/meshify/apps/example-app/access.log meshify_app_example_app_enhanced;",
-		"location = /_meshify/apps/example-app/goaccess {\n        access_log off;\n        return 301 https://abc.com/_meshify/apps/example-app/goaccess;\n    }",
-		"location = /_meshify/apps/example-app/goaccess/ws {\n        access_log off;\n        return 421;\n    }",
-		"location = /_meshify/apps/example-app/goaccess {",
-		"return 301 https://abc.com/_meshify/apps/example-app/goaccess;",
+		"access_log /var/log/lanpanel/apps/example-app/access.log lanpanel_app_example_app_enhanced;",
+		"location = /_lanpanel/apps/example-app/goaccess {\n        access_log off;\n        return 301 https://abc.com/_lanpanel/apps/example-app/goaccess;\n    }",
+		"location = /_lanpanel/apps/example-app/goaccess/ws {\n        access_log off;\n        return 421;\n    }",
+		"location = /_lanpanel/apps/example-app/goaccess {",
+		"return 301 https://abc.com/_lanpanel/apps/example-app/goaccess;",
 		"alias /var/lib/example-app/goaccess/report.html;",
 		"disable_symlinks on;",
-		`auth_basic "Meshify GoAccess";`,
+		`auth_basic "Lanpanel GoAccess";`,
 		"auth_basic_user_file /etc/example-app/goaccess.htpasswd;",
 		"allow 203.0.113.0/24;",
 		"deny all;",
-		"location = /_meshify/apps/example-app/goaccess/ws {",
+		"location = /_lanpanel/apps/example-app/goaccess/ws {",
 		"proxy_pass http://127.0.0.1:",
 		"proxy_read_timeout 3600s;",
 		"access_log off;",
@@ -218,14 +409,14 @@ func TestStageRuntimeRendersGoAccessAssetsAndNginxLocations(t *testing.T) {
 			t.Fatalf("GoAccess nginx content missing %q\n%s", want, nginxText)
 		}
 	}
-	httpDashboardIndex := strings.Index(nginxText, "location = /_meshify/apps/example-app/goaccess {\n        access_log off;\n        return 301")
-	httpWebsocketIndex := strings.Index(nginxText, "location = /_meshify/apps/example-app/goaccess/ws {\n        access_log off;\n        return 421;")
+	httpDashboardIndex := strings.Index(nginxText, "location = /_lanpanel/apps/example-app/goaccess {\n        access_log off;\n        return 301")
+	httpWebsocketIndex := strings.Index(nginxText, "location = /_lanpanel/apps/example-app/goaccess/ws {\n        access_log off;\n        return 421;")
 	httpRedirectIndex := strings.Index(nginxText, "location / {\n        return 301")
 	if httpDashboardIndex < 0 || httpWebsocketIndex < 0 || httpRedirectIndex < 0 || httpDashboardIndex > httpRedirectIndex || httpWebsocketIndex > httpRedirectIndex {
 		t.Fatalf("HTTP GoAccess dashboard/ws locations must render before HTTP redirect and disable access logs\n%s", nginxText)
 	}
-	dashboardIndex := strings.Index(nginxText, "location = /_meshify/apps/example-app/goaccess {")
-	websocketIndex := strings.Index(nginxText, "location = /_meshify/apps/example-app/goaccess/ws {")
+	dashboardIndex := strings.Index(nginxText, "location = /_lanpanel/apps/example-app/goaccess {")
+	websocketIndex := strings.Index(nginxText, "location = /_lanpanel/apps/example-app/goaccess/ws {")
 	proxyIndex := strings.LastIndex(nginxText, "location / {\n        proxy_pass")
 	if dashboardIndex < 0 || websocketIndex < 0 || proxyIndex < 0 || dashboardIndex > proxyIndex || websocketIndex > proxyIndex {
 		t.Fatalf("GoAccess dashboard/ws locations must render before proxy location\n%s", nginxText)
@@ -233,20 +424,20 @@ func TestStageRuntimeRendersGoAccessAssetsAndNginxLocations(t *testing.T) {
 
 	configText := contentBySource["templates/app/goaccess.conf.tmpl"]
 	for _, want := range []string{
-		"log-file /var/log/meshify/apps/example-app/access.log",
+		"log-file /var/log/lanpanel/apps/example-app/access.log",
 		"output /var/lib/example-app/goaccess/report.html",
 		`log-format %h %^ %^ [%x] "%r" %s %b "%R" "%u" "%v" %T "%^" "%^"`,
 		"datetime-format %Y-%m-%dT%H:%M:%S%z",
 		"real-time-html true",
 		"addr 127.0.0.1",
 		"port ",
-		"ws-url wss://abc.com:443/_meshify/apps/example-app/goaccess/ws",
+		"ws-url wss://abc.com:443/_lanpanel/apps/example-app/goaccess/ws",
 		"origin https://abc.com",
 		"ping-interval 10",
 		"persist true",
 		"restore true",
 		"db-path /var/lib/example-app/goaccess/db",
-		"html-report-title Meshify-GoAccess-example-app",
+		"html-report-title Lanpanel-GoAccess-example-app",
 		"static-file .css",
 		"static-file .js",
 		"static-file .png",
@@ -260,8 +451,8 @@ func TestStageRuntimeRendersGoAccessAssetsAndNginxLocations(t *testing.T) {
 	}
 	serviceText := contentBySource["templates/app/goaccess.service.tmpl"]
 	for _, want := range []string{
-		"User=meshify-goaccess-example-app",
-		"Group=meshify-goaccess-example-app",
+		"User=lanpanel-goaccess-example-app",
+		"Group=lanpanel-goaccess-example-app",
 		"Environment=LANG=C.UTF-8",
 		"ExecStart=" + appsvc.GoAccessBinaryPath + " --no-global-config --config-file /etc/example-app/goaccess.conf",
 		"UMask=0027",
@@ -279,8 +470,8 @@ func TestStageRuntimeRendersGoAccessAssetsAndNginxLocations(t *testing.T) {
 
 	logrotateText := contentBySource["templates/app/goaccess-logrotate.tmpl"]
 	for _, want := range []string{
-		"/var/log/meshify/apps/example-app/access.log {",
-		"create 0640 www-data meshify-goaccess-example-app",
+		"/var/log/lanpanel/apps/example-app/access.log {",
+		"create 0640 www-data lanpanel-goaccess-example-app",
 		"systemctl reload nginx.service",
 		"systemctl restart example-app-goaccess.service",
 	} {
@@ -300,7 +491,7 @@ func TestStageRuntimeRendersGoAccessCombinedMode(t *testing.T) {
 	t.Parallel()
 
 	cfg := listenConfig()
-	cfg.Nginx.AccessLog = "/var/log/meshify/custom/example-app.access.log"
+	cfg.Nginx.AccessLog = "/var/log/lanpanel/custom/example-app.access.log"
 	cfg.Nginx.GoAccess.Enabled = true
 	cfg.Nginx.GoAccess.LogFormat = appconfig.NginxGoAccessLogFormatCombined
 	cfg.Nginx.GoAccess.AuthBasicUserFile = "/etc/example-app/goaccess.htpasswd"
@@ -313,10 +504,10 @@ func TestStageRuntimeRendersGoAccessCombinedMode(t *testing.T) {
 		contentBySource[file.SourcePath] = string(file.Content)
 	}
 	nginxText := contentBySource["templates/app/nginx.conf.tmpl"]
-	if strings.Contains(nginxText, "log_format meshify_app_example_app_enhanced") {
+	if strings.Contains(nginxText, "log_format lanpanel_app_example_app_enhanced") {
 		t.Fatalf("combined mode must not render enhanced log_format\n%s", nginxText)
 	}
-	if !strings.Contains(nginxText, "access_log /var/log/meshify/custom/example-app.access.log combined;") {
+	if !strings.Contains(nginxText, "access_log /var/log/lanpanel/custom/example-app.access.log combined;") {
 		t.Fatalf("combined mode nginx access_log missing combined format\n%s", nginxText)
 	}
 	configText := contentBySource["templates/app/goaccess.conf.tmpl"]
@@ -515,7 +706,7 @@ func TestRenewServiceRendersAllSANDomains(t *testing.T) {
 			"--domains abc.com --domains www.abc.com",
 			"--dns cloudflare",
 			"migrate --path \"$lego_path\"",
-			"--force-cert-domains --deploy-hook /usr/local/lib/meshify/apps/example-app/install-cert-and-reload-nginx.sh",
+			"--force-cert-domains --deploy-hook /usr/local/lib/lanpanel/apps/example-app/install-cert-and-reload-nginx.sh",
 		} {
 			if !strings.Contains(text, want) {
 				t.Fatalf("renew service missing %q\n%s", want, text)

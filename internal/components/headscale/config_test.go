@@ -1,9 +1,9 @@
 package headscale
 
 import (
-	"meshify/internal/assets"
-	"meshify/internal/config"
-	"meshify/internal/render"
+	"lanpanel/internal/assets"
+	"lanpanel/internal/config"
+	"lanpanel/internal/render"
 	"strings"
 	"testing"
 )

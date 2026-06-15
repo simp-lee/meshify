@@ -1,4 +1,4 @@
-// Package cli provides the meshify command surface.
+// Package cli provides the lanpanel command surface.
 package cli
 
 import (
@@ -6,13 +6,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"meshify/internal/config"
-	"meshify/internal/output"
+	"lanpanel/internal/config"
+	"lanpanel/internal/output"
 	"os"
 	"sort"
 )
 
-const DefaultConfigPath = "meshify.yaml"
+const DefaultConfigPath = "lanpanel.yaml"
 
 type context struct {
 	stdin   io.Reader
@@ -65,7 +65,7 @@ func Execute(args []string, stdout io.Writer, stderr io.Writer, version string) 
 	case "help", "-h", "--help":
 		return runHelp(ctx, args[1:])
 	case "version", "--version":
-		_, err := fmt.Fprintf(stdout, "meshify %s\n", version)
+		_, err := fmt.Fprintf(stdout, "lanpanel %s\n", version)
 		return err
 	}
 
@@ -150,15 +150,15 @@ func writeRootHelp(stdout io.Writer) error {
 	sort.Strings(names)
 
 	if err := writeHelpLines(stdout,
-		"meshify manages init, deploy, verify, status, and app workflows.",
+		"lanpanel manages init, deploy, verify, status, and app workflows.",
 		"",
 		"Usage:",
-		"  meshify <command> [flags]",
+		"  lanpanel <command> [flags]",
 		"",
 		"Happy path:",
-		"  meshify init",
-		"  meshify deploy",
-		"  meshify verify",
+		"  lanpanel init",
+		"  lanpanel deploy",
+		"  lanpanel verify",
 		"",
 		"Commands:",
 	); err != nil {

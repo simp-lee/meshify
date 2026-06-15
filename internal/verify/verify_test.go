@@ -1,9 +1,9 @@
 package verify
 
 import (
-	"meshify/internal/assets"
-	"meshify/internal/config"
-	"meshify/internal/render"
+	"lanpanel/internal/assets"
+	"lanpanel/internal/config"
+	"lanpanel/internal/render"
 	"strings"
 	"testing"
 )
@@ -54,14 +54,14 @@ func TestStaticReportFailsDNSRenewalServiceWithoutEnvironmentFile(t *testing.T) 
 	cfg := validConfig()
 	cfg.Default.ACMEChallenge = config.ACMEChallengeDNS01
 	cfg.Advanced.DNS01.Provider = "cloudflare"
-	cfg.Advanced.DNS01.EnvFile = "/etc/meshify/dns01/cloudflare.env"
+	cfg.Advanced.DNS01.EnvFile = "/etc/lanpanel/dns01/cloudflare.env"
 	staged, err := render.StageRuntime(cfg)
 	if err != nil {
 		t.Fatalf("StageRuntime() error = %v", err)
 	}
 	for index := range staged {
-		if staged[index].SourcePath == "templates/etc/systemd/system/meshify-lego-renew.service.tmpl" {
-			staged[index].Content = []byte(strings.ReplaceAll(string(staged[index].Content), "EnvironmentFile=/etc/meshify/dns01/cloudflare.env\n", ""))
+		if staged[index].SourcePath == "templates/etc/systemd/system/lanpanel-lego-renew.service.tmpl" {
+			staged[index].Content = []byte(strings.ReplaceAll(string(staged[index].Content), "EnvironmentFile=/etc/lanpanel/dns01/cloudflare.env\n", ""))
 		}
 	}
 

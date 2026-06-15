@@ -65,7 +65,7 @@ func (formatter Formatter) Write(response Response) error {
 }
 
 func writeHuman(writer io.Writer, response Response) error {
-	if _, err := fmt.Fprintf(writer, "meshify %s: %s\n", response.Command, response.Summary); err != nil {
+	if _, err := fmt.Fprintf(writer, "lanpanel %s: %s\n", response.Command, response.Summary); err != nil {
 		return err
 	}
 

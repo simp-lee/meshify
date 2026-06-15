@@ -2,7 +2,7 @@ package output
 
 import (
 	"bytes"
-	"meshify/internal/preflight"
+	"lanpanel/internal/preflight"
 	"strings"
 	"testing"
 )
@@ -49,7 +49,7 @@ func TestDiagnosticsFormatterWritesHumanSummary(t *testing.T) {
 
 	output := buffer.String()
 	for _, want := range []string{
-		"meshify preflight: blocked by 1 failed check",
+		"lanpanel preflight: blocked by 1 failed check",
 		"[FAIL] Supported platform",
 		"Remediation:",
 		"Manual checklist (not automatically verified):",
@@ -105,7 +105,7 @@ func TestDiagnosticsFormatterUsesCommandHeading(t *testing.T) {
 				t.Fatalf("WriteReport() error = %v", err)
 			}
 
-			want := "meshify " + command + ": automatic checks passed"
+			want := "lanpanel " + command + ": automatic checks passed"
 			if !strings.Contains(buffer.String(), want) {
 				t.Fatalf("WriteReport() output = %q, want substring %q", buffer.String(), want)
 			}

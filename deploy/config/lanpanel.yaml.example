@@ -1,4 +1,4 @@
-api_version: meshify/v1alpha1
+api_version: lanpanel/v1alpha1
 
 # Edit the default section first. It is the only part that should matter for the
 # first successful deployment.
@@ -32,7 +32,7 @@ advanced:
   lego_source:
     # Keep direct unless the host cannot download the pinned lego archive from
     # GitHub. Offline mode must point at the exact pinned lego archive for the
-    # selected architecture; meshify verifies the built-in SHA-256 digest.
+    # selected architecture; lanpanel verifies the built-in SHA-256 digest.
     mode: "direct" # direct | offline
     file_path: ""
 

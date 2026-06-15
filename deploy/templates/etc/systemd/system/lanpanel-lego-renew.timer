@@ -1,5 +1,5 @@
 [Unit]
-Description=Run meshify lego certificate renewal
+Description=Run lanpanel lego certificate renewal
 
 [Timer]
 OnCalendar=*-*-* 03:35:00

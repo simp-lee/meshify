@@ -3,8 +3,8 @@ package cli
 import (
 	"bytes"
 	stdcontext "context"
-	"meshify/internal/host"
-	"meshify/internal/output"
+	"lanpanel/internal/host"
+	"lanpanel/internal/output"
 	"strings"
 	"sync"
 	"testing"
@@ -78,10 +78,10 @@ func TestRunHostCommandWithProgressWritesHumanProgress(t *testing.T) {
 	}
 
 	text := writer.String()
-	if !strings.Contains(text, "meshify deploy: DNS-01 certificate issuance started") {
+	if !strings.Contains(text, "lanpanel deploy: DNS-01 certificate issuance started") {
 		t.Fatalf("progress output = %q, want start message", text)
 	}
-	if !strings.Contains(text, "meshify deploy: still waiting for certificate issuance") {
+	if !strings.Contains(text, "lanpanel deploy: still waiting for certificate issuance") {
 		t.Fatalf("progress output = %q, want periodic wait message", text)
 	}
 }

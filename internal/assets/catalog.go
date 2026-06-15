@@ -39,8 +39,8 @@ type Asset struct {
 }
 
 var catalog = []Asset{
-	{SourcePath: "config/meshify-app.yaml.example", Role: RoleConfigExample, ContentMode: ContentModeCopy},
-	{SourcePath: "config/meshify.yaml.example", Role: RoleConfigExample, ContentMode: ContentModeCopy},
+	{SourcePath: "config/lanpanel-app.yaml.example", Role: RoleConfigExample, ContentMode: ContentModeCopy},
+	{SourcePath: "config/lanpanel.yaml.example", Role: RoleConfigExample, ContentMode: ContentModeCopy},
 	{SourcePath: "templates/app/goaccess-logrotate.tmpl", Role: RoleRuntime, ContentMode: ContentModeRender},
 	{SourcePath: "templates/app/goaccess.conf.tmpl", Role: RoleRuntime, ContentMode: ContentModeRender},
 	{SourcePath: "templates/app/goaccess.service.tmpl", Role: RoleRuntime, ContentMode: ContentModeRender},
@@ -49,6 +49,10 @@ var catalog = []Asset{
 	{SourcePath: "templates/app/lego-renew.timer.tmpl", Role: RoleRuntime, ContentMode: ContentModeRender},
 	{SourcePath: "templates/app/nginx.conf.tmpl", Role: RoleRuntime, ContentMode: ContentModeRender},
 	{SourcePath: "templates/app/service.tmpl", Role: RoleRuntime, ContentMode: ContentModeRender},
+	{SourcePath: "templates/realip/nginx-realip.conf.tmpl", Role: RoleRuntime, ContentMode: ContentModeRender},
+	{SourcePath: "templates/realip/refresh.service.tmpl", Role: RoleRuntime, ContentMode: ContentModeRender},
+	{SourcePath: "templates/realip/refresh.timer.tmpl", Role: RoleRuntime, ContentMode: ContentModeRender},
+	{SourcePath: "templates/realip/trusted-cidrs.conf.tmpl", Role: RoleRuntime, ContentMode: ContentModeRender},
 	{
 		SourcePath:  "templates/etc/headscale/config.yaml.tmpl",
 		Role:        RoleRuntime,
@@ -66,24 +70,24 @@ var catalog = []Asset{
 		Activations: []Activation{ActivationRestartHeadscale},
 	},
 	{
-		SourcePath:  "templates/usr/local/lib/meshify/hooks/install-lego-cert-and-reload-nginx.sh",
+		SourcePath:  "templates/usr/local/lib/lanpanel/hooks/install-lego-cert-and-reload-nginx.sh",
 		Role:        RoleRuntime,
 		ContentMode: ContentModeCopy,
-		HostPath:    "/usr/local/lib/meshify/hooks/install-lego-cert-and-reload-nginx.sh",
+		HostPath:    "/usr/local/lib/lanpanel/hooks/install-lego-cert-and-reload-nginx.sh",
 		Mode:        0o755,
 	},
 	{
-		SourcePath:  "templates/etc/systemd/system/meshify-lego-renew.service.tmpl",
+		SourcePath:  "templates/etc/systemd/system/lanpanel-lego-renew.service.tmpl",
 		Role:        RoleRuntime,
 		ContentMode: ContentModeRender,
-		HostPath:    "/etc/systemd/system/meshify-lego-renew.service",
+		HostPath:    "/etc/systemd/system/lanpanel-lego-renew.service",
 		Mode:        0o644,
 	},
 	{
-		SourcePath:  "templates/etc/systemd/system/meshify-lego-renew.timer",
+		SourcePath:  "templates/etc/systemd/system/lanpanel-lego-renew.timer",
 		Role:        RoleRuntime,
 		ContentMode: ContentModeCopy,
-		HostPath:    "/etc/systemd/system/meshify-lego-renew.timer",
+		HostPath:    "/etc/systemd/system/lanpanel-lego-renew.timer",
 		Mode:        0o644,
 	},
 	{

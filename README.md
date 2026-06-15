@@ -1,17 +1,17 @@
-# Meshify
+# Lanpanel
 
-[English](README.md) | [Chinese](README.zh-CN.md)
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-Meshify is a Go server deployment tool, not a VPN client. It is for individuals or small teams who want a private Tailscale/Headscale network without hand-configuring Headscale, Nginx, HTTPS certificates, and systemd. Bring one Debian/Ubuntu cloud server, one domain name, and root or sudo access; Meshify deploys from `meshify.yaml`. You can also use `meshify app` to publish same-host or tailnet HTTP/WebSocket services to public HTTPS, with an optional GoAccess real-time access-log dashboard. If you only want to run your own Go web service on a cloud server, you can use only the app workflow and skip the private Tailscale/Headscale network.
+Lanpanel is a Go server deployment tool, not a VPN client. It is for individuals or small teams who want a private Tailscale/Headscale network without hand-configuring Headscale, Nginx, HTTPS certificates, and systemd. Bring one Debian/Ubuntu cloud server, one domain name, and root or sudo access; Lanpanel deploys from `lanpanel.yaml`. You can also use `lanpanel app` to publish same-host or tailnet HTTP/WebSocket services to public HTTPS, with an optional GoAccess real-time access-log dashboard. If you only want to run your own Go web service on a cloud server, you can use only the app workflow and skip the private Tailscale/Headscale network.
 
-## Is Meshify A Fit?
+## Is Lanpanel A Fit?
 
 | What you want | Fit |
 | --- | --- |
-| Use the official Tailscale client to join your own private network | Yes. Meshify deploys the Headscale control plane. |
+| Use the official Tailscale client to join your own private network | Yes. Lanpanel deploys the Headscale control plane. |
 | Automatically configure Headscale, Nginx, certificate renewal, and baseline verification on one cloud server | Yes. This is the core goal of this repository. |
-| Publish same-host Go web services or tailnet HTTP/WebSocket services to HTTPS, with an optional access-log dashboard | Yes. Use `meshify app` and optionally enable `nginx.goaccess`. |
-| Publish only a Go web service on the cloud server without a private Tailscale/Headscale network | Yes. Use `meshify app` in `listen` mode. |
+| Publish same-host Go web services or tailnet HTTP/WebSocket services to HTTPS, with an optional access-log dashboard | Yes. Use `lanpanel app` and optionally enable `nginx.goaccess`. |
+| Publish only a Go web service on the cloud server without a private Tailscale/Headscale network | Yes. Use `lanpanel app` in `listen` mode. |
 | Build multi-host high availability, Kubernetes, Terraform, Ansible, Web UI, or OIDC/SSO | No. These are outside the current scope. |
 | Find a Tailscale client, general reverse proxy framework, or Go SDK | No. This repository is mainly a CLI, config examples, and runtime templates. |
 
@@ -25,32 +25,32 @@ Prepare three things before deploy:
 
 If you only want to deploy a same-host Go web service and are not creating a private network, you only need an app domain plus `80/tcp` and `443/tcp`; `3478/udp` is only for the main Headscale deployment.
 
-Install a published release binary on the target server. First open [Releases](https://github.com/simp-lee/meshify/releases) and copy the latest stable release tag, then replace `vX.Y.Z` below with that tag; do not copy the placeholder literally.
+Install a published release binary on the target server. First open [Releases](https://github.com/simp-lee/lanpanel/releases) and copy the latest stable release tag, then replace `vX.Y.Z` below with that tag; do not copy the placeholder literally.
 
 ```bash
 VERSION=vX.Y.Z
-curl -fsSL https://raw.githubusercontent.com/simp-lee/meshify/main/scripts/install.sh | sh -s -- "${VERSION}"
-meshify --help
+curl -fsSL https://raw.githubusercontent.com/simp-lee/lanpanel/main/scripts/install.sh | sh -s -- "${VERSION}"
+lanpanel --help
 ```
 
-The install script detects `x86_64` and `arm64`/`aarch64`, downloads the matching GitHub release asset for `VERSION`, verifies it against `checksums.txt`, and installs `meshify` to `/usr/local/bin/meshify`.
+The install script detects `x86_64` and `arm64`/`aarch64`, downloads the matching GitHub release asset for `VERSION`, verifies it against `checksums.txt`, and installs `lanpanel` to `/usr/local/bin/lanpanel`.
 
-If you are using a source checkout instead of a release binary, run `make build` and install `./meshify` to `/usr/local/bin/meshify`.
+If you are using a source checkout instead of a release binary, run `make build` and install `./lanpanel` to `/usr/local/bin/lanpanel`.
 
-Then run the default workflow (`init -> verify -> deploy -> verify -> status`). Before deploy, inspect `meshify.yaml`; if it still contains example values, change at least `default.server_url`, `default.base_domain`, and `default.certificate_email` to your real values.
+Then run the default workflow (`init -> verify -> deploy -> verify -> status`). Before deploy, inspect `lanpanel.yaml`; if it still contains example values, change at least `default.server_url`, `default.base_domain`, and `default.certificate_email` to your real values.
 
 ```bash
-meshify init --config meshify.yaml
-# Check meshify.yaml; if it still has example values, edit default first.
-meshify verify --config meshify.yaml
-sudo meshify deploy --config meshify.yaml
-meshify verify --config meshify.yaml
-meshify status --config meshify.yaml
+lanpanel init --config lanpanel.yaml
+# Check lanpanel.yaml; if it still has example values, edit default first.
+lanpanel verify --config lanpanel.yaml
+sudo lanpanel deploy --config lanpanel.yaml
+lanpanel verify --config lanpanel.yaml
+lanpanel status --config lanpanel.yaml
 ```
 
 After `deploy` succeeds, the CLI prints an initial preauth key. Use it for the first client, then create a fresh key for each additional client.
 
-The default workflow above deploys a private Tailscale/Headscale network. If you only want to publish a same-host Go service, skip the main `meshify init` and `meshify deploy` workflow and go to "Additional Go Services" below.
+The default workflow above deploys a private Tailscale/Headscale network. If you only want to publish a same-host Go service, skip the main `lanpanel init` and `lanpanel deploy` workflow and go to "Additional Go Services" below.
 
 ## Supported Scope
 
@@ -58,18 +58,18 @@ The default workflow above deploys a private Tailscale/Headscale network. If you
 | --- | --- |
 | Server OS | Debian, Ubuntu, or a Debian-family distribution with apt/dpkg/systemd |
 | Control plane | Headscale v0.28.0 on loopback behind Nginx |
-| TLS automation | HTTP-01 or DNS-01 with a meshify-managed pinned lego v5.1.0 binary |
+| TLS automation | HTTP-01 or DNS-01 with a lanpanel-managed pinned lego v5.1.0 binary |
 | Relay | Embedded Headscale DERP and STUN on `3478/udp`; no official DERP fallback |
 | Clients | Windows, macOS, Debian/Ubuntu Linux |
 | Client baseline | Tailscale client >= v1.74.0 |
 
-Meshify intentionally keeps the scope small: no multi-host high availability, Kubernetes, Terraform, Ansible, Web UI, OIDC/SSO, automatic SQLite backup and restore, official DERP fallback, or remote gRPC/API-key management by default.
+Lanpanel intentionally keeps the scope small: no multi-host high availability, Kubernetes, Terraform, Ansible, Web UI, OIDC/SSO, automatic SQLite backup and restore, official DERP fallback, or remote gRPC/API-key management by default.
 
 ## Server Guide
 
 ### Before You Start
 
-- Server access: root or sudo access on Debian, Ubuntu, or a Debian-family distribution that reports `debian` or `ubuntu` through `/etc/os-release`; when running `meshify deploy` directly as a non-root user, `sudo -n true` must pass.
+- Server access: root or sudo access on Debian, Ubuntu, or a Debian-family distribution that reports `debian` or `ubuntu` through `/etc/os-release`; when running `lanpanel deploy` directly as a non-root user, `sudo -n true` must pass.
 - Host capabilities: `apt-get`, `dpkg`, and a booted systemd runtime must be available before deploy can mutate the host.
 - DNS: point the public Headscale name, for example `hs.example.com`, at the server.
 - Firewall: allow `80/tcp`, `443/tcp`, and `3478/udp` in both host firewall and cloud security group.
@@ -79,7 +79,7 @@ Meshify intentionally keeps the scope small: no multi-host high availability, Ku
 
 ### Minimal Config
 
-The public example is [`deploy/config/meshify.yaml.example`](deploy/config/meshify.yaml.example). Most first deployments only edit `default`:
+The public example is [`deploy/config/lanpanel.yaml.example`](deploy/config/lanpanel.yaml.example). Most first deployments only edit `default`:
 
 ```yaml
 default:
@@ -101,7 +101,7 @@ Field meanings:
 Use advanced mode only when you need DNS-01, Headscale mirror/offline packages, Headscale metrics port changes, offline lego archives, package probe timeout overrides, proxies, architecture overrides, or public IP overrides:
 
 ```bash
-meshify init --advanced --config meshify.yaml
+lanpanel init --advanced --config lanpanel.yaml
 ```
 
 For slow but reachable GitHub release downloads, raise the package source probe timeouts:
@@ -124,19 +124,21 @@ default:
 
 Use DNS-01 only when public port 80 is unreliable or policy requires DNS validation. DNS-01 uses lego provider codes `cloudflare`, `route53`, `digitalocean`, `gcloud`, and `tencentcloud`; `google` is accepted as a `gcloud` alias.
 
-Keep DNS API values out of `meshify.yaml`, and do not put raw tokens or keys directly in `env_file`. Cloudflare, DigitalOcean, and Tencent Cloud require a root-only `advanced.dns01.env_file` that references root-only secret files with provider-supported `_FILE` variables. Route53 and gcloud may use the host credential chain, or `env_file` may contain only provider-supported settings or credential file paths.
+Keep DNS API values out of `lanpanel.yaml`, and do not put raw tokens or keys directly in `env_file`. Cloudflare, DigitalOcean, and Tencent Cloud require a root-owned, root-only `advanced.dns01.env_file` that references root-owned, root-only secret files with provider-supported `_FILE` variables. Route53 and gcloud may use the host credential chain, or `env_file` may contain only provider-supported settings or credential file paths.
 
-For Tencent Cloud DNS / DNSPod, create Tencent Cloud API credentials with permission to manage DNSPod records, store the SecretId and SecretKey in root-only files, and reference those files from the lego env file:
+For Tencent Cloud DNS / DNSPod, create Tencent Cloud API credentials with permission to manage DNSPod records, store the SecretId and SecretKey in root-owned, root-only files, and reference those files from the lego env file:
 
 ```bash
-sudo install -d -m 0700 /etc/meshify/dns01
-printf '%s' '<Tencent Cloud SecretId>' | sudo tee /etc/meshify/dns01/tencentcloud-secret-id >/dev/null
-printf '%s' '<Tencent Cloud SecretKey>' | sudo tee /etc/meshify/dns01/tencentcloud-secret-key >/dev/null
-sudo chmod 0600 /etc/meshify/dns01/tencentcloud-secret-id /etc/meshify/dns01/tencentcloud-secret-key
+sudo install -d -o root -g root -m 0700 /etc/lanpanel/dns01
+sudo install -o root -g root -m 0600 /dev/null /etc/lanpanel/dns01/tencentcloud-secret-id
+sudo install -o root -g root -m 0600 /dev/null /etc/lanpanel/dns01/tencentcloud-secret-key
+printf '%s' '<Tencent Cloud SecretId>' | sudo tee /etc/lanpanel/dns01/tencentcloud-secret-id >/dev/null
+printf '%s' '<Tencent Cloud SecretKey>' | sudo tee /etc/lanpanel/dns01/tencentcloud-secret-key >/dev/null
 
-sudo tee /etc/meshify/dns01/tencentcloud.env >/dev/null <<'EOF'
-TENCENTCLOUD_SECRET_ID_FILE=/etc/meshify/dns01/tencentcloud-secret-id
-TENCENTCLOUD_SECRET_KEY_FILE=/etc/meshify/dns01/tencentcloud-secret-key
+sudo install -o root -g root -m 0600 /dev/null /etc/lanpanel/dns01/tencentcloud.env
+sudo tee /etc/lanpanel/dns01/tencentcloud.env >/dev/null <<'EOF'
+TENCENTCLOUD_SECRET_ID_FILE=/etc/lanpanel/dns01/tencentcloud-secret-id
+TENCENTCLOUD_SECRET_KEY_FILE=/etc/lanpanel/dns01/tencentcloud-secret-key
 TENCENTCLOUD_PROPAGATION_TIMEOUT=900
 TENCENTCLOUD_POLLING_INTERVAL=10
 TENCENTCLOUD_TTL=600
@@ -145,12 +147,11 @@ LEGO_DNS_RESOLVERS=119.29.29.29:53
 LEGO_DNS_TIMEOUT=30
 LEGO_DNS_PROPAGATION_DISABLE_ANS=true
 EOF
-sudo chmod 0600 /etc/meshify/dns01/tencentcloud.env
 ```
 
 The `LEGO_DNS_*` values pin lego's DNS zone lookup to DNSPod's public resolver, keep recursive TXT polling active, and skip the authoritative nameserver propagation check that can fail under Tencent Cloud EdgeOne / DNSPod hosted access. With `TENCENTCLOUD_POLLING_INTERVAL=10`, lego checks every 10 seconds and continues as soon as the TXT record is visible to the configured recursive resolver.
 
-Then set DNS-01 in `meshify.yaml`:
+Then set DNS-01 in `lanpanel.yaml`:
 
 ```yaml
 default:
@@ -159,7 +160,7 @@ default:
 advanced:
   dns01:
     provider: "tencentcloud"
-    env_file: "/etc/meshify/dns01/tencentcloud.env"
+    env_file: "/etc/lanpanel/dns01/tencentcloud.env"
 ```
 
 ### Deploy
@@ -167,21 +168,21 @@ advanced:
 Run deploy on the target server:
 
 ```bash
-sudo meshify deploy --config meshify.yaml
+sudo lanpanel deploy --config lanpanel.yaml
 ```
 
 Deploy checks config, OS family, host capabilities, permissions, DNS, ports, package sources, ACME readiness, and service conflicts. Then it installs dependencies, installs lego and Headscale, renders runtime files, issues the certificate, enables services, creates the first local Headscale user and preauth key, and runs static verification.
 
-If a step fails, fix the named issue and rerun the same deploy command. Meshify records checkpoints beside the config file under `.meshify/`.
+If a step fails, fix the named issue and rerun the same deploy command. Lanpanel records checkpoints beside the config file under `.lanpanel/`.
 
 ### Verify And Status
 
 ```bash
-meshify verify --config meshify.yaml
-meshify status --config meshify.yaml
+lanpanel verify --config lanpanel.yaml
+lanpanel status --config lanpanel.yaml
 ```
 
-`verify` is a static config and runtime-template check. It re-checks rendered Headscale, ACL, Nginx, TLS hook, certificate plan, onboarding readiness, and the Tailscale client version baseline; it does not read host systemd state, certificate files, Nginx runtime state, Headscale process state, or client online state. `meshify status` is read-only and shows config readiness, completed checkpoints, warnings, and the last recoverable failure.
+`verify` is a static config and runtime-template check. It re-checks rendered Headscale, ACL, Nginx, TLS hook, certificate plan, onboarding readiness, and the Tailscale client version baseline; it does not read host systemd state, certificate files, Nginx runtime state, Headscale process state, or client online state. `lanpanel status` is read-only and shows config readiness, completed checkpoints, warnings, and the last recoverable failure.
 
 After deploy, confirm host runtime state with system commands:
 
@@ -194,8 +195,8 @@ curl -I https://hs.example.com
 Expected result:
 
 - Headscale control plane, metrics, and gRPC listeners stay on loopback.
-- Nginx serves HTTP-01 challenges from `/var/lib/meshify/acme-challenges`, terminates TLS with `fullchain.pem`, and forwards HTTP/1.1 upgrade traffic for control and DERP WebSocket paths.
-- Nginx uses `/etc/meshify/tls/<server>/fullchain.pem` and `/etc/meshify/tls/<server>/privkey.pem`.
+- Nginx serves HTTP-01 challenges from `/var/lib/lanpanel/acme-challenges`, terminates TLS with `fullchain.pem`, and forwards HTTP/1.1 upgrade traffic for control and DERP WebSocket paths.
+- Nginx uses `/etc/lanpanel/tls/<server>/fullchain.pem` and `/etc/lanpanel/tls/<server>/privkey.pem`.
 - Headscale exposes STUN on `3478/udp`, uses embedded DERP, and keeps `derp.urls` empty.
 - Two clients from different networks can join, resolve MagicDNS names, reach each other with `tailscale ping`, and show direct paths or DERP fallback in `tailscale netcheck`.
 
@@ -226,7 +227,7 @@ Internet, ACME CA, and Tailscale clients
 |   - embedded DERP over HTTPS proxy path        |
 |   - STUN on 3478/udp                           |
 |                                                |
-| meshify-managed lego                           |
+| lanpanel-managed lego                           |
 |   - certificate issue/renew                    |
 |   - install hook reloads Nginx after validate  |
 +------------------------------------------------+
@@ -251,7 +252,7 @@ Internet
 |   - reads canonical Nginx access log           |
 |   - live updates over loopback WebSocket       |
 |   - Nginx serves report.html and proxies /ws   |
-|   - logrotate for meshify-managed access log   |
+|   - logrotate for lanpanel-managed access log   |
 |                                                |
 | example-app.service                            |
 |   - runs as app.name system user               |
@@ -285,35 +286,35 @@ Internet
 
 ### Additional Go Services
 
-To run your own Go web service on the same cloud server, or to publish a tailnet HTTP/WebSocket service through this server, use a standalone app config and the `meshify app` workflow.
+To run your own Go web service on the same cloud server, or to publish a tailnet HTTP/WebSocket service through this server, use a standalone app config and the `lanpanel app` workflow.
 
-If you do not want a private Tailscale/Headscale network and only want public HTTPS for a Go service on this cloud server, use `listen` mode here. This mode does not require a prior Headscale deployment; keep `upstream: ""` and do not change `tailscale.enabled_for_listen` to `true`, and Meshify only manages the local app, Nginx, certificates, and systemd.
+If you do not want a private Tailscale/Headscale network and only want public HTTPS for a Go service on this cloud server, use `listen` mode here. This mode does not require a prior Headscale deployment; keep `upstream: ""` and do not change `tailscale.enabled_for_listen` to `true`, and Lanpanel only manages the local app, Nginx, certificates, and systemd.
 
 For a first deployment, use the shortest path: generate config, edit config, run static verification, then deploy.
 
 ```bash
-meshify app init --config meshify-apps/abc.yaml
-# Edit meshify-apps/abc.yaml
-meshify app verify --config meshify-apps/abc.yaml
-sudo meshify app deploy --config meshify-apps/abc.yaml
+lanpanel app init --config lanpanel-apps/abc.yaml
+# Edit lanpanel-apps/abc.yaml
+lanpanel app verify --config lanpanel-apps/abc.yaml
+sudo lanpanel app deploy --config lanpanel-apps/abc.yaml
 ```
 
-The app workflow does not have `--example`: `meshify app init` already writes the editable example config. `--example` only applies to the main `meshify init` command. The app config example source is [`deploy/config/meshify-app.yaml.example`](deploy/config/meshify-app.yaml.example); `meshify app init` writes the same editable structure.
+The app workflow does not have `--example`: `lanpanel app init` already writes the editable example config. `--example` only applies to the main `lanpanel init` command. The app config example source is [`deploy/config/lanpanel-app.yaml.example`](deploy/config/lanpanel-app.yaml.example); `lanpanel app init` writes the same editable structure.
 
-Use one config file per app, commonly under `meshify-apps/`:
+Use one config file per app, commonly under `lanpanel-apps/`:
 
 ```text
-meshify.yaml
-meshify-apps/abc.yaml
-meshify-apps/admin.yaml
-meshify-apps/tailapp.yaml
+lanpanel.yaml
+lanpanel-apps/abc.yaml
+lanpanel-apps/admin.yaml
+lanpanel-apps/tailapp.yaml
 ```
 
-A same-host `listen` app-only deployment can omit `meshify.yaml`; the layout above is just a common shape when one repo manages both the main private network and multiple apps.
+A same-host `listen` app-only deployment can omit `lanpanel.yaml`; the layout above is just a common shape when one repo manages both the main private network and multiple apps.
 
-An `upstream` app must use the Tailscale client; a `listen` app uses it only when `tailscale.enabled_for_listen: true`. When `tailscale.login_server` is empty, Meshify reads `default.server_url` from `tailscale.meshify_config`; when `tailscale.meshify_config` is empty, it defaults to `./meshify.yaml` in the command's current working directory, not beside `--config`. If the main config lives elsewhere, set `tailscale.meshify_config` explicitly. If there is no main config, set `tailscale.login_server` explicitly and provide a root-only `tailscale.auth_key_file` or pre-login this cloud server to the expected tailnet.
+An `upstream` app must use the Tailscale client; a `listen` app uses it only when `tailscale.enabled_for_listen: true`. When `tailscale.login_server` is empty, Lanpanel reads `default.server_url` from `tailscale.lanpanel_config`; when `tailscale.lanpanel_config` is empty, it defaults to `./lanpanel.yaml` in the command's current working directory, not beside `--config`. If the main config lives elsewhere, set `tailscale.lanpanel_config` explicitly. If there is no main config, set `tailscale.login_server` explicitly and provide a root-owned, root-only `tailscale.auth_key_file` or pre-login this cloud server to the expected tailnet.
 
-Deploy checks whether the Tailscale client is installed, running, and logged in to the expected login server; when that is already true, it skips install and re-login. Automatic login always adds `--accept-dns=false --accept-routes=false --shields-up`. If the machine is already logged in to a login server Meshify cannot prove matches, deploy fails and does not log out, reset state, or rejoin automatically.
+Deploy checks whether the Tailscale client is installed, running, and logged in to the expected login server; when that is already true, it skips install and re-login. Automatic login always adds `--accept-dns=false --accept-routes=false --shields-up`. If the machine is already logged in to a login server Lanpanel cannot prove matches, deploy fails and does not log out, reset state, or rejoin automatically.
 
 The config filename is not the deployment identity. `app.name` names the systemd unit, Nginx site, and certificate directory, so renaming a config file does not rename installed runtime resources.
 
@@ -324,7 +325,7 @@ The config filename is not the deployment identity. `app.name` names the systemd
 | `listen` | The Go service runs on this cloud server | Install the business binary at the absolute path used by the first token of `service.exec_start`, and make it listen on loopback |
 | `upstream` | The backend runs on another tailnet node, for example `100.64.10.20:18001` | Confirm the cloud server's Tailscale client can reach that fixed HTTP/WebSocket upstream |
 
-`listen` means local app mode: the Go service runs on the same cloud server and listens on loopback, such as `127.0.0.1:18001`. Meshify generates the app systemd service, Nginx site, certificate, hook, and renewal timer. It verifies that the business binary exists and is executable; it does not copy your binary.
+`listen` means local app mode: the Go service runs on the same cloud server and listens on loopback, such as `127.0.0.1:18001`. Lanpanel generates the app systemd service, Nginx site, certificate, hook, and renewal timer. It verifies that the business binary exists and is executable; it does not copy your binary.
 
 `upstream` means tailnet upstream mode: public Nginx proxies to a fixed HTTP/WebSocket address on another tailnet node, such as `100.64.10.20:18001`. This mode does not generate a local app service. `listen` and `upstream` are mutually exclusive; `upstream` mode automatically requires the Tailscale client. Use `upstream` only for HTTP/WebSocket services, not PostgreSQL, Redis, MySQL, or other database ports.
 
@@ -335,7 +336,7 @@ The default app config enables `nginx.http2: true`. The target host's Nginx must
 `listen` mode example:
 
 ```yaml
-api_version: meshify/app/v1alpha1
+api_version: lanpanel/app/v1alpha1
 
 app:
   name: "example-app"
@@ -361,7 +362,7 @@ Replace `abc.com` with your real app domain, and replace `/opt/example-app/examp
 `upstream` mode example:
 
 ```yaml
-api_version: meshify/app/v1alpha1
+api_version: lanpanel/app/v1alpha1
 
 app:
   name: "tailapp"
@@ -378,9 +379,9 @@ service:
   env_file: ""
 
 tailscale:
-  # If there is no main meshify.yaml beside this app config, set login_server explicitly.
+  # If there is no main lanpanel.yaml beside this app config, set login_server explicitly.
   # login_server: "https://hs.example.com"
-  # auth_key_file: "/etc/meshify/tailscale/app-auth-key"
+  # auth_key_file: "/etc/lanpanel/tailscale/app-auth-key"
 ```
 
 Multiple domains belong in one `app.domains` list. They are written to the same Nginx `server_name`, the same certificate SAN set, and the same Host/SNI allowlist. The first app release does not create canonical redirects between names such as `abc.com` and `www.abc.com`; they serve the same app by default.
@@ -406,20 +407,20 @@ Keep `nginx.access_log: ""` by default. Set another path only when you need an e
 
 | Config | Behavior | Automatic rotation |
 | --- | --- | --- |
-| `nginx.access_log: ""` + GoAccess disabled | Meshify does not render a per-app `access_log`; Nginx inherits the global log configuration. Debian/Ubuntu commonly uses `/var/log/nginx/access.log` | Not by Meshify; usually handled by distro Nginx/logrotate |
-| `nginx.access_log: ""` + GoAccess enabled | Meshify uses and creates `/var/log/meshify/apps/<app-name>/access.log`, then renders the log format required by GoAccess | Yes: daily, 14 rotations, compressed; rotation reloads Nginx and restarts GoAccess |
-| Explicit non-managed `nginx.access_log` path + GoAccess disabled | Meshify only writes the path into the Nginx config; it does not create the file or directory | No; configure logrotate yourself |
+| `nginx.access_log: ""` + GoAccess disabled | Lanpanel does not render a per-app `access_log`; Nginx inherits the global log configuration. Debian/Ubuntu commonly uses `/var/log/nginx/access.log` | Not by Lanpanel; usually handled by distro Nginx/logrotate |
+| `nginx.access_log: ""` + GoAccess enabled | Lanpanel uses and creates `/var/log/lanpanel/apps/<app-name>/access.log`, then renders the log format required by GoAccess | Yes: daily, 14 rotations, compressed; rotation reloads Nginx and restarts GoAccess |
+| Explicit non-managed `nginx.access_log` path + GoAccess disabled | Lanpanel only writes the path into the Nginx config; it does not create the file or directory | No; configure logrotate yourself |
 | Explicit non-managed `nginx.access_log` path + GoAccess enabled | The path becomes the external canonical access log. Prepare it before deploy and satisfy the GoAccess safety rules below | No; rotate it yourself and handle Nginx reopen/reload plus GoAccess restart |
 
-`nginx.static_locations` renders before the app proxy location and supports optional `default_type`, `expires`, `Cache-Control`, `try_files $uri =404`, `gzip_static on`, and `access_log off`. Prefer either `expires` or `cache_control` for one location, because Nginx `expires` also emits a `Cache-Control` header; if both are set, Meshify renders both directives. Meshify does not copy static file contents; publish them with the same release process that installs the app binary.
+`nginx.static_locations` renders before the app proxy location and supports optional `default_type`, `expires`, `Cache-Control`, `try_files $uri =404`, `gzip_static on`, and `access_log off`. Prefer either `expires` or `cache_control` for one location, because Nginx `expires` also emits a `Cache-Control` header; if both are set, Lanpanel renders both directives. Lanpanel does not copy static file contents; publish them with the same release process that installs the app binary.
 
 When `nginx.http2` is true or any static location sets `gzip_static: true`, app deploy checks `nginx -V` before writing runtime files. `http2 on;` requires Nginx `1.25.1` or newer and the `http_v2` module.
 
 #### GoAccess App Log Dashboard
 
-`nginx.goaccess` is optional and default-off. When enabled, it provides a basic-auth protected real-time HTML dashboard at `https://<primary-domain>/_meshify/apps/<app-name>/goaccess` by default. Meshify installs or checks `goaccess`, renders the GoAccess config, `<app-name>-goaccess.service`, the report at `/var/lib/<app-name>/goaccess/report.html`, and the GoAccess `db-path` at `/var/lib/<app-name>/goaccess/db` with `persist true` and `restore true`; when the access log is Meshify-managed, Meshify also installs `logrotate`.
+`nginx.goaccess` is optional and default-off. When enabled, it provides a basic-auth protected real-time HTML dashboard at `https://<primary-domain>/_lanpanel/apps/<app-name>/goaccess` by default. Lanpanel installs or checks `goaccess`, renders the GoAccess config, `<app-name>-goaccess.service`, the report at `/var/lib/<app-name>/goaccess/report.html`, and the GoAccess `db-path` at `/var/lib/<app-name>/goaccess/db` with `persist true` and `restore true`; when the access log is Lanpanel-managed, Lanpanel also installs `logrotate`.
 
-Enabled GoAccess is always a real-time HTML dashboard in this integration. Nginx serves `/var/lib/<app-name>/goaccess/report.html`; the GoAccess service supplies live updates through its loopback WebSocket, and Meshify proxies that channel at `nginx.goaccess.websocket_path`. Meshify does not expose a static-only GoAccess mode.
+Enabled GoAccess is always a real-time HTML dashboard in this integration. Nginx serves `/var/lib/<app-name>/goaccess/report.html`; the GoAccess service supplies live updates through its loopback WebSocket, and Lanpanel proxies that channel at `nginx.goaccess.websocket_path`. Lanpanel does not expose a static-only GoAccess mode.
 
 ```yaml
 nginx:
@@ -431,8 +432,8 @@ nginx:
     log_format: "enhanced" # enhanced | combined
     auth_basic_user_file: "/etc/example-app/goaccess.htpasswd"
     auth_cidr_allowlist: [] # optional CIDRs; basic auth is still required
-    # path: "/_meshify/apps/example-app/goaccess"
-    # websocket_path: "/_meshify/apps/example-app/goaccess/ws"
+    # path: "/_lanpanel/apps/example-app/goaccess"
+    # websocket_path: "/_lanpanel/apps/example-app/goaccess/ws"
     websocket_listen: "" # usually leave empty; defaults to 127.0.0.1:<app-derived-port>
 ```
 
@@ -458,7 +459,7 @@ Use `-c` only when creating the file for the first time; remove `-c` when adding
 sudo htpasswd -m /etc/example-app/goaccess.htpasswd another-user
 ```
 
-Meshify does not ship a copyable htpasswd template, and you should not reuse example hashes; this file is the dashboard password database and must be generated for each deployment.
+Lanpanel does not ship a copyable htpasswd template, and you should not reuse example hashes; this file is the dashboard password database and must be generated for each deployment.
 
 GoAccess also needs the system locales selected by `nginx.goaccess.language`. Debian/Ubuntu normally provides `C.UTF-8`; when using `language: "zh-CN"`, generate `zh_CN.UTF-8` before deploy:
 
@@ -469,17 +470,17 @@ sudo locale-gen zh_CN.UTF-8
 locale -a | grep -Ei '^(C|C\.utf8|zh_CN\.utf8|zh_CN\.UTF-8)$'
 ```
 
-Keep the login shell locale valid too. For example, if `env` shows `LANG=en_US.UTF-8`, `locale -a` must list `en_US.utf8`; otherwise generate it or switch the host default to `C.UTF-8` with `sudo update-locale LANG=C.UTF-8`. Meshify runs GoAccess `--version`, `--help`, and compatibility probes under `LANG=C LC_ALL=C` so dependency checks do not depend on the operator's SSH locale. The deployed GoAccess systemd service still uses the UTF-8 locale selected by `nginx.goaccess.language`.
+Keep the login shell locale valid too. For example, if `env` shows `LANG=en_US.UTF-8`, `locale -a` must list `en_US.utf8`; otherwise generate it or switch the host default to `C.UTF-8` with `sudo update-locale LANG=C.UTF-8`. Lanpanel runs GoAccess `--version`, `--help`, and compatibility probes under `LANG=C LC_ALL=C` so dependency checks do not depend on the operator's SSH locale. The deployed GoAccess systemd service still uses the UTF-8 locale selected by `nginx.goaccess.language`.
 
 Key rules:
 
 | Item | Rule |
 | --- | --- |
 | `nginx.access_log` | Cannot be `off` when GoAccess is enabled; see the log path table above for other behavior |
-| External `access_log` safety | Must already exist, be a regular non-symlink file, be owned by root or www-data, not be group/other writable, and have root-owned parent directories that are not group/other writable. Meshify does not create them, chown foreign log roots, or install managed logrotate. During deploy, Meshify creates or confirms the GoAccess runtime identity before the final readability check |
-| Forbidden paths | Do not place explicit GoAccess access logs under another app's `/var/log/meshify/apps/`, a nested path under the current app, `/home`, `/root`, `/run/user`, `/tmp`, `/var/tmp`, or `/var/log/nginx`; `ProtectHome=true` and `PrivateTmp=true` hide the private paths, and distro logrotate commonly owns `/var/log/nginx/*.log` |
-| `error_log` | GoAccess does not parse it; it must not equal the GoAccess canonical access log or htpasswd file, and must stay outside Meshify-managed app and GoAccess runtime paths |
-| `path` / `websocket_path` | Usually leave empty and let Meshify derive them from `app.name`; update bookmarks and monitoring checks if you set them explicitly |
+| External `access_log` safety | Must already exist, be a regular non-symlink file, be owned by root or www-data, not be group/other writable, and have root-owned parent directories that are not group/other writable. Lanpanel does not create them, chown foreign log roots, or install managed logrotate. During deploy, Lanpanel creates or confirms the GoAccess runtime identity before the final readability check |
+| Forbidden paths | Do not place explicit GoAccess access logs under another app's `/var/log/lanpanel/apps/`, a nested path under the current app, `/home`, `/root`, `/run/user`, `/tmp`, `/var/tmp`, or `/var/log/nginx`; `ProtectHome=true` and `PrivateTmp=true` hide the private paths, and distro logrotate commonly owns `/var/log/nginx/*.log` |
+| `error_log` | GoAccess does not parse it; it must not equal the GoAccess canonical access log or htpasswd file, and must stay outside Lanpanel-managed app and GoAccess runtime paths |
+| `path` / `websocket_path` | Usually leave empty and let Lanpanel derive them from `app.name`; update bookmarks and monitoring checks if you set them explicitly |
 | `websocket_listen` | Usually leave empty; if set, it must be a loopback IP literal, not `localhost`, a wildcard, or a conflicting port. Other loopback IP literals are valid |
 | `language` | `en` uses `C.UTF-8`; `zh-CN` uses `zh_CN.UTF-8` for GoAccess UI text and keeps `LC_TIME=C.UTF-8` for parsing. Deploy checks `locale -a` and fails early if the required locale is missing. Language changes only GoAccess UI text; raw log fields stay unchanged |
 | `log_format` | `enhanced` is the default and includes Host plus request serving time; `combined` is the compatibility mode without serving-time metrics |
@@ -489,10 +490,10 @@ The GoAccess dashboard is primary-domain only. Dashboard requests on secondary d
 After deploy or refresh, check:
 
 ```bash
-meshify app verify --config meshify-apps/example-app.yaml
+lanpanel app verify --config lanpanel-apps/example-app.yaml
 sudo nginx -t
 systemctl status example-app-goaccess.service --no-pager --full
-curl -I https://app.example.com/_meshify/apps/example-app/goaccess
+curl -I https://app.example.com/_lanpanel/apps/example-app/goaccess
 ```
 
 Use these commands when troubleshooting:
@@ -517,19 +518,106 @@ journalctl -u <app-name>.service -e
 curl -I http://<app.upstream>
 ```
 
-Use the configured `nginx.access_log` path for `<canonical-access-log>`, or `/var/log/meshify/apps/<app-name>/access.log` when `nginx.access_log` is empty. Use the configured `nginx.error_log` path for `<error-log>`, or Nginx's default error log when `nginx.error_log` is empty.
+Use the configured `nginx.access_log` path for `<canonical-access-log>`, or `/var/log/lanpanel/apps/<app-name>/access.log` when `nginx.access_log` is empty. Use the configured `nginx.error_log` path for `<error-log>`, or Nginx's default error log when `nginx.error_log` is empty.
+
+#### EdgeOne Real Client IP
+
+For Tencent Cloud EdgeOne, keep real client IP restoration explicit and app-scoped:
+
+```yaml
+app:
+  acme_challenge: "dns-01"
+nginx:
+  realip_profile: "edgeone-prod"
+realip:
+  profiles:
+    edgeone-prod:
+      enabled: true
+      provider: "edgeone"
+      refresh_interval: "72h"
+      edgeone:
+        zone_id: "zone-xxxxxxxx"
+        env_file: "/etc/lanpanel/realip/edgeone-prod.env"
+```
+
+The EdgeOne realip env file must be root-owned and root-only. Use `_FILE` variables only:
+
+```bash
+TENCENTCLOUD_SECRET_ID_FILE=/etc/lanpanel/realip/edgeone-prod-secret-id
+TENCENTCLOUD_SECRET_KEY_FILE=/etc/lanpanel/realip/edgeone-prod-secret-key
+# Optional for Tencent Cloud temporary credentials:
+TENCENTCLOUD_SESSION_TOKEN_FILE=/etc/lanpanel/realip/edgeone-prod-session-token
+```
+
+If DNS-01 HTTPS certificate issuance already uses Tencent Cloud credentials as shown above, EdgeOne realip may reuse the same SecretId and SecretKey files. Do not reuse the `dns01.env_file` itself when it contains lego DNS polling or propagation tuning; create a separate realip env file that references the same secret files:
+
+```bash
+sudo install -d -o root -g root -m 0700 /etc/lanpanel/realip
+sudo install -o root -g root -m 0600 /dev/null /etc/lanpanel/realip/edgeone-prod.env
+sudo tee /etc/lanpanel/realip/edgeone-prod.env >/dev/null <<'EOF'
+TENCENTCLOUD_SECRET_ID_FILE=/etc/lanpanel/dns01/tencentcloud-secret-id
+TENCENTCLOUD_SECRET_KEY_FILE=/etc/lanpanel/dns01/tencentcloud-secret-key
+EOF
+```
+
+EdgeOne realip credential setup follows the same structure as the DNSPod example above: put the SecretId and SecretKey in root-owned, root-only files, then reference those files from the realip env file.
+
+```bash
+sudo install -d -o root -g root -m 0700 /etc/lanpanel/realip
+sudo install -o root -g root -m 0600 /dev/null /etc/lanpanel/realip/edgeone-prod-secret-id
+sudo install -o root -g root -m 0600 /dev/null /etc/lanpanel/realip/edgeone-prod-secret-key
+printf '%s' '<Tencent Cloud SecretId>' | sudo tee /etc/lanpanel/realip/edgeone-prod-secret-id >/dev/null
+printf '%s' '<Tencent Cloud SecretKey>' | sudo tee /etc/lanpanel/realip/edgeone-prod-secret-key >/dev/null
+
+sudo install -o root -g root -m 0600 /dev/null /etc/lanpanel/realip/edgeone-prod.env
+sudo tee /etc/lanpanel/realip/edgeone-prod.env >/dev/null <<'EOF'
+TENCENTCLOUD_SECRET_ID_FILE=/etc/lanpanel/realip/edgeone-prod-secret-id
+TENCENTCLOUD_SECRET_KEY_FILE=/etc/lanpanel/realip/edgeone-prod-secret-key
+EOF
+```
+
+This first EdgeOne realip implementation calls the Tencent Cloud China EdgeOne API endpoint `teo.tencentcloudapi.com`. International EdgeOne accounts that require `teo.intl.tencentcloudapi.com` are not supported by this release.
+
+Then add the `nginx.realip_profile` and `realip.profiles.edgeone-prod` config shown above to the app config, with DNS-01 already configured as described earlier. On first enablement, run:
+
+```bash
+lanpanel app verify --config lanpanel-apps/example-app.yaml
+sudo lanpanel app deploy --config lanpanel-apps/example-app.yaml
+```
+
+To synchronize EdgeOne OriginACL immediately, run:
+
+```bash
+sudo lanpanel app realip refresh --profile edgeone-prod --format human
+sudo lanpanel app realip diagnostics --profile edgeone-prod --format human
+```
+
+`upstream` mode uses the same realip profile; set `listen` to empty in the app config, fill the fixed tailnet `upstream`, and prepare the Tailscale client as described above. After the first deploy and every refresh, update Tencent Cloud security groups, host firewalls, or an equivalent boundary from the EdgeOne OriginACL current+next CIDRs reported by Lanpanel, allowing only those CIDRs to reach origin `80/443`. This is a manual operation; the script does not and should not call `ConfirmOriginACLUpdate`.
+
+For dedicated EdgeOne realip credentials, grant permission only for the target EdgeOne zone and `DescribeOriginACL`. When the credentials are shared with DNS-01, grant DNSPod record management plus `DescribeOriginACL` for the target EdgeOne zone. Lanpanel does not call `ConfirmOriginACLUpdate`, does not modify EdgeOne site/DNS/cert settings, and does not accept non-EdgeOne providers, manual CIDRs, `trust_all`, custom headers, `X-Forwarded-For` as the realip input, Headscale realip, or global Nginx realip. The client IP header is fixed to `EO-Connecting-IP`.
+
+When enabled, Lanpanel renders app-site scoped `set_real_ip_from`/`real_ip_header` directives, rebuilds upstream `X-Real-IP` and `X-Forwarded-For` from canonical `$remote_addr`, keeps `X-Forwarded-Proto` as the origin Nginx `$scheme`, and clears inbound forwarded/client-IP headers such as `Forwarded`, `X-Original-Forwarded-For`, `X-Client-IP`, `EO-Connecting-IP`, and `EO-Client-IP`. Non-trusted direct requests are rejected by the generated app site and logged as `untrusted_source_ip`. Do not edit generated app Nginx sites directly; rerun `sudo lanpanel app deploy --config lanpanel-apps/example-app.yaml` to regenerate app-site templates. After EdgeOne OriginACL CIDR changes, refresh the shared realip profile artifacts and then inspect them with:
+
+```bash
+sudo lanpanel app realip refresh --profile edgeone-prod --format human
+sudo lanpanel app realip diagnostics --profile edgeone-prod --format human
+```
+
+Use `--format json` when a machine-readable response is needed.
+
+The timer defaults to `72h` and `refresh_interval` must be at least `1h` because EdgeOne origin ACL changes are low frequency. Subscribe to EdgeOne origin ACL/IP change notifications and use Lanpanel refresh or diagnostics output to track deployed current+next CIDRs. If EdgeOne returns `NextOriginACL`, Lanpanel trusts current+next CIDRs so Nginx can accept the transition. Operators must still update Tencent Cloud security groups, host firewalls, or an equivalent boundary so origin `80/443` only accepts EdgeOne OriginACL current+next CIDRs, then confirm the EdgeOne origin IP update outside Lanpanel. Lanpanel reports this as a manual confirmation item; it does not manage cloud firewalls.
 
 #### App Verify And Status
 
-`meshify app verify` is a static config/template check for the app workflow. A passing run prints `static-passed`. It validates schema, template rendering, Nginx Host/SNI guards, certificate paths, systemd planning, Tailscale requirement inference, GoAccess dashboard/WebSocket runtime files when enabled, and sensitive-value leakage. It does not read deployed host files, systemd state, certificate SANs, Nginx runtime state, GoAccess process state, or Tailscale online state. `meshify app deploy` also runs the same kind of static checks.
+`lanpanel app verify` is a static config/template check for the app workflow. A passing run prints `static-passed`. It validates schema, template rendering, Nginx Host/SNI guards, certificate paths, systemd planning, Tailscale requirement inference, GoAccess dashboard/WebSocket runtime files when enabled, and sensitive-value leakage. It does not read deployed host files, systemd state, certificate SANs, Nginx runtime state, GoAccess process state, or Tailscale online state. `lanpanel app deploy` also runs the same kind of static checks.
 
-The main `meshify status` command reads the main deployment checkpoint, activation history, and last recoverable failure. The first app release has no separate checkpoint store, so there is no `meshify app status`.
+The main `lanpanel status` command reads the main deployment checkpoint, activation history, and last recoverable failure. The first app release has no separate checkpoint store, so there is no `lanpanel app status`.
 
-The release binary's app runtime templates only come from `deploy/templates/app/`, and `meshify app deploy` renders and installs them automatically.
+The release binary's app-site runtime templates come from `deploy/templates/app/`; EdgeOne realip profile runtime templates come from `deploy/templates/realip/`. `lanpanel app deploy` renders and installs the required app and realip templates automatically.
 
 #### App Pre-Deploy Checklist
 
-- `app.domains` resolve to the current cloud server and do not reuse the main Headscale `server_url` host.
+- `app.domains` resolve to the current cloud server and do not reuse the main Headscale `server_url` host. With an EdgeOne realip profile, public DNS may resolve to EdgeOne instead; deploy checks DNS-01 credentials and EdgeOne OriginACL coverage instead of requiring direct origin A/AAAA records.
 - For app sites, only public `80/tcp` and `443/tcp` are exposed through Nginx; app ports such as `18001` are not public. If the same host also runs the main Headscale deployment, `3478/udp` is still required for STUN.
 - If the same host also manages the main Headscale deployment, `app.listen` and `nginx.goaccess.websocket_listen` must not reuse the Headscale metrics port.
 - In `listen` mode, the business binary is installed and the first token of `service.exec_start` is an absolute executable path.
@@ -537,7 +625,7 @@ The release binary's app runtime templates only come from `deploy/templates/app/
 - If `nginx.goaccess.enabled` is true, prepare the htpasswd file as described above; any explicit external `nginx.access_log` must already exist and satisfy the external log safety requirements.
 - `nginx.static_locations` aliases point at files or directories published with the app release.
 - In `upstream` mode, the backend is a fixed `100.64.x.y:port` and is reachable from the cloud server.
-- DNS-01 `dns01.env_file` and Tailscale `tailscale.auth_key_file` are root-only files.
+- DNS-01 `dns01.env_file` and Tailscale `tailscale.auth_key_file` are root-owned, root-only files.
 
 Use `curl`, `nginx -t`, certificate inspection, and `systemctl` for deployed host-state validation. Use `tailscale status` only for `upstream` mode or a `listen` app with `tailscale.enabled_for_listen: true`. `upstream` mode has no local app service, so skip the `<app-name>.service` check and verify the fixed tailnet upstream from the cloud server instead.
 
@@ -547,12 +635,12 @@ Use `curl`, `nginx -t`, certificate inspection, and `systemctl` for deployed hos
 - Public HTTP and HTTPS terminate at Nginx. Headscale control-plane traffic does not bind to a public interface.
 - Explicit HTTP and HTTPS `default_server` catch-all blocks reject unmatched Host or SNI traffic instead of proxying it to Headscale.
 - Headscale administration stays local through the unix socket; do not expose remote gRPC or API-key management unless you intentionally add it.
-- DNS-01 provider values must stay outside `meshify.yaml`, rendered templates, deploy output, status output, and systemd units.
+- DNS-01 provider values must stay outside `lanpanel.yaml`, rendered templates, deploy output, status output, and systemd units.
 - App ports should only listen on loopback or be fixed tailnet upstreams; do not expose private app ports directly to the public internet.
 
 ### Server Troubleshooting
 
-Start with the command that failed. `meshify deploy`, `meshify verify`, and `meshify status` report the failed step, impact, remediation, and retry command when recovery is possible.
+Start with the command that failed. `lanpanel deploy`, `lanpanel verify`, and `lanpanel status` report the failed step, impact, remediation, and retry command when recovery is possible.
 
 Config checks:
 
@@ -565,7 +653,7 @@ Preflight blocks:
 
 - DNS must resolve the public Headscale host to the target server before deploy.
 - `80/tcp`, `443/tcp`, and `3478/udp` must be available locally and allowed by the cloud firewall or security group.
-- Existing Nginx can coexist by `server_name`, but Meshify owns the HTTP/HTTPS `default_server` catch-all. Disable or migrate conflicting default sites.
+- Existing Nginx can coexist by `server_name`, but Lanpanel owns the HTTP/HTTPS `default_server` catch-all. Disable or migrate conflicting default sites.
 
 Package and lego failures:
 
@@ -593,11 +681,11 @@ App runtime failures:
 - For app certificate or proxy issues, run `nginx -t` and inspect `/etc/nginx/sites-available/<app-name>.conf`.
 - For static file 404s, confirm the `nginx.static_locations` `alias` files were published by the app release process.
 
-Capture full `meshify deploy`, `meshify verify`, or `meshify status` output, edited `default` values, Headscale source mode, and whether the failure affects deploy, certificate issuance, Nginx, Headscale, MagicDNS, direct path selection, or DERP fallback.
+Capture full `lanpanel deploy`, `lanpanel verify`, or `lanpanel status` output, edited `default` values, Headscale source mode, and whether the failure affects deploy, certificate issuance, Nginx, Headscale, MagicDNS, direct path selection, or DERP fallback.
 
 ## Client Guide
 
-Use this section after `meshify deploy` and `meshify verify` pass.
+Use this section after `lanpanel deploy` and `lanpanel verify` pass.
 
 ### Operator Handoff
 
@@ -612,17 +700,17 @@ Keep Headscale administration local. The default runtime config uses `/var/run/h
 
 ### Create A Fresh Preauth Key
 
-`meshify deploy` creates the initial `meshify` user and a one-time preauth key when Headscale is running. Headscale preauth keys are not reusable by default: the command below creates a key that can register one client and expires after 24 hours. To onboard more clients, run the command again and give each client a different key.
+`lanpanel deploy` creates the initial `lanpanel` user and a one-time preauth key when Headscale is running. Headscale preauth keys are not reusable by default: the command below creates a key that can register one client and expires after 24 hours. To onboard more clients, run the command again and give each client a different key.
 
 ```bash
 sudo headscale --config /etc/headscale/config.yaml users list
-# Only if the meshify user is missing from users list:
-sudo headscale --config /etc/headscale/config.yaml users create meshify
+# Only if the lanpanel user is missing from users list:
+sudo headscale --config /etc/headscale/config.yaml users create lanpanel
 sudo headscale --config /etc/headscale/config.yaml users list
 sudo headscale --config /etc/headscale/config.yaml preauthkeys create --user <ID> --expiration 24h
 ```
 
-Use the numeric user ID shown by `users list` for the `meshify` user. Use a short expiration for one-time onboarding. Only when you intentionally want one key to register multiple clients, add `--reusable`:
+Use the numeric user ID shown by `users list` for the `lanpanel` user. Use a short expiration for one-time onboarding. Only when you intentionally want one key to register multiple clients, add `--reusable`:
 
 ```bash
 sudo headscale --config /etc/headscale/config.yaml preauthkeys create --user <ID> --expiration 24h --reusable

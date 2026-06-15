@@ -3,7 +3,7 @@ package nginx
 import (
 	"context"
 	"errors"
-	"meshify/internal/host"
+	"lanpanel/internal/host"
 	"os"
 	"os/exec"
 	"path/filepath"

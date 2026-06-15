@@ -9,19 +9,23 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"meshify/internal/appconfig"
-	"meshify/internal/apprender"
-	"meshify/internal/assets"
-	"meshify/internal/components/appsvc"
-	"meshify/internal/components/headscale"
-	legocomponent "meshify/internal/components/lego"
-	"meshify/internal/config"
-	"meshify/internal/host"
-	"meshify/internal/output"
-	"meshify/internal/preflight"
-	"meshify/internal/render"
-	"meshify/internal/state"
-	"meshify/internal/workflow"
+	"lanpanel/internal/appconfig"
+	"lanpanel/internal/apprender"
+	"lanpanel/internal/assets"
+	"lanpanel/internal/components/appsvc"
+	"lanpanel/internal/components/headscale"
+	legocomponent "lanpanel/internal/components/lego"
+	"lanpanel/internal/config"
+	"lanpanel/internal/host"
+	"lanpanel/internal/output"
+	"lanpanel/internal/preflight"
+	"lanpanel/internal/realip"
+	"lanpanel/internal/realip/edgeone"
+	"lanpanel/internal/realipassets"
+	"lanpanel/internal/realiprender"
+	"lanpanel/internal/render"
+	"lanpanel/internal/state"
+	"lanpanel/internal/workflow"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -31,6 +35,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -54,6 +59,41 @@ func fieldValue(fields []output.Field, label string) (string, bool) {
 	return "", false
 }
 
+type staticFileInfo struct {
+	name         string
+	mode         fs.FileMode
+	size         int64
+	uid          uint32
+	unknownOwner bool
+}
+
+func (info staticFileInfo) Name() string {
+	return info.name
+}
+
+func (info staticFileInfo) Size() int64 {
+	return info.size
+}
+
+func (info staticFileInfo) Mode() fs.FileMode {
+	return info.mode
+}
+
+func (info staticFileInfo) ModTime() time.Time {
+	return time.Time{}
+}
+
+func (info staticFileInfo) IsDir() bool {
+	return info.mode.IsDir()
+}
+
+func (info staticFileInfo) Sys() any {
+	if info.unknownOwner {
+		return nil
+	}
+	return &syscall.Stat_t{Uid: info.uid}
+}
+
 func TestExecute_HelpOutput(t *testing.T) {
 	t.Parallel()
 
@@ -66,11 +106,11 @@ func TestExecute_HelpOutput(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"meshify manages init, deploy, verify, status, and app workflows.",
+		"lanpanel manages init, deploy, verify, status, and app workflows.",
 		"Happy path:",
-		"meshify init",
-		"meshify deploy",
-		"meshify verify",
+		"lanpanel init",
+		"lanpanel deploy",
+		"lanpanel verify",
 		"app      Manage additional app deployments.",
 		"status   Show config readiness and persisted deploy context.",
 	} {
@@ -91,12 +131,70 @@ func TestExecute_AppHelpOutputIsEnglishReadable(t *testing.T) {
 		t.Fatalf("stderr = %q, want empty", stderr)
 	}
 	for _, want := range []string{
-		"meshify app manages additional Go services and tailnet upstreams.",
+		"lanpanel app manages additional Go services and tailnet upstreams.",
 		"Usage:",
 		"Commands:",
 		"Generate an editable app example config.",
 		"Deploy an app from config.",
 		"Validate app config and runtime templates.",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("stdout = %q, want substring %q", stdout, want)
+		}
+	}
+}
+
+func TestExecute_AppRealIPValidateReferenceHelp(t *testing.T) {
+	t.Parallel()
+
+	realIPHelp, realIPHelpStderr, err := runCLI(t, "app", "realip", "--help")
+	if err != nil {
+		t.Fatalf("Execute(app realip --help) error = %v", err)
+	}
+	if realIPHelpStderr != "" {
+		t.Fatalf("app realip stderr = %q, want empty", realIPHelpStderr)
+	}
+	for _, want := range []string{
+		"diagnostics         Report deployed realip profile diagnostics.",
+		"refresh             Refresh a deployed realip profile from EdgeOne OriginACL.",
+		"validate-reference  Validate a deployed realip app reference.",
+	} {
+		if !strings.Contains(realIPHelp, want) {
+			t.Fatalf("app realip help = %q, want substring %q", realIPHelp, want)
+		}
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "realip", "help", "diagnostics")
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	for _, want := range []string{
+		"Report deployed realip profile diagnostics.",
+		"lanpanel app realip diagnostics --profile name [--format human|json]",
+		"--profile string",
+		"--format string",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("stdout = %q, want substring %q", stdout, want)
+		}
+	}
+
+	stdout, stderr, err = runCLI(t, "app", "realip", "help", "validate-reference")
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	for _, want := range []string{
+		"Validate a deployed realip app reference.",
+		"lanpanel app realip validate-reference --profile name --app name --path path",
+		"--profile string",
+		"--app string",
+		"--path string",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("stdout = %q, want substring %q", stdout, want)
@@ -131,7 +229,7 @@ func TestParsePlatformInfoFromOSReleaseFallsBackToUsrLib(t *testing.T) {
 func TestExecute_InitWritesExampleConfig(t *testing.T) {
 	t.Parallel()
 
-	configPath := filepath.Join(t.TempDir(), "meshify.yaml")
+	configPath := filepath.Join(t.TempDir(), "lanpanel.yaml")
 	stdout, stderr, err := runCLI(t, "init", "--config", configPath)
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
@@ -139,7 +237,7 @@ func TestExecute_InitWritesExampleConfig(t *testing.T) {
 	if stderr != "" {
 		t.Fatalf("stderr = %q, want empty", stderr)
 	}
-	if !strings.Contains(stdout, "meshify init: wrote example config") {
+	if !strings.Contains(stdout, "lanpanel init: wrote example config") {
 		t.Fatalf("stdout = %q, want init summary", stdout)
 	}
 	if !strings.Contains(stdout, configPath) {
@@ -164,7 +262,7 @@ func TestExecute_InitWritesExampleConfig(t *testing.T) {
 func TestExecute_AppInitWritesExampleConfig(t *testing.T) {
 	t.Parallel()
 
-	configPath := filepath.Join(t.TempDir(), "meshify-app.yaml")
+	configPath := filepath.Join(t.TempDir(), "lanpanel-app.yaml")
 	stdout, stderr, err := runCLI(t, "app", "init", "--config", configPath)
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
@@ -172,7 +270,7 @@ func TestExecute_AppInitWritesExampleConfig(t *testing.T) {
 	if stderr != "" {
 		t.Fatalf("stderr = %q, want empty", stderr)
 	}
-	if !strings.Contains(stdout, "meshify app init: App example config written") {
+	if !strings.Contains(stdout, "lanpanel app init: App example config written") {
 		t.Fatalf("stdout = %q, want app init summary", stdout)
 	}
 	loaded, err := appconfig.LoadFile(configPath)
@@ -202,7 +300,7 @@ func TestExecute_AppVerifyRejectsExampleFlag(t *testing.T) {
 func TestExecute_AppVerifyJSON(t *testing.T) {
 	t.Parallel()
 
-	configPath := filepath.Join(t.TempDir(), "meshify-app.yaml")
+	configPath := filepath.Join(t.TempDir(), "lanpanel-app.yaml")
 	if err := appconfig.WriteExampleFile(configPath); err != nil {
 		t.Fatalf("WriteExampleFile() error = %v", err)
 	}
@@ -245,7 +343,7 @@ func TestExecute_AppVerifyMissingConfigReturnsErrorWithJSON(t *testing.T) {
 }
 
 func TestExecute_AppDeployInvalidConfigReturnsErrorWithJSON(t *testing.T) {
-	configPath := filepath.Join(t.TempDir(), "meshify-app.yaml")
+	configPath := filepath.Join(t.TempDir(), "lanpanel-app.yaml")
 	if err := os.WriteFile(configPath, []byte("api_version: wrong\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
@@ -299,7 +397,7 @@ func TestExecute_AppDeployBlocksInvalidAuthKeyFileEvenWhenTailscaleAlreadyLogged
 		cfg.Service.ExecStart = ""
 		cfg.Service.WorkingDirectory = ""
 		cfg.Tailscale.LoginServer = "https://hs.example.com"
-		cfg.Tailscale.AuthKeyFile = "/run/meshify/missing-auth.key"
+		cfg.Tailscale.AuthKeyFile = "/run/lanpanel/missing-auth.key"
 	})
 	cfg, err := appconfig.LoadFile(configPath)
 	if err != nil {
@@ -324,8 +422,8 @@ func TestExecute_AppDeployBlocksInvalidAuthKeyFileEvenWhenTailscaleAlreadyLogged
 				return host.Result{Stdout: `{"ControlURL":"https://hs.example.com","RouteAll":false,"CorpDNS":false,"ShieldsUp":true}`}, nil
 			}
 		}
-		if actual.Name == "cat" && len(actual.Args) == 1 && actual.Args[0] == "/var/lib/meshify/tailscale-client.json" {
-			return host.Result{Stdout: `{"login_server":"https://hs.example.com","accept_dns":false,"accept_routes":false,"shields_up":true,"managed_by":"meshify"}`}, nil
+		if actual.Name == "cat" && len(actual.Args) == 1 && actual.Args[0] == "/var/lib/lanpanel/tailscale-client.json" {
+			return host.Result{Stdout: `{"login_server":"https://hs.example.com","accept_dns":false,"accept_routes":false,"shields_up":true,"managed_by":"lanpanel"}`}, nil
 		}
 		return host.Result{}, nil
 	}}
@@ -373,7 +471,7 @@ func TestExecute_AppDeployReadsAuthKeyFileOnlyWhenLoginNeeded(t *testing.T) {
 		cfg.Service.ExecStart = ""
 		cfg.Service.WorkingDirectory = ""
 		cfg.Tailscale.LoginServer = "https://hs.example.com"
-		cfg.Tailscale.AuthKeyFile = "/run/meshify/missing-auth.key"
+		cfg.Tailscale.AuthKeyFile = "/run/lanpanel/missing-auth.key"
 	})
 	stubPassingAppDeployPreflight(t)
 	detectAppTailscaleAuthKeyFileStateFn = func(appconfig.Config) (bool, bool, string) {
@@ -598,10 +696,10 @@ func TestExecute_AppDeployBlocksMalformedGoAccessAuthBeforeHostMutation(t *testi
 }
 
 func TestExecute_AppDeployExplicitGoAccessLogReadabilityGuardRunsAfterUserCreation(t *testing.T) {
-	const logFile = "/var/log/meshify/custom/review-app.access.log"
+	const logFile = "/var/log/lanpanel/custom/review-app.access.log"
 	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
 		cfg.Nginx.AccessLog = logFile
-		cfg.Nginx.ErrorLog = "/var/log/meshify/custom/review-app.error.log"
+		cfg.Nginx.ErrorLog = "/var/log/lanpanel/custom/review-app.error.log"
 		cfg.Nginx.GoAccess.Enabled = true
 		cfg.Nginx.GoAccess.AuthBasicUserFile = "/etc/review-app/goaccess.htpasswd"
 	})
@@ -649,10 +747,10 @@ func TestExecute_AppDeployExplicitGoAccessLogReadabilityGuardRunsAfterUserCreati
 		switch path {
 		case logFile:
 			return rootOwnedModeFileInfo{name: "review-app.access.log", mode: 0o640, size: 1}, nil
-		case "/var/log/meshify/custom":
+		case "/var/log/lanpanel/custom":
 			return rootOwnedModeFileInfo{name: "custom", mode: os.ModeDir | 0o755}, nil
-		case "/var/log/meshify":
-			return rootOwnedModeFileInfo{name: "meshify", mode: os.ModeDir | 0o755}, nil
+		case "/var/log/lanpanel":
+			return rootOwnedModeFileInfo{name: "lanpanel", mode: os.ModeDir | 0o755}, nil
 		case "/var/log":
 			return rootOwnedModeFileInfo{name: "log", mode: os.ModeDir | 0o755}, nil
 		case "/var":
@@ -700,7 +798,7 @@ func TestExecute_AppDeployExplicitGoAccessLogReadabilityGuardRunsAfterUserCreati
 	}
 }
 
-func TestExecute_AppVerifyRejectsDefaultMeshifyServerDomain(t *testing.T) {
+func TestExecute_AppVerifyRejectsDefaultLanpanelServerDomain(t *testing.T) {
 	baseDir := t.TempDir()
 	previousDir, err := os.Getwd()
 	if err != nil {
@@ -714,7 +812,7 @@ func TestExecute_AppVerifyRejectsDefaultMeshifyServerDomain(t *testing.T) {
 			t.Fatalf("restore Chdir() error = %v", err)
 		}
 	})
-	writeReviewMainConfig(t, filepath.Join(baseDir, "meshify.yaml"), "https://hs.example.com")
+	writeReviewMainConfig(t, filepath.Join(baseDir, "lanpanel.yaml"), "https://hs.example.com")
 	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
 		cfg.App.Domains = []string{"hs.example.com"}
 	})
@@ -739,9 +837,9 @@ func TestExecute_AppVerifyRejectsDefaultMeshifyServerDomain(t *testing.T) {
 	}
 }
 
-func TestExecute_AppDeployRejectsMeshifyConfigServerDomain(t *testing.T) {
+func TestExecute_AppDeployRejectsLanpanelConfigServerDomain(t *testing.T) {
 	baseDir := t.TempDir()
-	mainConfigPath := filepath.Join(baseDir, "meshify.yaml")
+	mainConfigPath := filepath.Join(baseDir, "lanpanel.yaml")
 	writeReviewMainConfig(t, mainConfigPath, "https://hs.example.com")
 	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
 		cfg.App.Domains = []string{"hs.example.com"}
@@ -749,7 +847,7 @@ func TestExecute_AppDeployRejectsMeshifyConfigServerDomain(t *testing.T) {
 		cfg.App.Upstream = "100.64.10.20:18001"
 		cfg.Service.ExecStart = ""
 		cfg.Service.WorkingDirectory = ""
-		cfg.Tailscale.MeshifyConfig = mainConfigPath
+		cfg.Tailscale.LanpanelConfig = mainConfigPath
 	})
 
 	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
@@ -785,7 +883,7 @@ func TestExecute_AppVerifyRejectsCustomHeadscaleMetricsPortConflict(t *testing.T
 	})
 	mainCfg := config.ExampleConfig()
 	mainCfg.Advanced.Headscale.MetricsPort = 18001
-	if err := mainCfg.WriteFile(filepath.Join(baseDir, "meshify.yaml")); err != nil {
+	if err := mainCfg.WriteFile(filepath.Join(baseDir, "lanpanel.yaml")); err != nil {
 		t.Fatalf("WriteFile(main config) error = %v", err)
 	}
 	configPath := writeReviewAppConfig(t)
@@ -809,14 +907,14 @@ func TestExecute_AppVerifyRejectsCustomHeadscaleMetricsPortConflict(t *testing.T
 
 func TestExecute_AppDeployRejectsCustomHeadscaleMetricsPortConflict(t *testing.T) {
 	baseDir := t.TempDir()
-	mainConfigPath := filepath.Join(baseDir, "meshify.yaml")
+	mainConfigPath := filepath.Join(baseDir, "lanpanel.yaml")
 	mainCfg := config.ExampleConfig()
 	mainCfg.Advanced.Headscale.MetricsPort = 18001
 	if err := mainCfg.WriteFile(mainConfigPath); err != nil {
 		t.Fatalf("WriteFile(main config) error = %v", err)
 	}
 	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
-		cfg.Tailscale.MeshifyConfig = mainConfigPath
+		cfg.Tailscale.LanpanelConfig = mainConfigPath
 	})
 
 	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
@@ -886,14 +984,14 @@ func TestExecute_AppRejectsGoAccessHeadscaleMetricsPortConflict(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			baseDir := t.TempDir()
-			mainConfigPath := filepath.Join(baseDir, "meshify.yaml")
+			mainConfigPath := filepath.Join(baseDir, "lanpanel.yaml")
 			mainCfg := config.ExampleConfig()
 			tc.configureMain(&mainCfg)
 			if err := mainCfg.WriteFile(mainConfigPath); err != nil {
 				t.Fatalf("WriteFile(main config) error = %v", err)
 			}
 			configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
-				cfg.Tailscale.MeshifyConfig = mainConfigPath
+				cfg.Tailscale.LanpanelConfig = mainConfigPath
 				cfg.Nginx.GoAccess.Enabled = true
 				cfg.Nginx.GoAccess.AuthBasicUserFile = "/etc/review-app/goaccess.htpasswd"
 				if tc.configureApp != nil {
@@ -1432,7 +1530,7 @@ func TestExecute_AppDeployCertificateFailureReportsCommandEffects(t *testing.T) 
 	previousExecutor := newHostExecutorFn
 	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
 		actual := unwrapMaybeSudoHostCommand(command)
-		if actual.Name == "sh" && len(actual.Args) >= 3 && actual.Args[2] == "meshify-app-lego-issue-or-renew" {
+		if actual.Name == "sh" && len(actual.Args) >= 3 && actual.Args[2] == "lanpanel-app-lego-issue-or-renew" {
 			return host.Result{ExitCode: 1, Stderr: "lego failed"}, errors.New("lego failed")
 		}
 		return host.Result{}, nil
@@ -1519,10 +1617,10 @@ func TestExecute_AppDeployUpstreamRemovesManagedListenService(t *testing.T) {
 		if actual.Name == "tailscale" && strings.Join(actual.Args, " ") == "debug prefs" {
 			return host.Result{Stdout: `{"ControlURL":"https://hs.example.com","RouteAll":false,"CorpDNS":false,"ShieldsUp":true}`}, nil
 		}
-		if actual.Name == "cat" && len(actual.Args) == 1 && actual.Args[0] == "/var/lib/meshify/tailscale-client.json" {
-			return host.Result{Stdout: `{"login_server":"https://hs.example.com","accept_dns":false,"accept_routes":false,"shields_up":true,"managed_by":"meshify"}`}, nil
+		if actual.Name == "cat" && len(actual.Args) == 1 && actual.Args[0] == "/var/lib/lanpanel/tailscale-client.json" {
+			return host.Result{Stdout: `{"login_server":"https://hs.example.com","accept_dns":false,"accept_routes":false,"shields_up":true,"managed_by":"lanpanel"}`}, nil
 		}
-		if actual.Name == "sh" && len(actual.Args) >= 3 && actual.Args[2] == "meshify-app-remove-stale-service" {
+		if actual.Name == "sh" && len(actual.Args) >= 3 && actual.Args[2] == "lanpanel-app-remove-stale-service" {
 			return host.Result{Stdout: servicePath + "\n"}, nil
 		}
 		return host.Result{}, nil
@@ -1632,7 +1730,7 @@ func TestExecute_AppDeployEnabledSiteGuardBlocksForeignPath(t *testing.T) {
 	}
 	for _, command := range runner.commands {
 		actual := unwrapMaybeSudoHostCommand(command)
-		if actual.Name == "ln" || actual.Name == "apt-get" || actual.Name == "mkdir" || actual.Name == "/opt/meshify/bin/lego" {
+		if actual.Name == "ln" || actual.Name == "apt-get" || actual.Name == "mkdir" || actual.Name == "/opt/lanpanel/bin/lego" {
 			t.Fatalf("commands = %#v, wanted enabled-site guard to block before host mutations", runner.commands)
 		}
 	}
@@ -1861,6 +1959,261 @@ func TestExecute_AppDeployBlocksNginxDomainConflictBeforeRuntimeInstall(t *testi
 	}
 }
 
+func TestExecute_AppDeployRealIPReferenceWaitsForLaterGuards(t *testing.T) {
+	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
+		enabled := true
+		cfg.App.ACMEChallenge = appconfig.ACMEChallengeDNS01
+		cfg.DNS01.Provider = "route53"
+		cfg.Nginx.RealIPProfile = "edgeone-prod"
+		cfg.RealIP.Profiles = map[string]appconfig.RealIPProfileConfig{
+			"edgeone-prod": {
+				Enabled:  &enabled,
+				Provider: appconfig.RealIPProviderEdgeOne,
+				EdgeOne: appconfig.RealIPEdgeOneConfig{
+					ZoneID:  "zone-2abcDEF123",
+					EnvFile: "/etc/lanpanel/realip/edgeone-prod.env",
+				},
+			},
+		}
+	})
+	cfg, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	staged := stagedRuntimeWithTempHostPaths(t, cfg)
+	stubPassingAppDeployPreflight(t)
+	detectAppDNSCredentialStateFn = func(appconfig.Config) (bool, bool, string) {
+		return true, true, "dns credentials ready"
+	}
+
+	installedPaths := []string{}
+	previousStage := stageAppRuntimeFilesFn
+	previousInstaller := newAppFileInstallerFn
+	previousExecutor := newHostExecutorFn
+	previousReferenceReader := readDeployedRealIPReferencesFn
+	previousLoadCredentials := loadEdgeOneCredentialsFn
+	previousDescribe := describeEdgeOneOriginACLFn
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		if command.DisplayName == "guard-nginx-server-names" {
+			return host.Result{ExitCode: 1, Stderr: "duplicate server_name"}, errors.New("duplicate server_name")
+		}
+		return host.Result{}, nil
+	}}
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+		newAppFileInstallerFn = previousInstaller
+		newHostExecutorFn = previousExecutor
+		readDeployedRealIPReferencesFn = previousReferenceReader
+		loadEdgeOneCredentialsFn = previousLoadCredentials
+		describeEdgeOneOriginACLFn = previousDescribe
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return staged, nil
+	}
+	newAppFileInstallerFn = func(host.Executor, host.PrivilegeStrategy) appStagedFileInstaller {
+		return recordingPathInstaller{paths: &installedPaths}
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+	readDeployedRealIPReferencesFn = func(dir string) ([]realip.Reference, error) {
+		if dir != "/var/lib/lanpanel/realip/edgeone-prod/references" {
+			t.Fatalf("reference dir = %q", dir)
+		}
+		return nil, nil
+	}
+	loadEdgeOneCredentialsFn = func(_ edgeone.FileSystem, envFile string) (edgeone.Credentials, error) {
+		if envFile != "/etc/lanpanel/realip/edgeone-prod.env" {
+			t.Fatalf("envFile = %q", envFile)
+		}
+		return edgeone.Credentials{SecretID: "id", SecretKey: "key"}, nil
+	}
+	describeEdgeOneOriginACLFn = func(_ stdcontext.Context, _ edgeone.Credentials, zoneID string) (*edgeone.OriginACLInfo, error) {
+		if zoneID != "zone-2abcDEF123" {
+			t.Fatalf("zoneID = %q", zoneID)
+		}
+		return &edgeone.OriginACLInfo{
+			Status:          "online",
+			L7Hosts:         []string{"app.example.com"},
+			OriginACLFamily: "global",
+			CurrentOriginACL: &edgeone.OriginACL{
+				Version:         "v1",
+				ActiveTime:      "2026-06-01T00:00:00Z",
+				EntireAddresses: edgeone.Addresses{IPv4: []string{"8.8.8.8"}},
+			},
+		}, nil
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want Nginx server_name conflict")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Summary != "Nginx server_name conflict" {
+		t.Fatalf("summary = %q, want server_name conflict", response.Summary)
+	}
+	realIPNames, err := appsvc.NewRealIPProfileNames("edgeone-prod", appconfig.RealIPProviderEdgeOne, "review-app")
+	if err != nil {
+		t.Fatalf("NewRealIPProfileNames() error = %v", err)
+	}
+	if slices.Contains(installedPaths, realIPNames.ReferencePathForApp) {
+		t.Fatalf("installed paths = %#v, realip reference must not be written before later deploy guards pass", installedPaths)
+	}
+}
+
+func TestExecute_AppDeploySurfacesRealIPLockReleaseFailureOnDeployFailure(t *testing.T) {
+	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
+		enabled := true
+		cfg.App.ACMEChallenge = appconfig.ACMEChallengeDNS01
+		cfg.DNS01.Provider = "tencentcloud"
+		cfg.DNS01.EnvFile = "/etc/lanpanel/dns/tencentcloud.env"
+		cfg.Nginx.RealIPProfile = "edgeone-prod"
+		cfg.RealIP.Profiles = map[string]appconfig.RealIPProfileConfig{
+			"edgeone-prod": {
+				Enabled:  &enabled,
+				Provider: appconfig.RealIPProviderEdgeOne,
+				EdgeOne: appconfig.RealIPEdgeOneConfig{
+					ZoneID:  "zone-2abcDEF123",
+					EnvFile: "/etc/lanpanel/realip/edgeone-prod.env",
+				},
+			},
+		}
+	})
+	cfg, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	staged := stagedRuntimeWithTempHostPaths(t, cfg)
+	stubPassingAppDeployPreflight(t)
+	detectAppDNSCredentialStateFn = func(appconfig.Config) (bool, bool, string) {
+		return true, true, "dns credentials ready"
+	}
+
+	fileSystem := mutableRealIPFileSystem{files: map[string]mutableRealIPFile{}}
+	previousStage := stageAppRuntimeFilesFn
+	previousExecutor := newHostExecutorFn
+	previousFileSystem := newAppHostFileSystemFn
+	previousReferenceReader := readDeployedRealIPReferencesFn
+	previousLoadCredentials := loadEdgeOneCredentialsFn
+	previousAcquireRealIPProfileLock := acquireRealIPProfileLockFn
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+		newHostExecutorFn = previousExecutor
+		newAppHostFileSystemFn = previousFileSystem
+		readDeployedRealIPReferencesFn = previousReferenceReader
+		loadEdgeOneCredentialsFn = previousLoadCredentials
+		acquireRealIPProfileLockFn = previousAcquireRealIPProfileLock
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return staged, nil
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(&scriptedHostRunner{}, env)
+	}
+	newAppHostFileSystemFn = func(host.Executor, host.PrivilegeStrategy) host.FileSystem {
+		return fileSystem
+	}
+	readDeployedRealIPReferencesFn = func(string) ([]realip.Reference, error) {
+		return nil, nil
+	}
+	loadEdgeOneCredentialsFn = func(edgeone.FileSystem, string) (edgeone.Credentials, error) {
+		return edgeone.Credentials{}, errors.New("credential boom")
+	}
+	acquireRealIPProfileLockFn = func(profileName string) (realIPProfileLock, error) {
+		if profileName != "edgeone-prod" {
+			t.Fatalf("realip lock profile = %q", profileName)
+		}
+		return stubRealIPProfileLock{release: func() error {
+			return errors.New("release boom")
+		}}, nil
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want credential and lock release failure")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Summary != "Failed to prepare EdgeOne realip profile" {
+		t.Fatalf("summary = %q, want realip preparation failure", response.Summary)
+	}
+	errorText := err.Error()
+	for _, want := range []string{"credential boom", "release EdgeOne realip profile lock failed", "release boom"} {
+		if !strings.Contains(errorText, want) {
+			t.Fatalf("error = %q, want substring %q", errorText, want)
+		}
+	}
+}
+
+func TestExecute_AppDeployRejectsHTTP01RealIPBeforeHostSideEffects(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "lanpanel-app.yaml")
+	if err := os.WriteFile(configPath, []byte(`
+api_version: lanpanel/app/v1alpha1
+app:
+  name: review-app
+  domains: [app.example.com]
+  certificate_email: ops@example.com
+  acme_challenge: http-01
+  listen: 127.0.0.1:18001
+service:
+  exec_start: /bin/true --listen 127.0.0.1:18001
+nginx:
+  realip_profile: edgeone-prod
+realip:
+  profiles:
+    edgeone-prod:
+      enabled: true
+      provider: edgeone
+      edgeone:
+        zone_id: zone-2abcDEF123
+        env_file: /etc/lanpanel/realip/edgeone-prod.env
+`), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	previousStage := stageAppRuntimeFilesFn
+	previousExecutor := newHostExecutorFn
+	previousInstaller := newAppFileInstallerFn
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+		newHostExecutorFn = previousExecutor
+		newAppFileInstallerFn = previousInstaller
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		t.Fatal("stageAppRuntimeFilesFn must not be called for invalid HTTP-01 realip config")
+		return nil, nil
+	}
+	newHostExecutorFn = func(map[string]string) host.Executor {
+		t.Fatal("newHostExecutorFn must not be called for invalid HTTP-01 realip config")
+		return host.Executor{}
+	}
+	newAppFileInstallerFn = func(host.Executor, host.PrivilegeStrategy) appStagedFileInstaller {
+		t.Fatal("newAppFileInstallerFn must not be called for invalid HTTP-01 realip config")
+		return stubFileInstaller{}
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want invalid config failure")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Status != "invalid-config" {
+		t.Fatalf("status = %q, want invalid-config", response.Status)
+	}
+	details, ok := fieldValue(response.Fields, "details")
+	if !ok || !strings.Contains(details, "app.acme_challenge must be dns-01 when nginx.realip_profile references an EdgeOne profile") {
+		t.Fatalf("details = %q, %v; want HTTP-01 realip validation failure", details, ok)
+	}
+}
+
 func TestExecute_AppDeployBlocksNginxDefaultServerConflictBeforeRuntimeInstall(t *testing.T) {
 	configPath := writeReviewAppConfig(t)
 	cfg, err := appconfig.LoadFile(configPath)
@@ -2030,8 +2383,8 @@ func TestExecute_AppDeployHappyPathOrder(t *testing.T) {
 				if actual.Name == "tailscale" && strings.Join(actual.Args, " ") == "debug prefs" {
 					return host.Result{Stdout: `{"ControlURL":"https://hs.example.com","RouteAll":false,"CorpDNS":false,"ShieldsUp":true}`}, nil
 				}
-				if actual.Name == "cat" && len(actual.Args) == 1 && actual.Args[0] == "/var/lib/meshify/tailscale-client.json" {
-					return host.Result{Stdout: `{"login_server":"https://hs.example.com","accept_dns":false,"accept_routes":false,"shields_up":true,"managed_by":"meshify"}`}, nil
+				if actual.Name == "cat" && len(actual.Args) == 1 && actual.Args[0] == "/var/lib/lanpanel/tailscale-client.json" {
+					return host.Result{Stdout: `{"login_server":"https://hs.example.com","accept_dns":false,"accept_routes":false,"shields_up":true,"managed_by":"lanpanel"}`}, nil
 				}
 				return host.Result{}, nil
 			}}
@@ -2077,9 +2430,549 @@ func TestExecute_AppDeployHappyPathOrder(t *testing.T) {
 	}
 }
 
+func TestExecute_AppDeployInstallsRealIPReferenceBeforeNginxReload(t *testing.T) {
+	withRootOwnedRealIPCleanupLstat(t)
+
+	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
+		enabled := true
+		cfg.App.ACMEChallenge = appconfig.ACMEChallengeDNS01
+		cfg.DNS01.Provider = "tencentcloud"
+		cfg.DNS01.EnvFile = "/etc/lanpanel/dns/tencentcloud.env"
+		cfg.Nginx.RealIPProfile = "edgeone-prod"
+		cfg.RealIP.Profiles = map[string]appconfig.RealIPProfileConfig{
+			"edgeone-prod": {
+				Enabled:  &enabled,
+				Provider: appconfig.RealIPProviderEdgeOne,
+				EdgeOne: appconfig.RealIPEdgeOneConfig{
+					ZoneID:  "zone-2abcDEF123",
+					EnvFile: "/etc/lanpanel/realip/edgeone-prod.env",
+				},
+			},
+		}
+	})
+	cfg, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	staged := stagedRuntimeWithTempHostPaths(t, cfg)
+	stubPassingAppDeployPreflight(t)
+	detectAppDNSCredentialStateFn = func(appconfig.Config) (bool, bool, string) {
+		return true, true, "dns credentials ready"
+	}
+
+	events := []string{}
+	enabledSiteGuardCount := 0
+	previousStage := stageAppRuntimeFilesFn
+	previousInstaller := newAppFileInstallerFn
+	previousExecutor := newHostExecutorFn
+	previousReferenceReader := readDeployedRealIPReferencesFn
+	previousLoadCredentials := loadEdgeOneCredentialsFn
+	previousDescribe := describeEdgeOneOriginACLFn
+	previousAcquireRealIPProfileLock := acquireRealIPProfileLockFn
+	previousCleanupRoot := realIPCleanupRoot
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+		newAppFileInstallerFn = previousInstaller
+		newHostExecutorFn = previousExecutor
+		readDeployedRealIPReferencesFn = previousReferenceReader
+		loadEdgeOneCredentialsFn = previousLoadCredentials
+		describeEdgeOneOriginACLFn = previousDescribe
+		acquireRealIPProfileLockFn = previousAcquireRealIPProfileLock
+		realIPCleanupRoot = previousCleanupRoot
+	})
+	realIPCleanupRoot = safeRealIPCleanupRoot(t)
+	oldReferenceDir := filepath.Join(realIPCleanupRoot, "old-profile", "references")
+	if err := os.MkdirAll(oldReferenceDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(oldReferenceDir) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(oldReferenceDir, "review-app.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatalf("WriteFile(old realip reference) error = %v", err)
+	}
+	acquireRealIPProfileLockFn = func(profileName string) (realIPProfileLock, error) {
+		if profileName != "edgeone-prod" && profileName != "old-profile" {
+			t.Fatalf("realip lock profile = %q", profileName)
+		}
+		events = append(events, "lock "+profileName)
+		return stubRealIPProfileLock{release: func() error {
+			events = append(events, "unlock "+profileName)
+			return nil
+		}}, nil
+	}
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return staged, nil
+	}
+	newAppFileInstallerFn = func(host.Executor, host.PrivilegeStrategy) appStagedFileInstaller {
+		return recordingRealIPOrderInstaller{events: &events}
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(&scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+			if command.DisplayName == "cleanup-realip-references" {
+				events = append(events, "cleanup-realip-references")
+				return host.Result{Stdout: "lanpanel-realip-cleaned\n"}, nil
+			}
+			if event := appDeployOrderEvent(command); event != "" {
+				if event == "nginx-enabled-guard" {
+					enabledSiteGuardCount++
+					if enabledSiteGuardCount == 1 {
+						event = "nginx-enabled-guard-prewrite"
+					} else {
+						event = "nginx-enabled-guard-activate"
+					}
+				}
+				events = append(events, event)
+			}
+			return host.Result{}, nil
+		}}, env)
+	}
+	readDeployedRealIPReferencesFn = func(dir string) ([]realip.Reference, error) {
+		if dir != "/var/lib/lanpanel/realip/edgeone-prod/references" {
+			t.Fatalf("reference dir = %q", dir)
+		}
+		return nil, nil
+	}
+	loadEdgeOneCredentialsFn = func(_ edgeone.FileSystem, envFile string) (edgeone.Credentials, error) {
+		if envFile != "/etc/lanpanel/realip/edgeone-prod.env" {
+			t.Fatalf("envFile = %q", envFile)
+		}
+		return edgeone.Credentials{SecretID: "id", SecretKey: "key"}, nil
+	}
+	describeEdgeOneOriginACLFn = func(_ stdcontext.Context, _ edgeone.Credentials, zoneID string) (*edgeone.OriginACLInfo, error) {
+		if zoneID != "zone-2abcDEF123" {
+			t.Fatalf("zoneID = %q", zoneID)
+		}
+		return &edgeone.OriginACLInfo{
+			Status:          "online",
+			L7Hosts:         []string{"app.example.com"},
+			OriginACLFamily: "global",
+			CurrentOriginACL: &edgeone.OriginACL{
+				Version:         "v1",
+				ActiveTime:      "2026-06-01T00:00:00Z",
+				EntireAddresses: edgeone.Addresses{IPv4: []string{"8.8.8.8"}},
+			},
+		}, nil
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err != nil {
+		t.Fatalf("Execute() error = %v\nstdout=%s", err, stdout)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Status != "applied" {
+		t.Fatalf("response = %#v, want applied", response)
+	}
+
+	assertEventBefore(t, events, "install-realip-shared", "install-app-files")
+	assertEventBefore(t, events, "install-app-files", "install-realip-reference")
+	assertEventBefore(t, events, "lego-run", "install-realip-reference")
+	assertEventBefore(t, events, "install-realip-reference", "nginx-enabled-guard-activate")
+	assertEventBefore(t, events, "install-realip-reference", "nginx-reload")
+	assertEventBefore(t, events, "install-realip-reference", "systemctl-enable lanpanel-realip-edgeone-prod-refresh.timer")
+	assertEventBefore(t, events, "systemctl-enable lanpanel-realip-edgeone-prod-refresh.timer", "systemctl-start lanpanel-realip-edgeone-prod-refresh.timer")
+	assertEventBefore(t, events, "lock edgeone-prod", "install-realip-shared")
+	assertEventBefore(t, events, "systemctl-start lanpanel-realip-edgeone-prod-refresh.timer", "unlock edgeone-prod")
+	assertEventBefore(t, events, "unlock edgeone-prod", "lock old-profile")
+	assertEventBefore(t, events, "lock old-profile", "cleanup-realip-references")
+	assertEventBefore(t, events, "cleanup-realip-references", "unlock old-profile")
+}
+
+func TestExecute_AppDeployRollsBackRealIPSharedArtifactsOnNginxReloadFailure(t *testing.T) {
+	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
+		enabled := true
+		cfg.App.ACMEChallenge = appconfig.ACMEChallengeDNS01
+		cfg.DNS01.Provider = "tencentcloud"
+		cfg.DNS01.EnvFile = "/etc/lanpanel/dns/tencentcloud.env"
+		cfg.Nginx.RealIPProfile = "edgeone-prod"
+		cfg.RealIP.Profiles = map[string]appconfig.RealIPProfileConfig{
+			"edgeone-prod": {
+				Enabled:  &enabled,
+				Provider: appconfig.RealIPProviderEdgeOne,
+				EdgeOne: appconfig.RealIPEdgeOneConfig{
+					ZoneID:  "zone-2abcDEF123",
+					EnvFile: "/etc/lanpanel/realip/edgeone-prod.env",
+				},
+			},
+		}
+	})
+	cfg, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	staged := stagedRuntimeWithTempHostPaths(t, cfg)
+	stubPassingAppDeployPreflight(t)
+	detectAppDNSCredentialStateFn = func(appconfig.Config) (bool, bool, string) {
+		return true, true, "dns credentials ready"
+	}
+
+	realIPNames, err := appsvc.NewRealIPProfileNames("edgeone-prod", appconfig.RealIPProviderEdgeOne, "review-app")
+	if err != nil {
+		t.Fatalf("NewRealIPProfileNames() error = %v", err)
+	}
+	appNames, err := appsvc.NewNames(cfg)
+	if err != nil {
+		t.Fatalf("NewNames() error = %v", err)
+	}
+	oldAppNginxSite := []byte("# Lanpanel-managed: app.name=review-app\nold app site without realip\n")
+	oldProfile := realip.ProfileConfig{
+		Name:            "edgeone-prod",
+		Provider:        appconfig.RealIPProviderEdgeOne,
+		ZoneID:          "zone-2abcDEF123",
+		EnvFile:         "/etc/lanpanel/realip/edgeone-prod.env",
+		RefreshInterval: "72h",
+		Domains:         []string{"app.example.com"},
+	}
+	marker := realIPManagedMarker("edgeone-prod", appconfig.RealIPProviderEdgeOne)
+	oldState := mustJSON(t, struct {
+		LanpanelManaged string `json:"lanpanel_managed"`
+		realip.State
+	}{
+		LanpanelManaged: marker,
+		State: realip.State{
+			ProfileName:     "edgeone-prod",
+			Provider:        appconfig.RealIPProviderEdgeOne,
+			ZoneID:          "zone-2abcDEF123",
+			OriginACLFamily: "global",
+			TrustedCIDRs:    []string{"7.7.7.7/32"},
+		},
+	})
+	oldFiles := map[string][]byte{
+		realIPNames.NginxIncludePath:   []byte(marker + "\nold active\n"),
+		realIPNames.TrustedCIDRPath:    []byte(marker + "\nold trusted\n"),
+		realIPNames.RefreshServicePath: []byte("# " + marker + "\nold service\n"),
+		realIPNames.RefreshTimerPath:   []byte("# " + marker + "\nold timer\n"),
+		realIPNames.StatePath:          oldState,
+		realIPNames.MetadataPath:       managedRealIPProfileJSON(t, "edgeone-prod", oldProfile),
+	}
+	fileSystem := mutableRealIPFileSystem{files: map[string]mutableRealIPFile{}}
+	fileSystem.files[appNames.NginxAvailablePath] = mutableRealIPFile{content: oldAppNginxSite, mode: 0o644}
+	fileSystem.files[appNames.NginxEnabledPath] = mutableRealIPFile{content: []byte(appNames.NginxAvailablePath), mode: os.ModeSymlink | 0o777}
+	for path, content := range oldFiles {
+		mode := fs.FileMode(0o644)
+		if strings.HasPrefix(path, "/var/lib/lanpanel/realip/") {
+			mode = 0o600
+		}
+		fileSystem.files[path] = mutableRealIPFile{content: append([]byte(nil), content...), mode: mode}
+	}
+
+	previousStage := stageAppRuntimeFilesFn
+	previousInstaller := newAppFileInstallerFn
+	previousExecutor := newHostExecutorFn
+	previousFileSystem := newAppHostFileSystemFn
+	previousReferenceReader := readDeployedRealIPReferencesFn
+	previousLoadCredentials := loadEdgeOneCredentialsFn
+	previousDescribe := describeEdgeOneOriginACLFn
+	previousSystemd := newHostSystemdFn
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+		newAppFileInstallerFn = previousInstaller
+		newHostExecutorFn = previousExecutor
+		newAppHostFileSystemFn = previousFileSystem
+		readDeployedRealIPReferencesFn = previousReferenceReader
+		loadEdgeOneCredentialsFn = previousLoadCredentials
+		describeEdgeOneOriginACLFn = previousDescribe
+		newHostSystemdFn = previousSystemd
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return staged, nil
+	}
+	newAppFileInstallerFn = func(host.Executor, host.PrivilegeStrategy) appStagedFileInstaller {
+		return mutableRealIPInstaller{fileSystem: fileSystem}
+	}
+	newAppHostFileSystemFn = func(host.Executor, host.PrivilegeStrategy) host.FileSystem {
+		return fileSystem
+	}
+	readDeployedRealIPReferencesFn = func(dir string) ([]realip.Reference, error) {
+		if dir != realIPNames.ReferenceDir {
+			t.Fatalf("reference dir = %q", dir)
+		}
+		return []realip.Reference{{AppName: "other-app", Profile: "edgeone-prod", Domains: []string{"other.example.com"}}}, nil
+	}
+	loadEdgeOneCredentialsFn = func(_ edgeone.FileSystem, envFile string) (edgeone.Credentials, error) {
+		if envFile != "/etc/lanpanel/realip/edgeone-prod.env" {
+			t.Fatalf("envFile = %q", envFile)
+		}
+		return edgeone.Credentials{SecretID: "id", SecretKey: "key"}, nil
+	}
+	describeEdgeOneOriginACLFn = func(_ stdcontext.Context, _ edgeone.Credentials, zoneID string) (*edgeone.OriginACLInfo, error) {
+		if zoneID != "zone-2abcDEF123" {
+			t.Fatalf("zoneID = %q", zoneID)
+		}
+		return &edgeone.OriginACLInfo{
+			Status:          "online",
+			L7Hosts:         []string{"app.example.com", "other.example.com"},
+			OriginACLFamily: "global",
+			CurrentOriginACL: &edgeone.OriginACL{
+				Version:         "v2",
+				ActiveTime:      "2026-06-01T00:00:00Z",
+				EntireAddresses: edgeone.Addresses{IPv4: []string{"8.8.8.8"}},
+			},
+		}, nil
+	}
+	reloads := 0
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		actual := unwrapMaybeSudoHostCommand(command)
+		if actual.Name == "rm" && len(actual.Args) == 3 && actual.Args[0] == "-f" && actual.Args[1] == "--" {
+			delete(fileSystem.files, actual.Args[2])
+			return host.Result{}, nil
+		}
+		if actual.Name == "systemctl" && strings.Join(actual.Args, " ") == "reload-or-restart nginx.service" {
+			reloads++
+			if reloads == 1 {
+				return host.Result{Stderr: "reload failed"}, errors.New("reload failed")
+			}
+		}
+		return host.Result{}, nil
+	}}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+	newHostSystemdFn = func(executor host.Executor) host.Systemd {
+		return host.NewSystemd(executor)
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want Nginx reload failure")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Summary != "Failed to enable app Nginx site" {
+		t.Fatalf("summary = %q, want Nginx activation failure", response.Summary)
+	}
+	if reloads != 2 {
+		t.Fatalf("reload attempts = %d, want failed reload plus restored config reload", reloads)
+	}
+	for path, want := range oldFiles {
+		got, ok := fileSystem.files[path]
+		if !ok {
+			t.Fatalf("%s missing after rollback", path)
+		}
+		if !bytes.Equal(got.content, want) {
+			t.Fatalf("%s content = %q, want rollback to %q", path, got.content, want)
+		}
+	}
+	if _, ok := fileSystem.files[realIPNames.ReferencePathForApp]; ok {
+		t.Fatalf("%s still exists after rollback", realIPNames.ReferencePathForApp)
+	}
+	if got := fileSystem.files[appNames.NginxAvailablePath].content; !bytes.Equal(got, oldAppNginxSite) {
+		t.Fatalf("%s content = %q, want rollback to old app site %q", appNames.NginxAvailablePath, got, oldAppNginxSite)
+	}
+	if strings.Contains(string(fileSystem.files[appNames.NginxAvailablePath].content), "/etc/nginx/lanpanel/realip/edgeone-prod/active.conf") {
+		t.Fatalf("%s still references realip include after rollback\n%s", appNames.NginxAvailablePath, string(fileSystem.files[appNames.NginxAvailablePath].content))
+	}
+	if _, ok := fileSystem.files[appNames.NginxEnabledPath]; !ok {
+		t.Fatalf("%s missing after rollback", appNames.NginxEnabledPath)
+	}
+}
+
+func TestExecute_AppDeployRollsBackPartialRealIPReferenceInstallFailure(t *testing.T) {
+	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
+		enabled := true
+		cfg.App.ACMEChallenge = appconfig.ACMEChallengeDNS01
+		cfg.DNS01.Provider = "tencentcloud"
+		cfg.DNS01.EnvFile = "/etc/lanpanel/dns/tencentcloud.env"
+		cfg.Nginx.RealIPProfile = "edgeone-prod"
+		cfg.RealIP.Profiles = map[string]appconfig.RealIPProfileConfig{
+			"edgeone-prod": {
+				Enabled:  &enabled,
+				Provider: appconfig.RealIPProviderEdgeOne,
+				EdgeOne: appconfig.RealIPEdgeOneConfig{
+					ZoneID:  "zone-2abcDEF123",
+					EnvFile: "/etc/lanpanel/realip/edgeone-prod.env",
+				},
+			},
+		}
+	})
+	cfg, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	staged := stagedRuntimeWithTempHostPaths(t, cfg)
+	stubPassingAppDeployPreflight(t)
+	detectAppDNSCredentialStateFn = func(appconfig.Config) (bool, bool, string) {
+		return true, true, "dns credentials ready"
+	}
+	realIPNames, err := appsvc.NewRealIPProfileNames("edgeone-prod", appconfig.RealIPProviderEdgeOne, "review-app")
+	if err != nil {
+		t.Fatalf("NewRealIPProfileNames() error = %v", err)
+	}
+	fileSystem := mutableRealIPFileSystem{files: map[string]mutableRealIPFile{}}
+
+	previousStage := stageAppRuntimeFilesFn
+	previousInstaller := newAppFileInstallerFn
+	previousExecutor := newHostExecutorFn
+	previousFileSystem := newAppHostFileSystemFn
+	previousReferenceReader := readDeployedRealIPReferencesFn
+	previousLoadCredentials := loadEdgeOneCredentialsFn
+	previousDescribe := describeEdgeOneOriginACLFn
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+		newAppFileInstallerFn = previousInstaller
+		newHostExecutorFn = previousExecutor
+		newAppHostFileSystemFn = previousFileSystem
+		readDeployedRealIPReferencesFn = previousReferenceReader
+		loadEdgeOneCredentialsFn = previousLoadCredentials
+		describeEdgeOneOriginACLFn = previousDescribe
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return staged, nil
+	}
+	newAppFileInstallerFn = func(host.Executor, host.PrivilegeStrategy) appStagedFileInstaller {
+		return partialFailingRealIPReferenceInstaller{fileSystem: fileSystem, failPath: realIPNames.ReferencePathForApp}
+	}
+	newAppHostFileSystemFn = func(host.Executor, host.PrivilegeStrategy) host.FileSystem {
+		return fileSystem
+	}
+	readDeployedRealIPReferencesFn = func(dir string) ([]realip.Reference, error) {
+		if dir != realIPNames.ReferenceDir {
+			t.Fatalf("reference dir = %q", dir)
+		}
+		return nil, nil
+	}
+	loadEdgeOneCredentialsFn = func(_ edgeone.FileSystem, envFile string) (edgeone.Credentials, error) {
+		if envFile != "/etc/lanpanel/realip/edgeone-prod.env" {
+			t.Fatalf("envFile = %q", envFile)
+		}
+		return edgeone.Credentials{SecretID: "id", SecretKey: "key"}, nil
+	}
+	describeEdgeOneOriginACLFn = func(_ stdcontext.Context, _ edgeone.Credentials, zoneID string) (*edgeone.OriginACLInfo, error) {
+		if zoneID != "zone-2abcDEF123" {
+			t.Fatalf("zoneID = %q", zoneID)
+		}
+		return &edgeone.OriginACLInfo{
+			Status:          "online",
+			L7Hosts:         []string{"app.example.com"},
+			OriginACLFamily: "global",
+			CurrentOriginACL: &edgeone.OriginACL{
+				Version:         "v2",
+				ActiveTime:      "2026-06-01T00:00:00Z",
+				EntireAddresses: edgeone.Addresses{IPv4: []string{"8.8.8.8"}},
+			},
+		}, nil
+	}
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		actual := unwrapMaybeSudoHostCommand(command)
+		if actual.Name == "rm" && len(actual.Args) == 3 && actual.Args[0] == "-f" && actual.Args[1] == "--" {
+			delete(fileSystem.files, actual.Args[2])
+		}
+		return host.Result{}, nil
+	}}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(runner, env)
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil || !strings.Contains(err.Error(), "reference install boom") {
+		t.Fatalf("Execute() error = %v, want reference install failure\nstdout=%s", err, stdout)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Summary != "Failed to write app realip reference" {
+		t.Fatalf("summary = %q, want realip reference failure", response.Summary)
+	}
+	if _, ok := fileSystem.files[realIPNames.ReferencePathForApp]; ok {
+		t.Fatalf("%s still exists after partial reference install rollback", realIPNames.ReferencePathForApp)
+	}
+}
+
+func TestExecute_AppDeployDoesNotInstallRealIPReferenceBeforeCertificateSuccess(t *testing.T) {
+	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
+		enabled := true
+		cfg.App.ACMEChallenge = appconfig.ACMEChallengeDNS01
+		cfg.DNS01.Provider = "tencentcloud"
+		cfg.DNS01.EnvFile = "/etc/lanpanel/dns/tencentcloud.env"
+		cfg.Nginx.RealIPProfile = "edgeone-prod"
+		cfg.RealIP.Profiles = map[string]appconfig.RealIPProfileConfig{
+			"edgeone-prod": {
+				Enabled:  &enabled,
+				Provider: appconfig.RealIPProviderEdgeOne,
+				EdgeOne: appconfig.RealIPEdgeOneConfig{
+					ZoneID:  "zone-2abcDEF123",
+					EnvFile: "/etc/lanpanel/realip/edgeone-prod.env",
+				},
+			},
+		}
+	})
+	cfg, err := appconfig.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	staged := stagedRuntimeWithTempHostPaths(t, cfg)
+	stubPassingAppDeployPreflight(t)
+	detectAppDNSCredentialStateFn = func(appconfig.Config) (bool, bool, string) {
+		return true, true, "dns credentials ready"
+	}
+
+	events := []string{}
+	previousStage := stageAppRuntimeFilesFn
+	previousInstaller := newAppFileInstallerFn
+	previousExecutor := newHostExecutorFn
+	previousReferenceReader := readDeployedRealIPReferencesFn
+	previousLoadCredentials := loadEdgeOneCredentialsFn
+	previousDescribe := describeEdgeOneOriginACLFn
+	t.Cleanup(func() {
+		stageAppRuntimeFilesFn = previousStage
+		newAppFileInstallerFn = previousInstaller
+		newHostExecutorFn = previousExecutor
+		readDeployedRealIPReferencesFn = previousReferenceReader
+		loadEdgeOneCredentialsFn = previousLoadCredentials
+		describeEdgeOneOriginACLFn = previousDescribe
+	})
+	stageAppRuntimeFilesFn = func(appconfig.Config) ([]apprender.StagedFile, error) {
+		return staged, nil
+	}
+	newAppFileInstallerFn = func(host.Executor, host.PrivilegeStrategy) appStagedFileInstaller {
+		return recordingRealIPOrderInstaller{events: &events}
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(&scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+			if event := appDeployOrderEvent(command); event != "" {
+				events = append(events, event)
+				if event == "lego-run" {
+					return host.Result{Stderr: "certificate failed"}, errors.New("certificate failed")
+				}
+			}
+			return host.Result{}, nil
+		}}, env)
+	}
+	readDeployedRealIPReferencesFn = func(string) ([]realip.Reference, error) {
+		return nil, nil
+	}
+	loadEdgeOneCredentialsFn = func(edgeone.FileSystem, string) (edgeone.Credentials, error) {
+		return edgeone.Credentials{SecretID: "id", SecretKey: "key"}, nil
+	}
+	describeEdgeOneOriginACLFn = func(stdcontext.Context, edgeone.Credentials, string) (*edgeone.OriginACLInfo, error) {
+		return &edgeone.OriginACLInfo{
+			Status:  "online",
+			L7Hosts: []string{"app.example.com"},
+			CurrentOriginACL: &edgeone.OriginACL{
+				EntireAddresses: edgeone.Addresses{IPv4: []string{"8.8.8.8"}},
+			},
+		}, nil
+	}
+
+	stdout, _, err := runCLI(t, "app", "deploy", "--config", configPath, "--format", "json")
+	if err == nil {
+		t.Fatal("Execute() error = nil, want certificate failure")
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Summary != "Failed to issue app TLS certificate" {
+		t.Fatalf("summary = %q, want certificate failure", response.Summary)
+	}
+	if slices.Contains(events, "install-realip-reference") {
+		t.Fatalf("events = %v, realip reference must not be installed before certificate success", events)
+	}
+}
+
 func TestExecute_AppDeployGoAccessExplicitLogChecksReadableBeforeDirectoryWrites(t *testing.T) {
 	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
-		cfg.Nginx.AccessLog = "/var/log/meshify/custom/review-app.access.log"
+		cfg.Nginx.AccessLog = "/var/log/lanpanel/custom/review-app.access.log"
 		cfg.Nginx.GoAccess.Enabled = true
 		cfg.Nginx.GoAccess.AuthBasicUserFile = "/etc/review-app/goaccess.htpasswd"
 	})
@@ -2184,7 +3077,7 @@ func TestExecute_AppDeployGoAccessExplicitLogChecksReadableBeforeDirectoryWrites
 	if !rootGuardSawAuthBootstrap {
 		t.Fatalf("GoAccess deploy root guard did not receive auth bootstrap path %q", cfg.Nginx.GoAccess.AuthBasicUserFile)
 	}
-	if got, ok := fieldValue(response.Fields, "goaccess dashboard"); !ok || got != "https://app.example.com/_meshify/apps/review-app/goaccess" {
+	if got, ok := fieldValue(response.Fields, "goaccess dashboard"); !ok || got != "https://app.example.com/_lanpanel/apps/review-app/goaccess" {
 		t.Fatalf("goaccess dashboard = %q, %v; fields = %#v", got, ok, response.Fields)
 	}
 	if got, ok := fieldValue(response.Fields, "goaccess service"); !ok || got != names.GoAccessServiceUnit {
@@ -2194,7 +3087,7 @@ func TestExecute_AppDeployGoAccessExplicitLogChecksReadableBeforeDirectoryWrites
 		t.Fatalf("canonical access log = %q, %v; fields = %#v", got, ok, response.Fields)
 	}
 	if !slices.ContainsFunc(response.NextSteps, func(step string) bool {
-		return strings.Contains(step, "https://app.example.com/_meshify/apps/review-app/goaccess") &&
+		return strings.Contains(step, "https://app.example.com/_lanpanel/apps/review-app/goaccess") &&
 			strings.Contains(step, "GoAccess dashboard")
 	}) {
 		t.Fatalf("next steps = %#v, want GoAccess dashboard verification step", response.NextSteps)
@@ -2237,7 +3130,7 @@ func TestAppRuntimeHostChecksMentionTailscaleOnlyWhenRequired(t *testing.T) {
 	cfg.App.Upstream = "100.64.10.20:18001"
 	cfg.Service.ExecStart = ""
 	cfg.Service.WorkingDirectory = ""
-	step = appDeployRuntimeVerifyStep("meshify-app.yaml", cfg)
+	step = appDeployRuntimeVerifyStep("lanpanel-app.yaml", cfg)
 	if !strings.Contains(step, "tailscale status") {
 		t.Fatalf("appDeployRuntimeVerifyStep() = %q, want tailscale status for upstream app", step)
 	}
@@ -2295,7 +3188,7 @@ func TestAppGoAccessTroubleshootingCommandsUseModeSpecificBackend(t *testing.T) 
 
 func TestExecute_AppDeployGoAccessManagedLogGuardsBeforeNginxMutations(t *testing.T) {
 	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
-		cfg.Nginx.AccessLog = "/var/log/meshify/apps/review-app/access.log"
+		cfg.Nginx.AccessLog = "/var/log/lanpanel/apps/review-app/access.log"
 		cfg.Nginx.GoAccess.Enabled = true
 		cfg.Nginx.GoAccess.AuthBasicUserFile = "/etc/review-app/goaccess.htpasswd"
 	})
@@ -2463,7 +3356,7 @@ func TestExecute_AppDeployGoAccessManagedLogGuardBlocksBeforeTailscaleMutation(t
 }
 
 func TestExecute_AppDeployRejectsGoAccessAccessLogHiddenBySystemdIsolation(t *testing.T) {
-	configPath := filepath.Join(t.TempDir(), "meshify-app.yaml")
+	configPath := filepath.Join(t.TempDir(), "lanpanel-app.yaml")
 	cfg := appconfig.New()
 	cfg.App.Name = "review-app"
 	cfg.App.Domains = []string{"app.example.com"}
@@ -2471,14 +3364,14 @@ func TestExecute_AppDeployRejectsGoAccessAccessLogHiddenBySystemdIsolation(t *te
 	cfg.App.Listen = "127.0.0.1:18001"
 	cfg.Service.ExecStart = "/bin/true --listen 127.0.0.1:18001"
 	cfg.Service.WorkingDirectory = "/tmp"
-	cfg.Nginx.AccessLog = "/var/log/meshify/custom/review-app.access.log"
+	cfg.Nginx.AccessLog = "/var/log/lanpanel/custom/review-app.access.log"
 	cfg.Nginx.GoAccess.Enabled = true
 	cfg.Nginx.GoAccess.AuthBasicUserFile = "/etc/review-app/goaccess.htpasswd"
 	data, err := cfg.ExportYAML()
 	if err != nil {
 		t.Fatalf("ExportYAML() error = %v", err)
 	}
-	data = bytes.Replace(data, []byte("/var/log/meshify/custom/review-app.access.log"), []byte("/tmp/review-app.access.log"), 1)
+	data = bytes.Replace(data, []byte("/var/log/lanpanel/custom/review-app.access.log"), []byte("/tmp/review-app.access.log"), 1)
 	if err := os.WriteFile(configPath, data, 0o600); err != nil {
 		t.Fatalf("WriteFile(config) error = %v", err)
 	}
@@ -2523,7 +3416,7 @@ func TestExecute_AppDeployDisabledGoAccessRemovesStaleRuntime(t *testing.T) {
 			events = append(events, event)
 		}
 		actual := unwrapMaybeSudoHostCommand(command)
-		if actual.Name == "sh" && len(actual.Args) >= 3 && actual.Args[2] == "meshify-app-remove-goaccess-runtime" {
+		if actual.Name == "sh" && len(actual.Args) >= 3 && actual.Args[2] == "lanpanel-app-remove-goaccess-runtime" {
 			goAccessRuntimeRemoveCommandDisablesUnit = strings.Contains(actual.Args[1], `systemctl disable --now "$unit"`)
 			return host.Result{Stdout: strings.Join([]string{goAccessUnitPath, names.GoAccessConfigPath, names.GoAccessLogrotatePath}, "\n") + "\n"}, nil
 		}
@@ -2691,9 +3584,9 @@ func TestExecute_AppDeployDisabledGoAccessRejectsForeignRuntimeCandidates(t *tes
 			events = append(events, event)
 		}
 		actual := unwrapMaybeSudoHostCommand(command)
-		if actual.Name == "sh" && len(actual.Args) >= 3 && actual.Args[2] == "meshify-app-guard-goaccess-runtime-removal" {
+		if actual.Name == "sh" && len(actual.Args) >= 3 && actual.Args[2] == "lanpanel-app-guard-goaccess-runtime-removal" {
 			guardCommandSeen = true
-			return host.Result{Stderr: names.GoAccessConfigPath + " exists but is not a Meshify-managed GoAccess config\n", ExitCode: 1}, errors.New("foreign GoAccess runtime")
+			return host.Result{Stderr: names.GoAccessConfigPath + " exists but is not a Lanpanel-managed GoAccess config\n", ExitCode: 1}, errors.New("foreign GoAccess runtime")
 		}
 		if actual.Name == "systemctl" {
 			switch strings.Join(actual.Args, " ") {
@@ -3021,8 +3914,8 @@ func TestExecute_AppDeployRefreshesManagedAppListenerBeforeGoAccessPortReuse(t *
 						return host.Result{Command: command, Stdout: `{"ControlURL":"https://hs.example.com","RouteAll":false,"CorpDNS":false,"ShieldsUp":true}`}, nil
 					}
 				}
-				if actual.Name == "cat" && len(actual.Args) == 1 && actual.Args[0] == "/var/lib/meshify/tailscale-client.json" {
-					return host.Result{Command: command, Stdout: `{"login_server":"https://hs.example.com","accept_dns":false,"accept_routes":false,"shields_up":true,"managed_by":"meshify"}`}, nil
+				if actual.Name == "cat" && len(actual.Args) == 1 && actual.Args[0] == "/var/lib/lanpanel/tailscale-client.json" {
+					return host.Result{Command: command, Stdout: `{"login_server":"https://hs.example.com","accept_dns":false,"accept_routes":false,"shields_up":true,"managed_by":"lanpanel"}`}, nil
 				}
 				return host.Result{}, nil
 			}}
@@ -3365,7 +4258,7 @@ func TestExecute_AppDeployDoesNotStopManagedGoAccessListenerBeforeNginxTestFailu
 				t.Fatalf("unexpected GoAccess command args %#v", actual.Args)
 			}
 		}
-		if actual.Name == "nginx" && strings.Join(actual.Args, " ") == "-t" {
+		if actual.Name == appsvc.NginxBinaryPath && strings.Join(actual.Args, " ") == "-t" {
 			return host.Result{Stderr: "nginx config failed\n", ExitCode: 1}, errors.New("nginx config failed")
 		}
 		if actual.Name == "systemctl" && strings.Join(actual.Args, " ") == "stop "+names.GoAccessServiceUnit {
@@ -3458,7 +4351,7 @@ func TestExecute_AppDeployGoAccessListenerHandoffSurvivesCertificateFailure(t *t
 		if actual.Name == "systemctl" && strings.Join(actual.Args, " ") == "stop "+names.GoAccessServiceUnit {
 			events = append(events, "systemctl-stop "+names.GoAccessServiceUnit)
 		}
-		if actual.Name == "sh" && len(actual.Args) >= 3 && actual.Args[2] == "meshify-app-lego-issue-or-renew" {
+		if actual.Name == "sh" && len(actual.Args) >= 3 && actual.Args[2] == "lanpanel-app-lego-issue-or-renew" {
 			return host.Result{Stderr: "certificate failed\n", ExitCode: 1}, errors.New("certificate failed")
 		}
 		return host.Result{}, nil
@@ -3609,7 +4502,7 @@ func TestExecute_AppDeployGoAccessServiceFailureBlocksRenewTimer(t *testing.T) {
 
 func TestExecute_AppDeployExplicitGoAccessLogRemovesStaleManagedLogrotate(t *testing.T) {
 	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
-		cfg.Nginx.AccessLog = "/var/log/meshify/custom/review-app.access.log"
+		cfg.Nginx.AccessLog = "/var/log/lanpanel/custom/review-app.access.log"
 		cfg.Nginx.GoAccess.Enabled = true
 		cfg.Nginx.GoAccess.AuthBasicUserFile = "/etc/review-app/goaccess.htpasswd"
 	})
@@ -3648,9 +4541,9 @@ func TestExecute_AppDeployExplicitGoAccessLogRemovesStaleManagedLogrotate(t *tes
 		}
 		if actual.Name == "sh" && len(actual.Args) >= 3 {
 			switch actual.Args[2] {
-			case "meshify-app-remove-goaccess-logrotate":
+			case "lanpanel-app-remove-goaccess-logrotate":
 				return host.Result{Stdout: names.GoAccessLogrotatePath + "\n"}, nil
-			case "meshify-app-remove-goaccess-runtime":
+			case "lanpanel-app-remove-goaccess-runtime":
 				t.Fatalf("explicit-log GoAccess deploy must not remove active GoAccess service/config")
 			}
 		}
@@ -3710,7 +4603,7 @@ func TestExecute_AppDeployExplicitGoAccessLogRemovesStaleManagedLogrotate(t *tes
 
 func TestExecute_AppDeployExplicitGoAccessLogRejectsForeignStaleLogrotateBeforeHostMutations(t *testing.T) {
 	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
-		cfg.Nginx.AccessLog = "/var/log/meshify/custom/review-app.access.log"
+		cfg.Nginx.AccessLog = "/var/log/lanpanel/custom/review-app.access.log"
 		cfg.Nginx.GoAccess.Enabled = true
 		cfg.Nginx.GoAccess.AuthBasicUserFile = "/etc/review-app/goaccess.htpasswd"
 	})
@@ -3738,9 +4631,9 @@ func TestExecute_AppDeployExplicitGoAccessLogRejectsForeignStaleLogrotateBeforeH
 			events = append(events, event)
 		}
 		actual := unwrapMaybeSudoHostCommand(command)
-		if actual.Name == "sh" && len(actual.Args) >= 3 && actual.Args[2] == "meshify-app-guard-goaccess-logrotate-removal" {
+		if actual.Name == "sh" && len(actual.Args) >= 3 && actual.Args[2] == "lanpanel-app-guard-goaccess-logrotate-removal" {
 			guardCommandSeen = true
-			return host.Result{Stderr: names.GoAccessLogrotatePath + " exists but is not a Meshify-managed GoAccess logrotate file\n", ExitCode: 1}, errors.New("foreign GoAccess logrotate")
+			return host.Result{Stderr: names.GoAccessLogrotatePath + " exists but is not a Lanpanel-managed GoAccess logrotate file\n", ExitCode: 1}, errors.New("foreign GoAccess logrotate")
 		}
 		return host.Result{}, nil
 	}}
@@ -3955,14 +4848,14 @@ func TestExecute_AppDeployChecksTailscaleBeforePortHandoffStops(t *testing.T) {
 
 func TestExecute_AppDeployCreatesLocalHeadscalePreauthKeyForDerivedLoginServer(t *testing.T) {
 	baseDir := t.TempDir()
-	mainConfigPath := filepath.Join(baseDir, "meshify.yaml")
+	mainConfigPath := filepath.Join(baseDir, "lanpanel.yaml")
 	writeReviewMainConfig(t, mainConfigPath, "https://hs.example.com")
 	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
 		cfg.App.Listen = ""
 		cfg.App.Upstream = "100.64.10.20:18001"
 		cfg.Service.ExecStart = ""
 		cfg.Service.WorkingDirectory = ""
-		cfg.Tailscale.MeshifyConfig = mainConfigPath
+		cfg.Tailscale.LanpanelConfig = mainConfigPath
 	})
 	cfg, err := appconfig.LoadFile(configPath)
 	if err != nil {
@@ -3986,7 +4879,7 @@ func TestExecute_AppDeployCreatesLocalHeadscalePreauthKeyForDerivedLoginServer(t
 			args := strings.Join(actual.Args, " ")
 			switch {
 			case strings.Contains(args, "users list --output json"):
-				return host.Result{Command: command, Stdout: `[{"id":2,"name":"meshify"}]`}, nil
+				return host.Result{Command: command, Stdout: `[{"id":2,"name":"lanpanel"}]`}, nil
 			case strings.Contains(args, "preauthkeys create"):
 				return host.Result{Command: command, Stdout: secret + "\n"}, nil
 			}
@@ -4070,14 +4963,14 @@ func TestExecute_AppDeployCreatesLocalHeadscalePreauthKeyForDerivedLoginServer(t
 
 func TestExecute_AppDeployMasksLocalHeadscalePreauthKeyWhenPreauthCreationFails(t *testing.T) {
 	baseDir := t.TempDir()
-	mainConfigPath := filepath.Join(baseDir, "meshify.yaml")
+	mainConfigPath := filepath.Join(baseDir, "lanpanel.yaml")
 	writeReviewMainConfig(t, mainConfigPath, "https://hs.example.com")
 	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
 		cfg.App.Listen = ""
 		cfg.App.Upstream = "100.64.10.20:18001"
 		cfg.Service.ExecStart = ""
 		cfg.Service.WorkingDirectory = ""
-		cfg.Tailscale.MeshifyConfig = mainConfigPath
+		cfg.Tailscale.LanpanelConfig = mainConfigPath
 	})
 	cfg, err := appconfig.LoadFile(configPath)
 	if err != nil {
@@ -4100,7 +4993,7 @@ func TestExecute_AppDeployMasksLocalHeadscalePreauthKeyWhenPreauthCreationFails(
 			args := strings.Join(actual.Args, " ")
 			switch {
 			case strings.Contains(args, "users list --output json"):
-				return host.Result{Command: command, Stdout: `[{"id":2,"name":"meshify"}]`}, nil
+				return host.Result{Command: command, Stdout: `[{"id":2,"name":"lanpanel"}]`}, nil
 			case strings.Contains(args, "preauthkeys create"):
 				return host.Result{Command: command, Stdout: secret + "\n", Stderr: "created " + secret + " but failed", ExitCode: 1}, errors.New("headscale failed with " + secret)
 			}
@@ -4140,14 +5033,14 @@ func TestExecute_AppDeployMasksLocalHeadscalePreauthKeyWhenPreauthCreationFails(
 
 func TestExecute_AppDeployMasksLocalHeadscalePreauthKeyWhenTailscaleUpFails(t *testing.T) {
 	baseDir := t.TempDir()
-	mainConfigPath := filepath.Join(baseDir, "meshify.yaml")
+	mainConfigPath := filepath.Join(baseDir, "lanpanel.yaml")
 	writeReviewMainConfig(t, mainConfigPath, "https://hs.example.com")
 	configPath := writeReviewAppConfigWith(t, func(cfg *appconfig.Config) {
 		cfg.App.Listen = ""
 		cfg.App.Upstream = "100.64.10.20:18001"
 		cfg.Service.ExecStart = ""
 		cfg.Service.WorkingDirectory = ""
-		cfg.Tailscale.MeshifyConfig = mainConfigPath
+		cfg.Tailscale.LanpanelConfig = mainConfigPath
 	})
 	cfg, err := appconfig.LoadFile(configPath)
 	if err != nil {
@@ -4173,7 +5066,7 @@ func TestExecute_AppDeployMasksLocalHeadscalePreauthKeyWhenTailscaleUpFails(t *t
 			args := strings.Join(actual.Args, " ")
 			switch {
 			case strings.Contains(args, "users list --output json"):
-				return host.Result{Command: command, Stdout: `[{"id":2,"name":"meshify"}]`}, nil
+				return host.Result{Command: command, Stdout: `[{"id":2,"name":"lanpanel"}]`}, nil
 			case strings.Contains(args, "preauthkeys create"):
 				return host.Result{Command: command, Stdout: secret + "\n"}, nil
 			}
@@ -4230,7 +5123,7 @@ func writeReviewAppConfig(t *testing.T) string {
 func writeReviewAppConfigWith(t *testing.T, configure func(*appconfig.Config)) string {
 	t.Helper()
 
-	configPath := filepath.Join(t.TempDir(), "meshify-app.yaml")
+	configPath := filepath.Join(t.TempDir(), "lanpanel-app.yaml")
 	cfg := appconfig.New()
 	cfg.App.Name = "review-app"
 	cfg.App.Domains = []string{"app.example.com"}
@@ -4294,39 +5187,43 @@ func appDeployOrderEvent(command host.Command) string {
 			return "systemctl-enable review-app-lego-renew.timer"
 		case "start review-app-lego-renew.timer":
 			return "systemctl-start review-app-lego-renew.timer"
+		case "enable lanpanel-realip-edgeone-prod-refresh.timer":
+			return "systemctl-enable lanpanel-realip-edgeone-prod-refresh.timer"
+		case "start lanpanel-realip-edgeone-prod-refresh.timer":
+			return "systemctl-start lanpanel-realip-edgeone-prod-refresh.timer"
 		case "reload-or-restart nginx.service":
 			return "nginx-reload"
 		}
 	case "sh":
 		if len(actual.Args) >= 3 {
 			switch actual.Args[2] {
-			case "meshify-app-tls-bootstrap":
+			case "lanpanel-app-tls-bootstrap":
 				return "http01-bootstrap"
-			case "meshify-app-remove-stale-service":
+			case "lanpanel-app-remove-stale-service":
 				return "remove-stale-service"
-			case "meshify-app-remove-goaccess-runtime":
+			case "lanpanel-app-remove-goaccess-runtime":
 				return "remove-goaccess-runtime"
-			case "meshify-app-remove-goaccess-logrotate":
+			case "lanpanel-app-remove-goaccess-logrotate":
 				return "remove-goaccess-logrotate"
-			case "meshify-app-guard-goaccess-runtime-removal":
+			case "lanpanel-app-guard-goaccess-runtime-removal":
 				return "guard-goaccess-runtime-removal"
-			case "meshify-app-guard-goaccess-logrotate-removal":
+			case "lanpanel-app-guard-goaccess-logrotate-removal":
 				return "guard-goaccess-logrotate-removal"
-			case "meshify-lego-v5-migration-gate":
+			case "lanpanel-lego-v5-migration-gate":
 				return "lego-migrate"
-			case "meshify-app-lego-issue-or-renew":
+			case "lanpanel-app-lego-issue-or-renew":
 				return "lego-run"
-			case "meshify-app-lego-dns01":
+			case "lanpanel-app-lego-dns01":
 				return "lego-run"
 			}
 		}
 	case "ln":
 		return "nginx-enable"
-	case "nginx":
+	case appsvc.NginxBinaryPath:
 		if strings.Join(actual.Args, " ") == "-t" {
 			return "nginx-test"
 		}
-	case "/opt/meshify/bin/lego":
+	case "/opt/lanpanel/bin/lego":
 		if len(actual.Args) == 1 && actual.Args[0] == "--version" {
 			return "lego-version"
 		}
@@ -4364,6 +5261,47 @@ type recordingAppInstaller struct {
 func (installer recordingAppInstaller) Install(_ []render.StagedFile) ([]host.FileInstallResult, error) {
 	*installer.events = append(*installer.events, "install-files")
 	return append([]host.FileInstallResult(nil), installer.results...), installer.err
+}
+
+type recordingPathInstaller struct {
+	paths *[]string
+}
+
+func (installer recordingPathInstaller) Install(files []render.StagedFile) ([]host.FileInstallResult, error) {
+	results := make([]host.FileInstallResult, 0, len(files))
+	for _, file := range files {
+		*installer.paths = append(*installer.paths, file.HostPath)
+		results = append(results, host.FileInstallResult{SourcePath: file.SourcePath, HostPath: file.HostPath, Changed: true})
+	}
+	return results, nil
+}
+
+type recordingRealIPOrderInstaller struct {
+	events *[]string
+}
+
+func (installer recordingRealIPOrderInstaller) Install(files []render.StagedFile) ([]host.FileInstallResult, error) {
+	event := "install-files"
+	for _, file := range files {
+		switch {
+		case file.SourcePath == "templates/app/nginx.conf.tmpl":
+			event = "install-app-files"
+		case strings.Contains(file.HostPath, "/var/lib/lanpanel/realip/") && strings.Contains(file.HostPath, "/references/"):
+			event = "install-realip-reference"
+		case strings.Contains(file.HostPath, "/etc/nginx/lanpanel/realip/") ||
+			strings.Contains(file.HostPath, "/var/lib/lanpanel/realip/") ||
+			strings.Contains(file.HostPath, "/etc/systemd/system/lanpanel-realip-"):
+			event = "install-realip-shared"
+		case strings.Contains(file.HostPath, "/etc/nginx/sites-available/"):
+			event = "install-app-files"
+		}
+	}
+	*installer.events = append(*installer.events, event)
+	results := make([]host.FileInstallResult, 0, len(files))
+	for _, file := range files {
+		results = append(results, host.FileInstallResult{SourcePath: file.SourcePath, HostPath: file.HostPath, Changed: true})
+	}
+	return results, nil
 }
 
 func stagedRuntimeWithTempHostPaths(t *testing.T, cfg appconfig.Config) []apprender.StagedFile {
@@ -4432,6 +5370,7 @@ func stubPassingAppDeployPreflight(t *testing.T) {
 	previousStatAppServiceBinary := statAppServiceBinaryFn
 	previousEnsureAppNginxCompatibility := ensureAppNginxCompatibilityFn
 	previousAppHostFileSystem := newAppHostFileSystemFn
+	previousAcquireRealIPProfileLock := acquireRealIPProfileLockFn
 	t.Cleanup(func() {
 		detectPermissionStateFn = previousPermissionState
 		detectAppDNSFn = previousDetectAppDNS
@@ -4450,6 +5389,7 @@ func stubPassingAppDeployPreflight(t *testing.T) {
 		statAppServiceBinaryFn = previousStatAppServiceBinary
 		ensureAppNginxCompatibilityFn = previousEnsureAppNginxCompatibility
 		newAppHostFileSystemFn = previousAppHostFileSystem
+		acquireRealIPProfileLockFn = previousAcquireRealIPProfileLock
 	})
 
 	detectPermissionStateFn = func() preflight.PermissionState {
@@ -4506,6 +5446,9 @@ func stubPassingAppDeployPreflight(t *testing.T) {
 	}
 	newAppHostFileSystemFn = func(host.Executor, host.PrivilegeStrategy) host.FileSystem {
 		return readOnlyAppFileSystem{}
+	}
+	acquireRealIPProfileLockFn = func(profileName string) (realIPProfileLock, error) {
+		return stubRealIPProfileLock{}, nil
 	}
 }
 
@@ -5215,7 +6158,7 @@ func TestIsAppManagedPortBindingRequiresManagedUnitMarker(t *testing.T) {
 	binding := preflight.PortBinding{Port: names.GoAccessWebSocketPort, Protocol: "tcp", InUse: true, Process: "review-app", PID: 123}
 	managed, confirmed := isAppManagedPortBinding(names, binding)
 	if !managed || !confirmed {
-		t.Fatalf("isAppManagedPortBinding(managed unit) = managed %v confirmed %v, want matching Meshify-managed unit", managed, confirmed)
+		t.Fatalf("isAppManagedPortBinding(managed unit) = managed %v confirmed %v, want matching Lanpanel-managed unit", managed, confirmed)
 	}
 
 	previousRead := readAppServiceUnitFileFn
@@ -5491,7 +6434,7 @@ func ancestorDirs(path string) map[string]struct{} {
 }
 
 func TestDetectAppGoAccessLogFileStateRequiresStaticSafePath(t *testing.T) {
-	const logFile = "/var/log/meshify/custom/review-app.access.log"
+	const logFile = "/var/log/lanpanel/custom/review-app.access.log"
 	const hiddenLogFile = "/var/log/private/review-app.access.log"
 	logMode := os.FileMode(0o644)
 	logUID := uint32(0)
@@ -5507,10 +6450,10 @@ func TestDetectAppGoAccessLogFileStateRequiresStaticSafePath(t *testing.T) {
 		switch path {
 		case logFile, hiddenLogFile:
 			return rootOwnedModeFileInfo{name: filepath.Base(path), mode: logMode, size: 1, uid: logUID}, nil
-		case "/var/log/meshify/custom":
+		case "/var/log/lanpanel/custom":
 			return rootOwnedModeFileInfo{name: "custom", mode: os.ModeDir | customLogDirMode}, nil
-		case "/var/log/meshify":
-			return rootOwnedModeFileInfo{name: "meshify", mode: os.ModeDir | 0o755}, nil
+		case "/var/log/lanpanel":
+			return rootOwnedModeFileInfo{name: "lanpanel", mode: os.ModeDir | 0o755}, nil
 		case "/var/log/private":
 			return rootOwnedModeFileInfo{name: "private", mode: os.ModeDir | 0o700}, nil
 		case "/var/log":
@@ -5568,7 +6511,7 @@ func TestDetectAppGoAccessLogFileStateRequiresStaticSafePath(t *testing.T) {
 		t.Fatalf("detectAppGoAccessLogFileState() = checked %t ready %t detail %q, want writable parent failure", checked, ready, detail)
 	}
 
-	cfg.Nginx.AccessLog = "/var/log/meshify/apps/review-app/access.log"
+	cfg.Nginx.AccessLog = "/var/log/lanpanel/apps/review-app/access.log"
 	checked, ready, detail = detectAppGoAccessLogFileState(cfg)
 	if checked || ready || detail != "" {
 		t.Fatalf("detectAppGoAccessLogFileState(managed explicit log) = checked %t ready %t detail %q, want skipped", checked, ready, detail)
@@ -5749,7 +6692,7 @@ func TestAppHostDependencyPackagesForGoAccess(t *testing.T) {
 	}
 
 	explicitLog := managed
-	explicitLog.Nginx.AccessLog = "/var/log/meshify/custom/review-app.access.log"
+	explicitLog.Nginx.AccessLog = "/var/log/lanpanel/custom/review-app.access.log"
 	explicitPackages := appHostDependencyPackages(explicitLog)
 	if !slices.Contains(explicitPackages, "goaccess") {
 		t.Fatalf("explicit-log GoAccess dependencies = %#v, want goaccess", explicitPackages)
@@ -5766,7 +6709,7 @@ func allGoAccessRequiredOptions() []string {
 func TestExecute_InitInvalidFormatDoesNotWriteConfig(t *testing.T) {
 	t.Parallel()
 
-	configPath := filepath.Join(t.TempDir(), "meshify.yaml")
+	configPath := filepath.Join(t.TempDir(), "lanpanel.yaml")
 	stdout, stderr, err := runCLI(t, "init", "--config", configPath, "--format", "yaml")
 	if err == nil {
 		t.Fatal("Execute() error = nil, want non-nil")
@@ -5788,7 +6731,7 @@ func TestExecute_InitInvalidFormatDoesNotWriteConfig(t *testing.T) {
 func TestExecute_InitRejectsAdvancedExampleFlagCombo(t *testing.T) {
 	t.Parallel()
 
-	configPath := filepath.Join(t.TempDir(), "meshify.yaml")
+	configPath := filepath.Join(t.TempDir(), "lanpanel.yaml")
 	stdout, stderr, err := runCLI(t, "init", "--config", configPath, "--advanced", "--example")
 	if err == nil {
 		t.Fatal("Execute() error = nil, want non-nil")
@@ -5810,7 +6753,7 @@ func TestExecute_InitRejectsAdvancedExampleFlagCombo(t *testing.T) {
 func TestExecute_InitAdvancedWithoutPromptInputDoesNotWriteConfig(t *testing.T) {
 	t.Parallel()
 
-	configPath := filepath.Join(t.TempDir(), "meshify.yaml")
+	configPath := filepath.Join(t.TempDir(), "lanpanel.yaml")
 	stdout, stderr, err := runCLI(t, "init", "--config", configPath, "--advanced")
 	if err == nil {
 		t.Fatal("Execute() error = nil, want non-nil")
@@ -5830,7 +6773,7 @@ func TestExecute_InitAdvancedWithoutPromptInputDoesNotWriteConfig(t *testing.T) 
 }
 
 func TestExecute_DeployJSONSummary(t *testing.T) {
-	configPath := filepath.Join(t.TempDir(), "meshify.yaml")
+	configPath := filepath.Join(t.TempDir(), "lanpanel.yaml")
 	if err := config.WriteExampleFile(configPath); err != nil {
 		t.Fatalf("WriteExampleFile() error = %v", err)
 	}
@@ -5966,7 +6909,7 @@ func TestExecute_DeployJSONSummary(t *testing.T) {
 }
 
 func TestExecute_DeployJSONBlocksOnManualHostChecks(t *testing.T) {
-	configPath := filepath.Join(t.TempDir(), "meshify.yaml")
+	configPath := filepath.Join(t.TempDir(), "lanpanel.yaml")
 	if err := config.WriteExampleFile(configPath); err != nil {
 		t.Fatalf("WriteExampleFile() error = %v", err)
 	}
@@ -6517,7 +7460,7 @@ func TestDetectDNSCredentialStateRequiresOfficialProviderCredentials(t *testing.
 			t.Fatal("checked = false, want true")
 		}
 		if ready {
-			t.Fatal("ready = true, want false for raw AWS secrets that meshify will not pass through sudo")
+			t.Fatal("ready = true, want false for raw AWS secrets that lanpanel will not pass through sudo")
 		}
 		if !strings.Contains(detail, "will not pass raw AWS secrets") || !strings.Contains(detail, "advanced.dns01.env_file") {
 			t.Fatalf("detail = %q, want safe Route53 credential guidance", detail)
@@ -6530,7 +7473,7 @@ func TestDetectDNSCredentialStateRequiresOfficialProviderCredentials(t *testing.
 			t.Fatalf("WriteFile() error = %v", err)
 		}
 		envFile := filepath.Join(t.TempDir(), "route53.env")
-		content := "# meshify route53\n; systemd-style comment\nignored note\nAWS_SHARED_CREDENTIALS_FILE='" + credentialsFile + "'\n"
+		content := "# lanpanel route53\n; systemd-style comment\nignored note\nAWS_SHARED_CREDENTIALS_FILE='" + credentialsFile + "'\n"
 		if err := os.WriteFile(envFile, []byte(content), 0o600); err != nil {
 			t.Fatalf("WriteFile() error = %v", err)
 		}
@@ -6656,7 +7599,7 @@ func TestDetectDNSCredentialStateRequiresOfficialProviderCredentials(t *testing.
 			t.Fatalf("WriteFile() error = %v", err)
 		}
 		envFile := filepath.Join(t.TempDir(), "gcloud.env")
-		if err := os.WriteFile(envFile, []byte("GCE_PROJECT=meshify-project\nGOOGLE_APPLICATION_CREDENTIALS="+credentialsFile+"\n"), 0o600); err != nil {
+		if err := os.WriteFile(envFile, []byte("GCE_PROJECT=lanpanel-project\nGOOGLE_APPLICATION_CREDENTIALS="+credentialsFile+"\n"), 0o600); err != nil {
 			t.Fatalf("WriteFile() error = %v", err)
 		}
 		withRootOwnedStatForPaths(t, credentialsFile, envFile)
@@ -6712,7 +7655,7 @@ func TestDetectDNSCredentialStateRequiresOfficialProviderCredentials(t *testing.
 
 	t.Run("google zone id only env_file can supplement ambient credentials", func(t *testing.T) {
 		envFile := filepath.Join(t.TempDir(), "gcloud.env")
-		if err := os.WriteFile(envFile, []byte("GCE_ZONE_ID=meshify-zone\n"), 0o600); err != nil {
+		if err := os.WriteFile(envFile, []byte("GCE_ZONE_ID=lanpanel-zone\n"), 0o600); err != nil {
 			t.Fatalf("WriteFile() error = %v", err)
 		}
 		withRootOwnedStatForPaths(t, envFile)
@@ -6738,7 +7681,7 @@ func TestDetectDNSCredentialStateRequiresOfficialProviderCredentials(t *testing.
 
 	t.Run("google project only in env_file can supplement ambient ADC", func(t *testing.T) {
 		envFile := filepath.Join(t.TempDir(), "gcloud.env")
-		if err := os.WriteFile(envFile, []byte("GCE_PROJECT=meshify-project\n"), 0o600); err != nil {
+		if err := os.WriteFile(envFile, []byte("GCE_PROJECT=lanpanel-project\n"), 0o600); err != nil {
 			t.Fatalf("WriteFile() error = %v", err)
 		}
 		withRootOwnedStatForPaths(t, envFile)
@@ -6764,7 +7707,7 @@ func TestDetectDNSCredentialStateRequiresOfficialProviderCredentials(t *testing.
 
 	t.Run("google official gcloud service account file in env_file is sufficient", func(t *testing.T) {
 		credentialsFile := filepath.Join(t.TempDir(), "gcloud.json")
-		if err := os.WriteFile(credentialsFile, []byte(`{"type":"service_account","project_id":"meshify-project"}`+"\n"), 0o600); err != nil {
+		if err := os.WriteFile(credentialsFile, []byte(`{"type":"service_account","project_id":"lanpanel-project"}`+"\n"), 0o600); err != nil {
 			t.Fatalf("WriteFile() error = %v", err)
 		}
 		envFile := filepath.Join(t.TempDir(), "gcloud.env")
@@ -6794,7 +7737,7 @@ func TestDetectDNSCredentialStateRequiresOfficialProviderCredentials(t *testing.
 
 	t.Run("google official gcloud impersonation in env_file is sufficient", func(t *testing.T) {
 		envFile := filepath.Join(t.TempDir(), "gcloud.env")
-		if err := os.WriteFile(envFile, []byte("GCE_PROJECT=meshify-project\nGCE_IMPERSONATE_SERVICE_ACCOUNT=target-sa@meshify-project.iam.gserviceaccount.com\n"), 0o600); err != nil {
+		if err := os.WriteFile(envFile, []byte("GCE_PROJECT=lanpanel-project\nGCE_IMPERSONATE_SERVICE_ACCOUNT=target-sa@lanpanel-project.iam.gserviceaccount.com\n"), 0o600); err != nil {
 			t.Fatalf("WriteFile() error = %v", err)
 		}
 		withRootOwnedStatForPaths(t, envFile)
@@ -6822,7 +7765,7 @@ func TestDetectDNSCredentialStateRequiresOfficialProviderCredentials(t *testing.
 	t.Run("google missing application credentials file referenced by env_file is not ready", func(t *testing.T) {
 		missingFile := filepath.Join(t.TempDir(), "missing-google.json")
 		envFile := filepath.Join(t.TempDir(), "gcloud.env")
-		if err := os.WriteFile(envFile, []byte("GCE_PROJECT=meshify-project\nGOOGLE_APPLICATION_CREDENTIALS="+missingFile+"\n"), 0o600); err != nil {
+		if err := os.WriteFile(envFile, []byte("GCE_PROJECT=lanpanel-project\nGOOGLE_APPLICATION_CREDENTIALS="+missingFile+"\n"), 0o600); err != nil {
 			t.Fatalf("WriteFile() error = %v", err)
 		}
 		withRootOwnedStatForPaths(t, envFile)
@@ -6868,11 +7811,11 @@ func TestDetectDNSCredentialStateRequiresOfficialProviderCredentials(t *testing.
 	})
 }
 
-func TestStageDeployFilesUsesMeshifyLegoRenewalAssets(t *testing.T) {
+func TestStageDeployFilesUsesLanpanelLegoRenewalAssets(t *testing.T) {
 	cfg := config.ExampleConfig()
 	cfg.Default.ACMEChallenge = config.ACMEChallengeDNS01
 	cfg.Advanced.DNS01.Provider = "route53"
-	cfg.Advanced.DNS01.EnvFile = "/etc/meshify/dns01/route53.env"
+	cfg.Advanced.DNS01.EnvFile = "/etc/lanpanel/dns01/route53.env"
 
 	files, err := stageDeployFiles(cfg)
 	if err != nil {
@@ -6885,10 +7828,10 @@ func TestStageDeployFilesUsesMeshifyLegoRenewalAssets(t *testing.T) {
 			t.Fatalf("staged files include legacy certbot asset %#v", file)
 		}
 	}
-	if _, ok := byHostPath["/etc/systemd/system/meshify-lego-renew.service"]; !ok {
+	if _, ok := byHostPath["/etc/systemd/system/lanpanel-lego-renew.service"]; !ok {
 		t.Fatalf("staged files = %#v, want lego renewal service", files)
 	}
-	if _, ok := byHostPath["/etc/systemd/system/meshify-lego-renew.timer"]; !ok {
+	if _, ok := byHostPath["/etc/systemd/system/lanpanel-lego-renew.timer"]; !ok {
 		t.Fatalf("staged files = %#v, want lego renewal timer", files)
 	}
 }
@@ -7074,7 +8017,7 @@ func TestEnsureAppNginxRuntimeCompatibilityChecksHTTP2DirectiveVersion(t *testin
 
 	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
 		actual := unwrapMaybeSudoHostCommand(command)
-		if actual.Name == "nginx" && strings.Join(actual.Args, " ") == "-V" {
+		if actual.Name == appsvc.NginxBinaryPath && strings.Join(actual.Args, " ") == "-V" {
 			return host.Result{Stderr: "nginx version: nginx/1.24.0\nconfigure arguments: --with-http_v2_module --with-http_gzip_static_module"}, nil
 		}
 		return host.Result{}, nil
@@ -7098,7 +8041,7 @@ func TestEnsureAppNginxRuntimeCompatibilityChecksHTTP2DirectiveVersion(t *testin
 	cfg.Nginx.HTTP2 = &enabled
 	runner.run = func(command host.Command) (host.Result, error) {
 		actual := unwrapMaybeSudoHostCommand(command)
-		if actual.Name == "nginx" && strings.Join(actual.Args, " ") == "-V" {
+		if actual.Name == appsvc.NginxBinaryPath && strings.Join(actual.Args, " ") == "-V" {
 			return host.Result{Stderr: "nginx version: nginx/1.26.3\nconfigure arguments: --with-http_v2_module --with-http_gzip_static_module"}, nil
 		}
 		return host.Result{}, nil
@@ -7125,7 +8068,7 @@ func TestEnsureAppNginxRuntimeCompatibilityChecksGzipStaticModule(t *testing.T) 
 
 	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
 		actual := unwrapMaybeSudoHostCommand(command)
-		if actual.Name == "nginx" && strings.Join(actual.Args, " ") == "-V" {
+		if actual.Name == appsvc.NginxBinaryPath && strings.Join(actual.Args, " ") == "-V" {
 			return host.Result{Stderr: "nginx version: nginx/1.26.3\nconfigure arguments: --with-http_v2_module"}, nil
 		}
 		return host.Result{}, nil
@@ -7136,11 +8079,3362 @@ func TestEnsureAppNginxRuntimeCompatibilityChecksGzipStaticModule(t *testing.T) 
 	}
 }
 
+func TestEnsureAppNginxRuntimeCompatibilityChecksRealIPModule(t *testing.T) {
+	disabledHTTP2 := false
+	enabledRealIP := true
+	cfg := appconfig.New()
+	cfg.App.Name = "review-app"
+	cfg.App.Domains = []string{"app.example.com"}
+	cfg.App.CertificateEmail = "ops@example.com"
+	cfg.App.ACMEChallenge = appconfig.ACMEChallengeDNS01
+	cfg.App.Listen = "127.0.0.1:18001"
+	cfg.Service.ExecStart = "/bin/true --listen 127.0.0.1:18001"
+	cfg.Nginx.HTTP2 = &disabledHTTP2
+	cfg.Nginx.RealIPProfile = "edgeone-prod"
+	cfg.RealIP.Profiles = map[string]appconfig.RealIPProfileConfig{
+		"edgeone-prod": {
+			Enabled:  &enabledRealIP,
+			Provider: appconfig.RealIPProviderEdgeOne,
+			EdgeOne: appconfig.RealIPEdgeOneConfig{
+				ZoneID:  "zone-2abcDEF123",
+				EnvFile: "/etc/lanpanel/realip/edgeone-prod.env",
+			},
+		},
+	}
+	cfg.DNS01.Provider = "tencentcloud"
+	cfg.DNS01.EnvFile = "/etc/lanpanel/dns/tencentcloud.env"
+
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		actual := unwrapMaybeSudoHostCommand(command)
+		if actual.Name == appsvc.NginxBinaryPath && strings.Join(actual.Args, " ") == "-V" {
+			return host.Result{Stderr: "nginx version: nginx/1.26.3\nconfigure arguments: --with-http_v2_module --with-http_gzip_static_module"}, nil
+		}
+		return host.Result{}, nil
+	}}
+	err := ensureAppNginxRuntimeCompatibility(stdcontext.Background(), cfg, host.NewExecutor(runner, nil))
+	if err == nil || !strings.Contains(err.Error(), "--with-http_realip_module") {
+		t.Fatalf("ensureAppNginxRuntimeCompatibility() error = %v, want realip module failure", err)
+	}
+
+	runner.run = func(command host.Command) (host.Result, error) {
+		actual := unwrapMaybeSudoHostCommand(command)
+		if actual.Name == appsvc.NginxBinaryPath && strings.Join(actual.Args, " ") == "-V" {
+			return host.Result{Stderr: "nginx version: nginx/1.26.3\nconfigure arguments: --with-http_realip_module"}, nil
+		}
+		return host.Result{}, nil
+	}
+	if err := ensureAppNginxRuntimeCompatibility(stdcontext.Background(), cfg, host.NewExecutor(runner, nil)); err != nil {
+		t.Fatalf("ensureAppNginxRuntimeCompatibility() with realip module error = %v", err)
+	}
+}
+
+func TestEnsureRealIPProfileCompatibleRejectsSharedProfileDrift(t *testing.T) {
+	t.Parallel()
+
+	existing := realip.ProfileConfig{
+		Name:            "edgeone-prod",
+		Provider:        "edgeone",
+		ZoneID:          "zone-2abcDEF123",
+		EnvFile:         "/etc/lanpanel/realip/edgeone-prod.env",
+		RefreshInterval: "72h",
+	}
+	desired := existing
+	if err := ensureRealIPProfileCompatible(existing, desired); err != nil {
+		t.Fatalf("ensureRealIPProfileCompatible() error = %v", err)
+	}
+	desired.RefreshInterval = "24h"
+	err := ensureRealIPProfileCompatible(existing, desired)
+	if err == nil || !strings.Contains(err.Error(), "refresh_interval") {
+		t.Fatalf("ensureRealIPProfileCompatible() error = %v, want refresh interval drift", err)
+	}
+	desired.RefreshInterval = existing.RefreshInterval
+	desired.ZoneID = "zone-different"
+	err = ensureRealIPProfileCompatible(existing, desired)
+	if err == nil || !strings.Contains(err.Error(), "edgeone.zone_id") {
+		t.Fatalf("ensureRealIPProfileCompatible() error = %v, want zone drift", err)
+	}
+}
+
+func TestReadDeployedRealIPProfileRequiresManagedContract(t *testing.T) {
+	t.Parallel()
+
+	base := realip.ProfileConfig{
+		Name:            "edgeone-prod",
+		Provider:        appconfig.RealIPProviderEdgeOne,
+		ZoneID:          "zone-2abcDEF123",
+		EnvFile:         "/etc/lanpanel/realip/edgeone-prod.env",
+		RefreshInterval: "72h",
+		Domains:         []string{"app.example.com"},
+	}
+
+	t.Run("valid", func(t *testing.T) {
+		t.Parallel()
+		path := writeDeployedRealIPProfileFixture(t, managedRealIPProfileJSON(t, "edgeone-prod", base))
+		profile, err := readDeployedRealIPProfile(path)
+		if err != nil {
+			t.Fatalf("readDeployedRealIPProfile() error = %v", err)
+		}
+		if profile.Name != "edgeone-prod" || profile.Provider != appconfig.RealIPProviderEdgeOne || profile.ZoneID != "zone-2abcDEF123" || profile.EnvFile != "/etc/lanpanel/realip/edgeone-prod.env" || profile.RefreshInterval != "72h" {
+			t.Fatalf("profile = %#v, want managed EdgeOne profile", profile)
+		}
+	})
+
+	tests := []struct {
+		name    string
+		content []byte
+		want    string
+	}{
+		{
+			name:    "unmarked json",
+			content: mustJSON(t, base),
+			want:    "lanpanel_managed marker",
+		},
+		{
+			name:    "marker mismatch",
+			content: managedRealIPProfileJSON(t, "other-profile", base),
+			want:    "lanpanel_managed marker",
+		},
+		{
+			name: "non json with matching substrings",
+			content: []byte(`Lanpanel-managed: realip.profile=edgeone-prod provider=edgeone
+"lanpanel_managed": "Lanpanel-managed: realip.profile=edgeone-prod provider=edgeone"
+"name": "edgeone-prod"
+"provider": "edgeone"`),
+			want: "parse deployed realip profile metadata",
+		},
+		{
+			name: "wrong name",
+			content: managedRealIPProfileJSON(t, "edgeone-prod", realip.ProfileConfig{
+				Name:            "other-profile",
+				Provider:        appconfig.RealIPProviderEdgeOne,
+				ZoneID:          "zone-2abcDEF123",
+				EnvFile:         "/etc/lanpanel/realip/edgeone-prod.env",
+				RefreshInterval: "72h",
+			}),
+			want: `name "other-profile" does not match "edgeone-prod"`,
+		},
+		{
+			name: "unsupported provider",
+			content: managedRealIPProfileJSON(t, "edgeone-prod", realip.ProfileConfig{
+				Name:            "edgeone-prod",
+				Provider:        "custom",
+				ZoneID:          "zone-2abcDEF123",
+				EnvFile:         "/etc/lanpanel/realip/edgeone-prod.env",
+				RefreshInterval: "72h",
+			}),
+			want: `provider "custom" is not supported`,
+		},
+		{
+			name: "bad zone",
+			content: managedRealIPProfileJSON(t, "edgeone-prod", realip.ProfileConfig{
+				Name:            "edgeone-prod",
+				Provider:        appconfig.RealIPProviderEdgeOne,
+				ZoneID:          "bad-zone",
+				EnvFile:         "/etc/lanpanel/realip/edgeone-prod.env",
+				RefreshInterval: "72h",
+			}),
+			want: "zone_id must be an EdgeOne zone id",
+		},
+		{
+			name: "missing env file",
+			content: managedRealIPProfileJSON(t, "edgeone-prod", realip.ProfileConfig{
+				Name:            "edgeone-prod",
+				Provider:        appconfig.RealIPProviderEdgeOne,
+				ZoneID:          "zone-2abcDEF123",
+				RefreshInterval: "72h",
+			}),
+			want: "env_file is required",
+		},
+		{
+			name: "relative env file",
+			content: managedRealIPProfileJSON(t, "edgeone-prod", realip.ProfileConfig{
+				Name:            "edgeone-prod",
+				Provider:        appconfig.RealIPProviderEdgeOne,
+				ZoneID:          "zone-2abcDEF123",
+				EnvFile:         "edgeone.env",
+				RefreshInterval: "72h",
+			}),
+			want: "env_file must be an absolute path",
+		},
+		{
+			name: "too fast refresh interval",
+			content: managedRealIPProfileJSON(t, "edgeone-prod", realip.ProfileConfig{
+				Name:            "edgeone-prod",
+				Provider:        appconfig.RealIPProviderEdgeOne,
+				ZoneID:          "zone-2abcDEF123",
+				EnvFile:         "/etc/lanpanel/realip/edgeone-prod.env",
+				RefreshInterval: "30m",
+			}),
+			want: "refresh_interval must be at least 1h",
+		},
+		{
+			name: "non whole second refresh interval",
+			content: managedRealIPProfileJSON(t, "edgeone-prod", realip.ProfileConfig{
+				Name:            "edgeone-prod",
+				Provider:        appconfig.RealIPProviderEdgeOne,
+				ZoneID:          "zone-2abcDEF123",
+				EnvFile:         "/etc/lanpanel/realip/edgeone-prod.env",
+				RefreshInterval: "3600000000001ns",
+			}),
+			want: "refresh_interval must resolve to whole seconds",
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			path := writeDeployedRealIPProfileFixture(t, tt.content)
+			_, err := readDeployedRealIPProfile(path)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("readDeployedRealIPProfile() error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestReadDeployedRealIPStateRequiresManagedContract(t *testing.T) {
+	valid := realip.State{
+		ProfileName:     "edgeone-prod",
+		Provider:        appconfig.RealIPProviderEdgeOne,
+		ZoneID:          "zone-2abcDEF123",
+		OriginACLStatus: "online",
+		OriginACLFamily: "global",
+		CurrentVersion:  "v1",
+		CurrentCIDRs:    []string{"8.8.8.8/32"},
+		TrustedCIDRs:    []string{"8.8.8.8/32"},
+		UpdatedAt:       time.Date(2026, 6, 2, 1, 2, 3, 0, time.UTC),
+	}
+	state, err := parseDeployedRealIPState(managedRealIPStateJSON(t, "edgeone-prod", valid), "/var/lib/lanpanel/realip/edgeone-prod/state.json", "edgeone-prod")
+	if err != nil {
+		t.Fatalf("parseDeployedRealIPState() error = %v", err)
+	}
+	if state.ProfileName != "edgeone-prod" || strings.Join(state.TrustedCIDRs, ",") != "8.8.8.8/32" {
+		t.Fatalf("state = %#v, want deployed state", state)
+	}
+
+	updating := valid
+	updating.OriginACLStatus = "updating"
+	_, err = parseDeployedRealIPState(managedRealIPStateJSON(t, "edgeone-prod", updating), "/var/lib/lanpanel/realip/edgeone-prod/state.json", "edgeone-prod")
+	if err == nil || !strings.Contains(err.Error(), "next_cidrs is required") {
+		t.Fatalf("parseDeployedRealIPState() error = %v, want next CIDR failure", err)
+	}
+
+	trustedMismatch := valid
+	trustedMismatch.TrustedCIDRs = []string{"9.9.9.9/32"}
+	_, err = parseDeployedRealIPState(managedRealIPStateJSON(t, "edgeone-prod", trustedMismatch), "/var/lib/lanpanel/realip/edgeone-prod/state.json", "edgeone-prod")
+	if err == nil || !strings.Contains(err.Error(), "trusted_cidrs") || !strings.Contains(err.Error(), "current_cidrs+next_cidrs") {
+		t.Fatalf("parseDeployedRealIPState() error = %v, want trusted/current mismatch", err)
+	}
+
+	trustedMissingNext := valid
+	trustedMissingNext.OriginACLStatus = "updating"
+	trustedMissingNext.NextCIDRs = []string{"9.9.9.0/24"}
+	trustedMissingNext.TrustedCIDRs = []string{"8.8.8.8/32"}
+	_, err = parseDeployedRealIPState(managedRealIPStateJSON(t, "edgeone-prod", trustedMissingNext), "/var/lib/lanpanel/realip/edgeone-prod/state.json", "edgeone-prod")
+	if err == nil || !strings.Contains(err.Error(), "trusted_cidrs") || !strings.Contains(err.Error(), "9.9.9.0/24") {
+		t.Fatalf("parseDeployedRealIPState() error = %v, want trusted/next mismatch", err)
+	}
+
+	_, err = parseDeployedRealIPState(mustJSON(t, valid), "/var/lib/lanpanel/realip/edgeone-prod/state.json", "edgeone-prod")
+	if err == nil || !strings.Contains(err.Error(), "lanpanel_managed marker") {
+		t.Fatalf("parseDeployedRealIPState() error = %v, want marker failure", err)
+	}
+}
+
+func TestValidateDeployedRealIPStateInfoRejectsUnsafeMetadata(t *testing.T) {
+	t.Parallel()
+
+	path := "/var/lib/lanpanel/realip/edgeone-prod/state.json"
+	tests := []struct {
+		name string
+		info fs.FileInfo
+		want string
+	}{
+		{
+			name: "symlink",
+			info: rootOwnedModeFileInfo{name: "state.json", mode: fs.ModeSymlink | 0o777, size: 1},
+			want: "must not be a symlink",
+		},
+		{
+			name: "directory",
+			info: rootOwnedModeFileInfo{name: "state.json", mode: fs.ModeDir | 0o700, size: 1},
+			want: "must be a regular file",
+		},
+		{
+			name: "group readable",
+			info: rootOwnedModeFileInfo{name: "state.json", mode: 0o640, size: 1},
+			want: "must be root-only",
+		},
+		{
+			name: "other readable",
+			info: rootOwnedModeFileInfo{name: "state.json", mode: 0o604, size: 1},
+			want: "must be root-only",
+		},
+		{
+			name: "non root",
+			info: rootOwnedModeFileInfo{name: "state.json", mode: 0o600, size: 1, uid: 1000},
+			want: "must be owned by root",
+		},
+		{
+			name: "unknown owner",
+			info: rootOwnedModeFileInfo{name: "state.json", mode: 0o600, size: 1, unknownOwner: true},
+			want: "owner could not be inspected",
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateDeployedRealIPStateInfo(path, tt.info)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("validateDeployedRealIPStateInfo() error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
+	if err := validateDeployedRealIPStateInfo(path, rootOwnedModeFileInfo{name: "state.json", mode: 0o600, size: 1}); err != nil {
+		t.Fatalf("validateDeployedRealIPStateInfo(valid) error = %v", err)
+	}
+}
+
+func TestReadRealIPProfileFromFSRequiresManagedContract(t *testing.T) {
+	t.Parallel()
+
+	path := "/var/lib/lanpanel/realip/edgeone-prod/profile.json"
+	profile := realip.ProfileConfig{
+		Name:            "edgeone-prod",
+		Provider:        appconfig.RealIPProviderEdgeOne,
+		ZoneID:          "zone-2abcDEF123",
+		EnvFile:         "/etc/lanpanel/realip/edgeone-prod.env",
+		RefreshInterval: "72h",
+	}
+	fileSystem := mutableRealIPFileSystem{files: map[string]mutableRealIPFile{
+		path: {content: managedRealIPProfileJSON(t, "edgeone-prod", profile), mode: 0o600},
+	}}
+	got, ok, err := readRealIPProfileFromFS(fileSystem, path)
+	if err != nil {
+		t.Fatalf("readRealIPProfileFromFS() error = %v", err)
+	}
+	if !ok || got.Name != "edgeone-prod" {
+		t.Fatalf("readRealIPProfileFromFS() = %#v, %v; want managed profile", got, ok)
+	}
+
+	fileSystem.files[path] = mutableRealIPFile{content: mustJSON(t, profile), mode: 0o600}
+	_, _, err = readRealIPProfileFromFS(fileSystem, path)
+	if err == nil || !strings.Contains(err.Error(), "lanpanel_managed marker") {
+		t.Fatalf("readRealIPProfileFromFS() error = %v, want marker failure", err)
+	}
+}
+
+func TestValidateExistingRealIPArtifactInfoRejectsUnsafeArtifacts(t *testing.T) {
+	t.Parallel()
+
+	path := "/etc/nginx/lanpanel/realip/edgeone-prod/active.conf"
+	tests := []struct {
+		name string
+		info fs.FileInfo
+		want string
+	}{
+		{
+			name: "symlink",
+			info: rootOwnedModeFileInfo{name: "active.conf", mode: fs.ModeSymlink | 0o777, size: 1},
+			want: "must not be a symlink",
+		},
+		{
+			name: "directory",
+			info: rootOwnedModeFileInfo{name: "active.conf", mode: fs.ModeDir | 0o755, size: 1},
+			want: "must be a regular file",
+		},
+		{
+			name: "group writable",
+			info: rootOwnedModeFileInfo{name: "active.conf", mode: 0o664, size: 1},
+			want: "must not be writable by group or others",
+		},
+		{
+			name: "other writable",
+			info: rootOwnedModeFileInfo{name: "active.conf", mode: 0o646, size: 1},
+			want: "must not be writable by group or others",
+		},
+		{
+			name: "non root",
+			info: rootOwnedModeFileInfo{name: "active.conf", mode: 0o644, size: 1, uid: 1000},
+			want: "must be owned by root",
+		},
+		{
+			name: "unknown owner",
+			info: rootOwnedModeFileInfo{name: "active.conf", mode: 0o644, size: 1, unknownOwner: true},
+			want: "owner could not be inspected",
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateExistingRealIPArtifactInfo(path, tt.info)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("validateExistingRealIPArtifactInfo() error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
+	if err := validateExistingRealIPArtifactInfo(path, rootOwnedModeFileInfo{name: "active.conf", mode: 0o644, size: 1}); err != nil {
+		t.Fatalf("validateExistingRealIPArtifactInfo(valid) error = %v", err)
+	}
+}
+
+func TestGuardRealIPOwnershipRejectsUnsafeExistingArtifacts(t *testing.T) {
+	t.Parallel()
+
+	names, err := appsvc.NewRealIPProfileNames("edgeone-prod", appconfig.RealIPProviderEdgeOne, "review-app")
+	if err != nil {
+		t.Fatalf("NewRealIPProfileNames() error = %v", err)
+	}
+	marker := realIPManagedMarker("edgeone-prod", appconfig.RealIPProviderEdgeOne)
+	staged := []realiprender.StagedFile{{
+		SourcePath: "templates/realip/nginx-realip.conf.tmpl",
+		HostPath:   names.NginxIncludePath,
+		Mode:       0o644,
+		Content:    []byte("# " + marker + "\n"),
+	}}
+	validFS := func() mutableRealIPFileSystem {
+		return mutableRealIPFileSystem{files: map[string]mutableRealIPFile{
+			names.NginxIncludePath: {content: []byte("# " + marker + "\n"), mode: 0o644},
+		}}
+	}
+	if err := guardRealIPOwnership(validFS(), "edgeone-prod", appconfig.RealIPProviderEdgeOne, staged); err != nil {
+		t.Fatalf("guardRealIPOwnership(valid) error = %v", err)
+	}
+	if err := guardRealIPOwnership(mutableRealIPFileSystem{files: map[string]mutableRealIPFile{}}, "edgeone-prod", appconfig.RealIPProviderEdgeOne, staged); err != nil {
+		t.Fatalf("guardRealIPOwnership(missing) error = %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(mutableRealIPFileSystem)
+		want   string
+	}{
+		{
+			name: "symlink",
+			mutate: func(fileSystem mutableRealIPFileSystem) {
+				file := fileSystem.files[names.NginxIncludePath]
+				file.mode = fs.ModeSymlink | 0o777
+				fileSystem.files[names.NginxIncludePath] = file
+			},
+			want: "must not be a symlink",
+		},
+		{
+			name: "group writable",
+			mutate: func(fileSystem mutableRealIPFileSystem) {
+				file := fileSystem.files[names.NginxIncludePath]
+				file.mode = 0o664
+				fileSystem.files[names.NginxIncludePath] = file
+			},
+			want: "must not be writable by group or others",
+		},
+		{
+			name: "non root",
+			mutate: func(fileSystem mutableRealIPFileSystem) {
+				file := fileSystem.files[names.NginxIncludePath]
+				file.uid = 1000
+				fileSystem.files[names.NginxIncludePath] = file
+			},
+			want: "must be owned by root",
+		},
+		{
+			name: "unknown owner",
+			mutate: func(fileSystem mutableRealIPFileSystem) {
+				file := fileSystem.files[names.NginxIncludePath]
+				file.unknownOwner = true
+				fileSystem.files[names.NginxIncludePath] = file
+			},
+			want: "owner could not be inspected",
+		},
+		{
+			name: "foreign marker",
+			mutate: func(fileSystem mutableRealIPFileSystem) {
+				file := fileSystem.files[names.NginxIncludePath]
+				file.content = []byte("# Lanpanel-managed: realip.profile=other provider=edgeone\n")
+				fileSystem.files[names.NginxIncludePath] = file
+			},
+			want: "not a Lanpanel-managed realip artifact",
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fileSystem := validFS()
+			tt.mutate(fileSystem)
+			err := guardRealIPOwnership(fileSystem, "edgeone-prod", appconfig.RealIPProviderEdgeOne, staged)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("guardRealIPOwnership() error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func writeDeployedRealIPProfileFixture(t *testing.T, content []byte) string {
+	t.Helper()
+
+	dir := filepath.Join(t.TempDir(), "edgeone-prod")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	path := filepath.Join(dir, "profile.json")
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatalf("WriteFile(profile.json) error = %v", err)
+	}
+	return path
+}
+
+func managedRealIPProfileJSON(t *testing.T, markerProfile string, profile realip.ProfileConfig) []byte {
+	t.Helper()
+
+	value := struct {
+		LanpanelManaged string `json:"lanpanel_managed"`
+		realip.ProfileConfig
+	}{
+		LanpanelManaged: realIPManagedMarker(markerProfile, appconfig.RealIPProviderEdgeOne),
+		ProfileConfig:   profile,
+	}
+	return mustJSON(t, value)
+}
+
+func managedRealIPStateJSON(t *testing.T, markerProfile string, state realip.State) []byte {
+	t.Helper()
+
+	value := struct {
+		LanpanelManaged string `json:"lanpanel_managed"`
+		realip.State
+	}{
+		LanpanelManaged: realIPManagedMarker(markerProfile, appconfig.RealIPProviderEdgeOne),
+		State:           state,
+	}
+	return mustJSON(t, value)
+}
+
+func mustJSON(t *testing.T, value any) []byte {
+	t.Helper()
+
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		t.Fatalf("MarshalIndent() error = %v", err)
+	}
+	return append(data, '\n')
+}
+
+func TestReadDeployedRealIPReferencesRequiresManagedContract(t *testing.T) {
+	withDeployedRealIPReferenceLstat(t, 0, false)
+
+	t.Run("valid", func(t *testing.T) {
+		referenceDir := writeDeployedRealIPReferenceFixture(t, map[string][]byte{
+			"first.json": managedRealIPReferenceJSON(t, "edgeone-prod", "first", []string{" app.example.com "}),
+		})
+		references, err := readDeployedRealIPReferences(referenceDir)
+		if err != nil {
+			t.Fatalf("readDeployedRealIPReferences() error = %v", err)
+		}
+		if len(references) != 1 || references[0].AppName != "first" || references[0].Profile != "edgeone-prod" || strings.Join(references[0].Domains, ",") != "app.example.com" {
+			t.Fatalf("references = %#v, want managed first reference with trimmed domain", references)
+		}
+	})
+
+	t.Run("non json entry", func(t *testing.T) {
+		referenceDir := writeDeployedRealIPReferenceFixture(t, map[string][]byte{
+			"first.json": managedRealIPReferenceJSON(t, "edgeone-prod", "first", []string{"app.example.com"}),
+			"notes.txt":  []byte("unexpected\n"),
+		})
+		_, err := readDeployedRealIPReferences(referenceDir)
+		if err == nil || !strings.Contains(err.Error(), "contains unexpected entry") || !strings.Contains(err.Error(), "notes.txt") {
+			t.Fatalf("readDeployedRealIPReferences() error = %v, want non-json entry refusal", err)
+		}
+	})
+
+	t.Run("directory entry", func(t *testing.T) {
+		referenceDir := writeDeployedRealIPReferenceFixture(t, map[string][]byte{
+			"first.json": managedRealIPReferenceJSON(t, "edgeone-prod", "first", []string{"app.example.com"}),
+		})
+		if err := os.Mkdir(filepath.Join(referenceDir, "nested"), 0o755); err != nil {
+			t.Fatalf("Mkdir(nested) error = %v", err)
+		}
+		_, err := readDeployedRealIPReferences(referenceDir)
+		if err == nil || !strings.Contains(err.Error(), "contains unexpected directory") || !strings.Contains(err.Error(), "nested") {
+			t.Fatalf("readDeployedRealIPReferences() error = %v, want directory entry refusal", err)
+		}
+	})
+
+	t.Run("symlink reference", func(t *testing.T) {
+		referenceDir := filepath.Join(t.TempDir(), "edgeone-prod", "references")
+		if err := os.MkdirAll(referenceDir, 0o755); err != nil {
+			t.Fatalf("MkdirAll(referenceDir) error = %v", err)
+		}
+		target := filepath.Join(t.TempDir(), "target.json")
+		if err := os.WriteFile(target, managedRealIPReferenceJSON(t, "edgeone-prod", "first", []string{"app.example.com"}), 0o600); err != nil {
+			t.Fatalf("WriteFile(target) error = %v", err)
+		}
+		if err := os.Symlink(target, filepath.Join(referenceDir, "first.json")); err != nil {
+			t.Fatalf("Symlink(reference) error = %v", err)
+		}
+		_, err := readDeployedRealIPReferences(referenceDir)
+		if err == nil || !strings.Contains(err.Error(), "must not be a symlink") {
+			t.Fatalf("readDeployedRealIPReferences() error = %v, want symlink refusal", err)
+		}
+	})
+
+	t.Run("group readable reference", func(t *testing.T) {
+		referenceDir := writeDeployedRealIPReferenceFixture(t, map[string][]byte{
+			"first.json": managedRealIPReferenceJSON(t, "edgeone-prod", "first", []string{"app.example.com"}),
+		})
+		path := filepath.Join(referenceDir, "first.json")
+		if err := os.Chmod(path, 0o640); err != nil {
+			t.Fatalf("Chmod(reference) error = %v", err)
+		}
+		_, err := readDeployedRealIPReferences(referenceDir)
+		if err == nil || !strings.Contains(err.Error(), "must be root-only") {
+			t.Fatalf("readDeployedRealIPReferences() error = %v, want root-only refusal", err)
+		}
+	})
+
+	t.Run("non root reference", func(t *testing.T) {
+		withDeployedRealIPReferenceLstat(t, 1000, false)
+		referenceDir := writeDeployedRealIPReferenceFixture(t, map[string][]byte{
+			"first.json": managedRealIPReferenceJSON(t, "edgeone-prod", "first", []string{"app.example.com"}),
+		})
+		_, err := readDeployedRealIPReferences(referenceDir)
+		if err == nil || !strings.Contains(err.Error(), "must be owned by root") {
+			t.Fatalf("readDeployedRealIPReferences() error = %v, want root owner refusal", err)
+		}
+	})
+
+	t.Run("uninspectable reference owner", func(t *testing.T) {
+		withDeployedRealIPReferenceLstat(t, 0, true)
+		referenceDir := writeDeployedRealIPReferenceFixture(t, map[string][]byte{
+			"first.json": managedRealIPReferenceJSON(t, "edgeone-prod", "first", []string{"app.example.com"}),
+		})
+		_, err := readDeployedRealIPReferences(referenceDir)
+		if err == nil || !strings.Contains(err.Error(), "owner could not be inspected") {
+			t.Fatalf("readDeployedRealIPReferences() error = %v, want owner inspection refusal", err)
+		}
+	})
+
+	tests := []struct {
+		name    string
+		file    string
+		content []byte
+		want    string
+	}{
+		{
+			name:    "unmarked json",
+			file:    "first.json",
+			content: []byte(`{"app_name":"first","profile":"edgeone-prod","domains":["app.example.com"]}`),
+			want:    "lanpanel_managed marker",
+		},
+		{
+			name:    "profile mismatch",
+			file:    "first.json",
+			content: managedRealIPReferenceJSONWithProfile(t, "edgeone-prod", "other-profile", "first", []string{"app.example.com"}),
+			want:    `profile "other-profile" does not match "edgeone-prod"`,
+		},
+		{
+			name:    "filename app mismatch",
+			file:    "first.json",
+			content: managedRealIPReferenceJSON(t, "edgeone-prod", "second", []string{"app.example.com"}),
+			want:    `app_name "second" does not match filename "first.json"`,
+		},
+		{
+			name:    "empty domains",
+			file:    "first.json",
+			content: managedRealIPReferenceJSON(t, "edgeone-prod", "first", nil),
+			want:    "domains must not be empty",
+		},
+		{
+			name:    "blank domain",
+			file:    "first.json",
+			content: managedRealIPReferenceJSON(t, "edgeone-prod", "first", []string{"   "}),
+			want:    "domains must not contain empty values",
+		},
+		{
+			name:    "unsafe filename",
+			file:    "Bad.json",
+			content: managedRealIPReferenceJSON(t, "edgeone-prod", "Bad", []string{"app.example.com"}),
+			want:    "filename app name is not safe",
+		},
+		{
+			name: "non json with matching substrings",
+			file: "first.json",
+			content: []byte(`Lanpanel-managed: realip.profile=edgeone-prod provider=edgeone
+"lanpanel_managed": "Lanpanel-managed: realip.profile=edgeone-prod provider=edgeone"
+"profile": "edgeone-prod"
+"app_name": "first"
+"domains": ["app.example.com"]`),
+			want: "parse deployed realip reference",
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			referenceDir := writeDeployedRealIPReferenceFixture(t, map[string][]byte{tt.file: tt.content})
+			_, err := readDeployedRealIPReferences(referenceDir)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("readDeployedRealIPReferences() error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func writeDeployedRealIPReferenceFixture(t *testing.T, files map[string][]byte) string {
+	t.Helper()
+
+	referenceDir := filepath.Join(t.TempDir(), "edgeone-prod", "references")
+	if err := os.MkdirAll(referenceDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(referenceDir, name), content, 0o600); err != nil {
+			t.Fatalf("WriteFile(%s) error = %v", name, err)
+		}
+	}
+	return referenceDir
+}
+
+func withDeployedRealIPReferenceLstat(t *testing.T, uid uint32, unknownOwner bool) {
+	t.Helper()
+
+	previous := lstatDeployedRealIPReferenceFn
+	lstatDeployedRealIPReferenceFn = func(path string) (fs.FileInfo, error) {
+		info, err := os.Lstat(path)
+		if err != nil {
+			return nil, err
+		}
+		return ownedFileInfo{FileInfo: info, uid: uid, unknownOwner: unknownOwner}, nil
+	}
+	t.Cleanup(func() {
+		lstatDeployedRealIPReferenceFn = previous
+	})
+}
+
+func withRootOwnedRealIPCleanupLstat(t *testing.T) {
+	t.Helper()
+
+	previous := lstatRealIPCleanupPathFn
+	lstatRealIPCleanupPathFn = func(path string) (fs.FileInfo, error) {
+		info, err := os.Lstat(path)
+		if err != nil {
+			return nil, err
+		}
+		return ownedFileInfo{FileInfo: info, uid: 0}, nil
+	}
+	t.Cleanup(func() {
+		lstatRealIPCleanupPathFn = previous
+	})
+}
+
+func safeRealIPCleanupRoot(t *testing.T) string {
+	t.Helper()
+
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o755); err != nil {
+		t.Fatalf("Chmod(cleanup root) error = %v", err)
+	}
+	return root
+}
+
+func managedRealIPReferenceJSON(t *testing.T, profile string, appName string, domains []string) []byte {
+	t.Helper()
+
+	return managedRealIPReferenceJSONWithProfile(t, profile, profile, appName, domains)
+}
+
+func managedRealIPReferenceJSONWithProfile(t *testing.T, markerProfile string, referenceProfile string, appName string, domains []string) []byte {
+	t.Helper()
+
+	value := struct {
+		LanpanelManaged string `json:"lanpanel_managed"`
+		realip.Reference
+	}{
+		LanpanelManaged: realIPManagedMarker(markerProfile, appconfig.RealIPProviderEdgeOne),
+		Reference: realip.Reference{
+			AppName: appName,
+			Profile: referenceProfile,
+			Domains: domains,
+		},
+	}
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		t.Fatalf("MarshalIndent() error = %v", err)
+	}
+	return append(data, '\n')
+}
+
+func TestGuardRealIPProfileDirectoriesRejectsUnsafeRoots(t *testing.T) {
+	t.Parallel()
+
+	names, err := appsvc.NewRealIPProfileNames("edgeone-prod", appconfig.RealIPProviderEdgeOne, "review-app")
+	if err != nil {
+		t.Fatalf("NewRealIPProfileNames() error = %v", err)
+	}
+	validFS := func() mutableRealIPFileSystem {
+		fileSystem := mutableRealIPFileSystem{files: map[string]mutableRealIPFile{}}
+		addDir := func(path string, mode fs.FileMode, uid uint32) {
+			fileSystem.files[path] = mutableRealIPFile{mode: os.ModeDir | mode, uid: uid}
+		}
+		for _, path := range []string{
+			"/",
+			"/etc",
+			"/etc/nginx",
+			"/etc/nginx/lanpanel",
+			"/etc/nginx/lanpanel/realip",
+			names.NginxDir,
+			"/var",
+			"/var/lib",
+			"/var/lib/lanpanel",
+			"/var/lib/lanpanel/realip",
+			names.StateDir,
+			names.ReferenceDir,
+		} {
+			addDir(path, 0o755, 0)
+		}
+		fileSystem.files[names.MetadataPath] = mutableRealIPFile{content: managedRealIPProfileJSON(t, "edgeone-prod", realip.ProfileConfig{
+			Name:            "edgeone-prod",
+			Provider:        appconfig.RealIPProviderEdgeOne,
+			ZoneID:          "zone-2abcDEF123",
+			EnvFile:         "/etc/lanpanel/realip/edgeone-prod.env",
+			RefreshInterval: "72h",
+		}), mode: 0o600}
+		return fileSystem
+	}
+	if err := guardRealIPProfileDirectories(validFS(), names); err != nil {
+		t.Fatalf("guardRealIPProfileDirectories(valid) error = %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(mutableRealIPFileSystem)
+		want   string
+	}{
+		{
+			name: "nginx profile symlink",
+			mutate: func(fileSystem mutableRealIPFileSystem) {
+				fileSystem.files[names.NginxDir] = mutableRealIPFile{mode: os.ModeSymlink | 0o777}
+			},
+			want: "realip Nginx directory " + names.NginxDir + " must not be a symlink",
+		},
+		{
+			name: "state profile symlink",
+			mutate: func(fileSystem mutableRealIPFileSystem) {
+				fileSystem.files[names.StateDir] = mutableRealIPFile{mode: os.ModeSymlink | 0o777}
+			},
+			want: "realip state directory " + names.StateDir + " must not be a symlink",
+		},
+		{
+			name: "reference dir symlink",
+			mutate: func(fileSystem mutableRealIPFileSystem) {
+				fileSystem.files[names.ReferenceDir] = mutableRealIPFile{mode: os.ModeSymlink | 0o777}
+			},
+			want: "realip reference directory " + names.ReferenceDir + " must not be a symlink",
+		},
+		{
+			name: "state dir group writable",
+			mutate: func(fileSystem mutableRealIPFileSystem) {
+				fileSystem.files[names.StateDir] = mutableRealIPFile{mode: os.ModeDir | 0o775}
+			},
+			want: "realip state directory " + names.StateDir + " must not be writable by group or others",
+		},
+		{
+			name: "state dir non root",
+			mutate: func(fileSystem mutableRealIPFileSystem) {
+				fileSystem.files[names.StateDir] = mutableRealIPFile{mode: os.ModeDir | 0o755, uid: 1000}
+			},
+			want: "realip state directory " + names.StateDir + " must be owned by root",
+		},
+		{
+			name: "state dir owner uninspectable",
+			mutate: func(fileSystem mutableRealIPFileSystem) {
+				file := fileSystem.files[names.StateDir]
+				file.unknownOwner = true
+				fileSystem.files[names.StateDir] = file
+			},
+			want: "realip state directory " + names.StateDir + " owner could not be inspected",
+		},
+		{
+			name: "metadata missing",
+			mutate: func(fileSystem mutableRealIPFileSystem) {
+				delete(fileSystem.files, names.MetadataPath)
+			},
+			want: names.StateDir + " exists without " + names.MetadataPath,
+		},
+		{
+			name: "metadata symlink",
+			mutate: func(fileSystem mutableRealIPFileSystem) {
+				fileSystem.files[names.MetadataPath] = mutableRealIPFile{mode: os.ModeSymlink | 0o777}
+			},
+			want: names.MetadataPath + " is a symlink",
+		},
+		{
+			name: "metadata group readable",
+			mutate: func(fileSystem mutableRealIPFileSystem) {
+				file := fileSystem.files[names.MetadataPath]
+				file.mode = 0o640
+				fileSystem.files[names.MetadataPath] = file
+			},
+			want: names.MetadataPath + " must be root-only",
+		},
+		{
+			name: "metadata owner uninspectable",
+			mutate: func(fileSystem mutableRealIPFileSystem) {
+				file := fileSystem.files[names.MetadataPath]
+				file.unknownOwner = true
+				fileSystem.files[names.MetadataPath] = file
+			},
+			want: names.MetadataPath + " owner could not be inspected",
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fileSystem := validFS()
+			tt.mutate(fileSystem)
+			err := guardRealIPProfileDirectories(fileSystem, names)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("guardRealIPProfileDirectories() error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestExecute_AppRealIPValidateReferenceUsesManagedContract(t *testing.T) {
+	t.Run("noncanonical path", func(t *testing.T) {
+		referenceDir := filepath.Join(t.TempDir(), "other-profile", "references")
+		if err := os.MkdirAll(referenceDir, 0o755); err != nil {
+			t.Fatalf("MkdirAll(referenceDir) error = %v", err)
+		}
+		path := filepath.Join(referenceDir, "wrong.json")
+		if err := os.WriteFile(path, managedRealIPReferenceJSON(t, "edgeone-prod", "first", []string{"app.example.com"}), 0o600); err != nil {
+			t.Fatalf("WriteFile(reference) error = %v", err)
+		}
+		_, _, err := runCLI(t, "app", "realip", "validate-reference", "--profile", "edgeone-prod", "--app", "first", "--path", path)
+		if err == nil || !strings.Contains(err.Error(), "must be /var/lib/lanpanel/realip/edgeone-prod/references/first.json") {
+			t.Fatalf("app realip validate-reference error = %v, want canonical path failure", err)
+		}
+	})
+
+	t.Run("symlink", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "edgeone-prod", "references")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll(referenceDir) error = %v", err)
+		}
+		target := filepath.Join(dir, "target.json")
+		if err := os.WriteFile(target, managedRealIPReferenceJSON(t, "edgeone-prod", "first", []string{"app.example.com"}), 0o600); err != nil {
+			t.Fatalf("WriteFile(target) error = %v", err)
+		}
+		path := filepath.Join(dir, "first.json")
+		if err := os.Symlink(target, path); err != nil {
+			t.Fatalf("Symlink() error = %v", err)
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			t.Fatalf("Lstat(reference) error = %v", err)
+		}
+		err = validateDeployedRealIPReferenceInfo(path, ownedFileInfo{FileInfo: info, uid: 0})
+		if err == nil || !strings.Contains(err.Error(), "must not be a symlink") {
+			t.Fatalf("validateDeployedRealIPReferenceInfo() error = %v, want symlink metadata failure", err)
+		}
+	})
+
+	tests := []struct {
+		name    string
+		content []byte
+		want    string
+	}{
+		{
+			name: "non json with matching substrings",
+			content: []byte(`Lanpanel-managed: realip.profile=edgeone-prod provider=edgeone
+"lanpanel_managed": "Lanpanel-managed: realip.profile=edgeone-prod provider=edgeone"
+"profile": "edgeone-prod"
+"app_name": "first"
+"domains": ["app.example.com"]`),
+			want: "parse deployed realip reference",
+		},
+		{
+			name:    "blank domain",
+			content: managedRealIPReferenceJSON(t, "edgeone-prod", "first", []string{"   "}),
+			want:    "domains must not contain empty values",
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := parseDeployedRealIPReference(tt.content, "/var/lib/lanpanel/realip/edgeone-prod/references/first.json", "edgeone-prod", "first")
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("parseDeployedRealIPReference() error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateDeployedRealIPReferencePath(t *testing.T) {
+	t.Parallel()
+
+	names, err := appsvc.NewRealIPProfileNames("edgeone-prod", appconfig.RealIPProviderEdgeOne, "first")
+	if err != nil {
+		t.Fatalf("NewRealIPProfileNames() error = %v", err)
+	}
+	valid := names.ReferencePathForApp
+	if err := validateDeployedRealIPReferencePath(valid, "edgeone-prod", "first"); err != nil {
+		t.Fatalf("validateDeployedRealIPReferencePath(valid) error = %v", err)
+	}
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{name: "relative", path: filepath.Join("edgeone-prod", "references", "first.json"), want: "clean absolute path"},
+		{name: "unclean", path: "/var/lib/lanpanel/realip/edgeone-prod/references/../references/first.json", want: "clean absolute path"},
+		{name: "wrong app", path: "/var/lib/lanpanel/realip/edgeone-prod/references/second.json", want: names.ReferencePathForApp},
+		{name: "wrong parent", path: "/var/lib/lanpanel/realip/edgeone-prod/other/first.json", want: names.ReferencePathForApp},
+		{name: "wrong profile", path: "/var/lib/lanpanel/realip/other-profile/references/first.json", want: names.ReferencePathForApp},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateDeployedRealIPReferencePath(tt.path, "edgeone-prod", "first")
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("validateDeployedRealIPReferencePath() error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestDomainsFromRealIPReferencesMergesExistingAndCurrentDomains(t *testing.T) {
+	t.Parallel()
+
+	got := domainsFromRealIPReferences([]realip.Reference{
+		{AppName: "first", Domains: []string{"app.example.com", "www.example.com"}},
+		{AppName: "second", Domains: []string{"www.example.com", "api.example.com"}},
+	})
+	if strings.Join(got, ",") != "app.example.com,www.example.com,api.example.com" {
+		t.Fatalf("domainsFromRealIPReferences() = %#v", got)
+	}
+}
+
+func TestPrepareAppRealIPProfileReplacesExistingReferenceForSameApp(t *testing.T) {
+	previousReferenceReader := readDeployedRealIPReferencesFn
+	previousLoadCredentials := loadEdgeOneCredentialsFn
+	previousDescribe := describeEdgeOneOriginACLFn
+	previousStage := stageRealIPRuntimeFilesFn
+	t.Cleanup(func() {
+		readDeployedRealIPReferencesFn = previousReferenceReader
+		loadEdgeOneCredentialsFn = previousLoadCredentials
+		describeEdgeOneOriginACLFn = previousDescribe
+		stageRealIPRuntimeFilesFn = previousStage
+	})
+
+	enabled := true
+	cfg := appconfig.New()
+	cfg.App.Name = "review-app"
+	cfg.App.Domains = []string{"new.example.com"}
+	cfg.App.CertificateEmail = "ops@example.com"
+	cfg.App.ACMEChallenge = appconfig.ACMEChallengeDNS01
+	cfg.App.Listen = "127.0.0.1:18001"
+	cfg.Service.ExecStart = "/bin/true --listen 127.0.0.1:18001"
+	cfg.Nginx.RealIPProfile = "edgeone-prod"
+	cfg.RealIP.Profiles = map[string]appconfig.RealIPProfileConfig{
+		"edgeone-prod": {
+			Enabled:  &enabled,
+			Provider: appconfig.RealIPProviderEdgeOne,
+			EdgeOne: appconfig.RealIPEdgeOneConfig{
+				ZoneID:  "zone-2abcDEF123",
+				EnvFile: "/etc/lanpanel/realip/edgeone-prod.env",
+			},
+		},
+	}
+
+	readDeployedRealIPReferencesFn = func(dir string) ([]realip.Reference, error) {
+		if dir != "/var/lib/lanpanel/realip/edgeone-prod/references" {
+			t.Fatalf("reference dir = %q", dir)
+		}
+		return []realip.Reference{
+			{AppName: "review-app", Profile: "edgeone-prod", Domains: []string{"stale.example.com"}},
+			{AppName: "api-app", Profile: "edgeone-prod", Domains: []string{"api.example.com"}},
+		}, nil
+	}
+	loadEdgeOneCredentialsFn = func(_ edgeone.FileSystem, envFile string) (edgeone.Credentials, error) {
+		if envFile != "/etc/lanpanel/realip/edgeone-prod.env" {
+			t.Fatalf("envFile = %q", envFile)
+		}
+		return edgeone.Credentials{SecretID: "id", SecretKey: "key"}, nil
+	}
+	describeEdgeOneOriginACLFn = func(_ stdcontext.Context, _ edgeone.Credentials, zoneID string) (*edgeone.OriginACLInfo, error) {
+		if zoneID != "zone-2abcDEF123" {
+			t.Fatalf("zoneID = %q", zoneID)
+		}
+		return &edgeone.OriginACLInfo{
+			Status:          "online",
+			L7Hosts:         []string{"api.example.com", "new.example.com"},
+			OriginACLFamily: "global",
+			CurrentOriginACL: &edgeone.OriginACL{
+				Version:         "v1",
+				ActiveTime:      "2026-06-01T00:00:00Z",
+				EntireAddresses: edgeone.Addresses{IPv4: []string{"8.8.8.8"}},
+			},
+			NextOriginACL: &edgeone.OriginACL{
+				Version:           "v2",
+				ActiveTime:        "2026-06-04T00:00:00Z",
+				PlannedActiveTime: "2026-06-04T00:00:00Z",
+				EntireAddresses:   edgeone.Addresses{IPv4: []string{"9.9.9.0/24"}},
+			},
+		}, nil
+	}
+	marker := "Lanpanel-managed: realip.profile=edgeone-prod provider=edgeone"
+	stageRealIPRuntimeFilesFn = func(profile realip.ProfileConfig, state realip.State, reference realip.Reference) ([]realiprender.StagedFile, error) {
+		if strings.Join(profile.Domains, ",") != "api.example.com,new.example.com" {
+			t.Fatalf("profile domains = %#v, want old app reference replaced by current domains", profile.Domains)
+		}
+		if reference.AppName != "review-app" || strings.Join(reference.Domains, ",") != "new.example.com" {
+			t.Fatalf("stage reference = %#v, want current app reference", reference)
+		}
+		if strings.Join(state.TrustedCIDRs, ",") != "8.8.8.8/32,9.9.9.0/24" {
+			t.Fatalf("trusted CIDRs = %#v", state.TrustedCIDRs)
+		}
+		return []realiprender.StagedFile{{
+			SourcePath: "templates/realip/nginx-realip.conf.tmpl",
+			HostPath:   "/etc/nginx/lanpanel/realip/edgeone-prod/active.conf",
+			Mode:       0o644,
+			Content:    []byte(marker + "\nset_real_ip_from 8.8.8.8/32;\nset_real_ip_from 9.9.9.0/24;\n"),
+		}}, nil
+	}
+
+	fileSystem := mutableRealIPFileSystem{files: map[string]mutableRealIPFile{}}
+	names, state, staged, err := prepareAppRealIPProfile(stdcontext.Background(), cfg, fileSystem)
+	if err != nil {
+		t.Fatalf("prepareAppRealIPProfile() error = %v", err)
+	}
+	if names.ProfileName != "edgeone-prod" {
+		t.Fatalf("profile name = %q", names.ProfileName)
+	}
+	if strings.Join(state.L7Hosts, ",") != "api.example.com,new.example.com" {
+		t.Fatalf("state L7Hosts = %#v", state.L7Hosts)
+	}
+	if len(staged) != 1 || staged[0].HostPath != "/etc/nginx/lanpanel/realip/edgeone-prod/active.conf" {
+		t.Fatalf("staged = %#v, want staged realip artifacts returned without installing", staged)
+	}
+}
+
+func TestAppRealIPDeployFieldsIncludeRuntimeDiagnostics(t *testing.T) {
+	t.Parallel()
+
+	enabled := true
+	cfg := appconfig.New()
+	cfg.App.Name = "review-app"
+	cfg.App.Domains = []string{"app.example.com"}
+	cfg.App.CertificateEmail = "ops@example.com"
+	cfg.App.ACMEChallenge = appconfig.ACMEChallengeDNS01
+	cfg.App.Listen = "127.0.0.1:18001"
+	cfg.Service.ExecStart = "/bin/true --listen 127.0.0.1:18001"
+	cfg.Nginx.RealIPProfile = "edgeone-prod"
+	cfg.RealIP.Profiles = map[string]appconfig.RealIPProfileConfig{
+		"edgeone-prod": {
+			Enabled:  &enabled,
+			Provider: appconfig.RealIPProviderEdgeOne,
+			EdgeOne: appconfig.RealIPEdgeOneConfig{
+				ZoneID:  "zone-2abcDEF123",
+				EnvFile: "/etc/lanpanel/realip/edgeone-prod.env",
+			},
+		},
+	}
+	names, err := appsvc.NewRealIPProfileNames("edgeone-prod", appconfig.RealIPProviderEdgeOne, "review-app")
+	if err != nil {
+		t.Fatalf("NewRealIPProfileNames() error = %v", err)
+	}
+	state := realip.State{
+		OriginACLStatus:   "updating",
+		OriginACLFamily:   "global",
+		CurrentVersion:    "v1",
+		CurrentActiveTime: "2026-06-01T00:00:00Z",
+		NextVersion:       "v2",
+		NextActiveTime:    "2026-06-04T00:00:00Z",
+		PlannedActiveTime: "2026-06-04T00:00:00Z",
+		CurrentCIDRs:      []string{"8.8.8.8/32"},
+		NextCIDRs:         []string{"9.9.9.0/24"},
+		TrustedCIDRs:      []string{"8.8.8.8/32", "9.9.9.0/24"},
+		UpdatedAt:         time.Date(2026, 6, 2, 1, 2, 3, 0, time.UTC),
+	}
+	fields := appRealIPDeployFields(cfg, names, state, true)
+	for label, want := range map[string]string{
+		"origin acl status":           "updating",
+		"origin acl family":           "global",
+		"current acl version":         "v1",
+		"current active time":         "2026-06-01T00:00:00Z",
+		"next acl version":            "v2",
+		"planned active time":         "2026-06-04T00:00:00Z",
+		"realip updated at":           "2026-06-02T01:02:03Z",
+		"nginx realip active":         "nginx -t passed and Nginx reloaded with app site",
+		"realip trusted CIDR include": names.TrustedCIDRPath,
+		"realip current CIDRs":        "8.8.8.8/32",
+		"realip next CIDRs":           "9.9.9.0/24",
+		"realip trusted CIDRs":        "8.8.8.8/32, 9.9.9.0/24",
+	} {
+		got, ok := fieldValue(fields, label)
+		if !ok || got != want {
+			t.Fatalf("field %q = %q, %v; want %q", label, got, ok, want)
+		}
+	}
+}
+
+func TestExecute_AppRealIPRefreshRequiresProfileAndRoot(t *testing.T) {
+	stdout, stderr, err := runCLI(t, "app", "realip", "refresh")
+	if err == nil || !strings.Contains(err.Error(), "--profile is required") {
+		t.Fatalf("app realip refresh missing profile error = %v, want required profile error", err)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	if !strings.Contains(stdout, "--profile is required") || !strings.Contains(stdout, "Pass --profile with the deployed realip profile name") {
+		t.Fatalf("stdout = %q, want required-profile response", stdout)
+	}
+
+	previousPermission := detectPermissionStateFn
+	t.Cleanup(func() { detectPermissionStateFn = previousPermission })
+	detectPermissionStateFn = func() preflight.PermissionState {
+		return preflight.PermissionState{User: "deployer", SudoWorks: true}
+	}
+
+	stdout, stderr, err = runCLI(t, "app", "realip", "refresh", "--profile", "edgeone-prod")
+	if err == nil || !strings.Contains(err.Error(), "preflight found 1 failed check") {
+		t.Fatalf("app realip refresh root gate error = %v, want root gate error", err)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	if !strings.Contains(stdout, "app realip refresh preflight found 1 failed check") || !strings.Contains(stdout, "root privileges") {
+		t.Fatalf("stdout = %q, want root gate response", stdout)
+	}
+}
+
+func useAppRealIPDiagnosticsGuardFileSystem(t *testing.T, fileSystem host.FileSystem) {
+	t.Helper()
+
+	previousFileSystem := newAppHostFileSystemFn
+	t.Cleanup(func() { newAppHostFileSystemFn = previousFileSystem })
+	newAppHostFileSystemFn = func(host.Executor, host.PrivilegeStrategy) host.FileSystem {
+		return fileSystem
+	}
+}
+
+func useStubRealIPProfileLock(t *testing.T, expectedProfile string, events *[]string) {
+	t.Helper()
+
+	previous := acquireRealIPProfileLockFn
+	t.Cleanup(func() { acquireRealIPProfileLockFn = previous })
+	acquireRealIPProfileLockFn = func(profileName string) (realIPProfileLock, error) {
+		if profileName != expectedProfile {
+			t.Fatalf("realip lock profile = %q, want %q", profileName, expectedProfile)
+		}
+		if events != nil {
+			*events = append(*events, "lock "+profileName)
+		}
+		return stubRealIPProfileLock{release: func() error {
+			if events != nil {
+				*events = append(*events, "unlock "+profileName)
+			}
+			return nil
+		}}, nil
+	}
+}
+
+func validAppRealIPDiagnosticsFileSystem(t *testing.T) mutableRealIPFileSystem {
+	t.Helper()
+
+	names, err := appsvc.NewRealIPProfileNames("edgeone-prod", appconfig.RealIPProviderEdgeOne, "")
+	if err != nil {
+		t.Fatalf("NewRealIPProfileNames() error = %v", err)
+	}
+	fileSystem := mutableRealIPFileSystem{files: map[string]mutableRealIPFile{}}
+	addDir := func(path string) {
+		fileSystem.files[path] = mutableRealIPFile{mode: os.ModeDir | 0o755}
+	}
+	for _, path := range []string{
+		"/",
+		"/etc",
+		"/etc/nginx",
+		"/etc/nginx/lanpanel",
+		"/etc/nginx/lanpanel/realip",
+		names.NginxDir,
+		"/var",
+		"/var/lib",
+		"/var/lib/lanpanel",
+		"/var/lib/lanpanel/realip",
+		names.StateDir,
+		names.ReferenceDir,
+	} {
+		addDir(path)
+	}
+	fileSystem.files[names.MetadataPath] = mutableRealIPFile{content: managedRealIPProfileJSON(t, "edgeone-prod", realip.ProfileConfig{
+		Name:            "edgeone-prod",
+		Provider:        appconfig.RealIPProviderEdgeOne,
+		ZoneID:          "zone-2abcDEF123",
+		EnvFile:         "/etc/lanpanel/realip/edgeone-prod.env",
+		RefreshInterval: "72h",
+	}), mode: 0o600}
+	return fileSystem
+}
+
+func managedRealIPRefreshServiceContent(profileName string) []byte {
+	marker := "# " + realIPManagedMarker(profileName, appconfig.RealIPProviderEdgeOne)
+	return []byte(marker + `
+# Source: deploy/templates/realip/refresh.service.tmpl
+
+[Unit]
+Description=Refresh Lanpanel realip profile ` + profileName + `
+Wants=network-online.target
+Requires=nginx.service
+After=network-online.target nginx.service
+
+[Service]
+Type=oneshot
+TimeoutStartSec=2min
+ExecStart=` + realipassets.DefaultRefreshBinaryPath + ` app realip refresh --profile ` + profileName + `
+`)
+}
+
+func managedRealIPRefreshTimerContent(t *testing.T, profileName string, refreshInterval string) []byte {
+	t.Helper()
+
+	systemdInterval, err := realip.SystemdRefreshInterval(refreshInterval)
+	if err != nil {
+		t.Fatalf("SystemdRefreshInterval(%q) error = %v", refreshInterval, err)
+	}
+	marker := "# " + realIPManagedMarker(profileName, appconfig.RealIPProviderEdgeOne)
+	return []byte(marker + `
+# Source: deploy/templates/realip/refresh.timer.tmpl
+
+[Unit]
+Description=Run Lanpanel realip profile ` + profileName + ` refresh
+
+[Timer]
+OnBootSec=15m
+OnUnitActiveSec=` + systemdInterval + `
+RandomizedDelaySec=30m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+`)
+}
+
+func TestExecute_AppRealIPDiagnosticsSurfacesLockReleaseFailureOnFailure(t *testing.T) {
+	previousPermissionState := detectPermissionStateFn
+	previousExecutor := newHostExecutorFn
+	previousFileSystem := newAppHostFileSystemFn
+	previousAcquireLock := acquireRealIPProfileLockFn
+	previousReadProfile := readDeployedRealIPProfileFn
+	t.Cleanup(func() {
+		detectPermissionStateFn = previousPermissionState
+		newHostExecutorFn = previousExecutor
+		newAppHostFileSystemFn = previousFileSystem
+		acquireRealIPProfileLockFn = previousAcquireLock
+		readDeployedRealIPProfileFn = previousReadProfile
+	})
+	detectPermissionStateFn = func() preflight.PermissionState {
+		return preflight.PermissionState{User: "root", IsRoot: true}
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(&scriptedHostRunner{}, env)
+	}
+	newAppHostFileSystemFn = func(host.Executor, host.PrivilegeStrategy) host.FileSystem {
+		return mutableRealIPFileSystem{files: map[string]mutableRealIPFile{}}
+	}
+	acquireRealIPProfileLockFn = func(profileName string) (realIPProfileLock, error) {
+		if profileName != "edgeone-prod" {
+			t.Fatalf("realip lock profile = %q", profileName)
+		}
+		return stubRealIPProfileLock{release: func() error {
+			return errors.New("release boom")
+		}}, nil
+	}
+	readDeployedRealIPProfileFn = func(path string) (realip.ProfileConfig, error) {
+		if path != "/var/lib/lanpanel/realip/edgeone-prod/profile.json" {
+			t.Fatalf("profile metadata path = %q", path)
+		}
+		return realip.ProfileConfig{}, errors.New("profile boom")
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "realip", "diagnostics", "--profile", "edgeone-prod", "--format", "json")
+	if err == nil {
+		t.Fatal("app realip diagnostics error = nil, want profile and lock release failure")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Status != "failed" {
+		t.Fatalf("status = %q, want failed", response.Status)
+	}
+	details, ok := fieldValue(response.Fields, "details")
+	if !ok || !strings.Contains(details, "profile boom") {
+		t.Fatalf("details = %q, %v; want profile failure", details, ok)
+	}
+	for _, want := range []string{"release EdgeOne realip profile lock failed", "release boom"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want substring %q", err.Error(), want)
+		}
+	}
+}
+
+func TestExecute_AppRealIPDiagnosticsJSONSuccessReportsDeployedState(t *testing.T) {
+	useAppRealIPDiagnosticsGuardFileSystem(t, validAppRealIPDiagnosticsFileSystem(t))
+	lockEvents := []string{}
+	useStubRealIPProfileLock(t, "edgeone-prod", &lockEvents)
+
+	previousPermission := detectPermissionStateFn
+	previousProfileReader := readDeployedRealIPProfileFn
+	previousStateReader := readDeployedRealIPStateFn
+	previousReferenceReader := readDeployedRealIPReferencesFn
+	previousLoadCredentials := loadEdgeOneCredentialsFn
+	previousLstatArtifact := lstatDeployedRealIPArtifactFn
+	previousReadArtifact := readDeployedRealIPArtifactFn
+	t.Cleanup(func() {
+		detectPermissionStateFn = previousPermission
+		readDeployedRealIPProfileFn = previousProfileReader
+		readDeployedRealIPStateFn = previousStateReader
+		readDeployedRealIPReferencesFn = previousReferenceReader
+		loadEdgeOneCredentialsFn = previousLoadCredentials
+		lstatDeployedRealIPArtifactFn = previousLstatArtifact
+		readDeployedRealIPArtifactFn = previousReadArtifact
+	})
+
+	detectPermissionStateFn = func() preflight.PermissionState { return preflight.PermissionState{IsRoot: true} }
+	readDeployedRealIPProfileFn = func(path string) (realip.ProfileConfig, error) {
+		lockEvents = append(lockEvents, "read-profile")
+		if path != "/var/lib/lanpanel/realip/edgeone-prod/profile.json" {
+			t.Fatalf("profile metadata path = %q", path)
+		}
+		return realip.ProfileConfig{
+			Name:            "edgeone-prod",
+			Provider:        appconfig.RealIPProviderEdgeOne,
+			ZoneID:          "zone-2abcDEF123",
+			EnvFile:         "/etc/lanpanel/realip/edgeone-prod.env",
+			RefreshInterval: "72h",
+		}, nil
+	}
+	readDeployedRealIPStateFn = func(path string, profileName string) (realip.State, error) {
+		lockEvents = append(lockEvents, "read-state")
+		if path != "/var/lib/lanpanel/realip/edgeone-prod/state.json" || profileName != "edgeone-prod" {
+			t.Fatalf("state path/profile = %q/%q", path, profileName)
+		}
+		return realip.State{
+			ProfileName:       "edgeone-prod",
+			Provider:          appconfig.RealIPProviderEdgeOne,
+			ZoneID:            "zone-2abcDEF123",
+			OriginACLStatus:   "updating",
+			OriginACLFamily:   "global",
+			CurrentVersion:    "v1",
+			CurrentActiveTime: "2026-06-01T00:00:00Z",
+			NextVersion:       "v2",
+			PlannedActiveTime: "2026-06-04T00:00:00Z",
+			CurrentCIDRs:      []string{"8.8.8.8/32"},
+			NextCIDRs:         []string{"9.9.9.0/24"},
+			TrustedCIDRs:      []string{"8.8.8.8/32", "9.9.9.0/24"},
+			UpdatedAt:         time.Date(2026, 6, 2, 1, 2, 3, 0, time.UTC),
+		}, nil
+	}
+	readDeployedRealIPReferencesFn = func(dir string) ([]realip.Reference, error) {
+		lockEvents = append(lockEvents, "read-references")
+		if dir != "/var/lib/lanpanel/realip/edgeone-prod/references" {
+			t.Fatalf("reference dir = %q", dir)
+		}
+		return []realip.Reference{
+			{AppName: "first", Profile: "edgeone-prod", Domains: []string{"app.example.com"}},
+			{AppName: "second", Profile: "edgeone-prod", Domains: []string{"api.example.com"}},
+		}, nil
+	}
+	loadEdgeOneCredentialsFn = func(_ edgeone.FileSystem, envFile string) (edgeone.Credentials, error) {
+		if envFile != "/etc/lanpanel/realip/edgeone-prod.env" {
+			t.Fatalf("envFile = %q", envFile)
+		}
+		return edgeone.Credentials{SecretID: "id", SecretKey: "key"}, nil
+	}
+	lstatDeployedRealIPArtifactFn = func(path string) (fs.FileInfo, error) {
+		switch path {
+		case "/etc/nginx/lanpanel/realip/edgeone-prod/active.conf",
+			"/etc/nginx/lanpanel/realip/edgeone-prod/trusted-cidrs.conf",
+			"/etc/systemd/system/lanpanel-realip-edgeone-prod-refresh.service",
+			"/etc/systemd/system/lanpanel-realip-edgeone-prod-refresh.timer":
+			return staticFileInfo{name: filepath.Base(path), mode: 0o644, size: 1}, nil
+		default:
+			t.Fatalf("unexpected artifact path = %q", path)
+			return nil, nil
+		}
+	}
+	readDeployedRealIPArtifactFn = func(path string) ([]byte, error) {
+		lockEvents = append(lockEvents, "read-artifact")
+		marker := "# Lanpanel-managed: realip.profile=edgeone-prod provider=edgeone\n"
+		switch path {
+		case "/etc/nginx/lanpanel/realip/edgeone-prod/active.conf":
+			return []byte(marker + "set_real_ip_from 8.8.8.8/32;\nset_real_ip_from 9.9.9.0/24;\n"), nil
+		case "/etc/nginx/lanpanel/realip/edgeone-prod/trusted-cidrs.conf":
+			return []byte(marker + "8.8.8.8/32 1;\n9.9.9.0/24 1;\n"), nil
+		case "/etc/systemd/system/lanpanel-realip-edgeone-prod-refresh.service":
+			return managedRealIPRefreshServiceContent("edgeone-prod"), nil
+		case "/etc/systemd/system/lanpanel-realip-edgeone-prod-refresh.timer":
+			return managedRealIPRefreshTimerContent(t, "edgeone-prod", "72h"), nil
+		default:
+			return []byte(""), nil
+		}
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "realip", "diagnostics", "--profile", "edgeone-prod", "--format", "json")
+	if err != nil {
+		t.Fatalf("app realip diagnostics error = %v", err)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Status != "passed" {
+		t.Fatalf("response.Status = %q, want passed", response.Status)
+	}
+	for label, want := range map[string]string{
+		"profile":                            "edgeone-prod (edgeone)",
+		"deployed references":                "first=app.example.com; second=api.example.com",
+		"edgeone credential/env file":        "passed",
+		"realip current CIDRs":               "8.8.8.8/32",
+		"realip next CIDRs":                  "9.9.9.0/24",
+		"realip trusted CIDRs":               "8.8.8.8/32, 9.9.9.0/24",
+		"realip nginx include status":        "present root-owned mode 0644, CIDRs match state",
+		"realip trusted CIDR include status": "present root-owned mode 0644, CIDRs match state",
+		"realip refresh service status":      "present root-owned mode 0644, command matches profile",
+		"realip refresh timer status":        "present root-owned mode 0644, timer matches profile",
+	} {
+		got, ok := fieldValue(response.Fields, label)
+		if !ok || got != want {
+			t.Fatalf("field %q = %q, %v; want %q", label, got, ok, want)
+		}
+	}
+	assertEventBefore(t, lockEvents, "lock edgeone-prod", "read-profile")
+	assertEventBefore(t, lockEvents, "read-profile", "read-state")
+	assertEventBefore(t, lockEvents, "read-state", "read-references")
+	assertEventBefore(t, lockEvents, "read-references", "read-artifact")
+	assertEventBefore(t, lockEvents, "read-artifact", "unlock edgeone-prod")
+}
+
+func TestValidateDeployedRealIPSystemdArtifacts(t *testing.T) {
+	previousReadArtifact := readDeployedRealIPArtifactFn
+	t.Cleanup(func() { readDeployedRealIPArtifactFn = previousReadArtifact })
+
+	marker := realIPManagedMarker("edgeone-prod", appconfig.RealIPProviderEdgeOne)
+	readDeployedRealIPArtifactFn = func(path string) ([]byte, error) {
+		switch path {
+		case "/service":
+			return managedRealIPRefreshServiceContent("edgeone-prod"), nil
+		case "/bad-service":
+			return []byte("# " + marker + "\n[Service]\nType=oneshot\nTimeoutStartSec=2min\nExecStart=/usr/local/bin/lanpanel app realip refresh --profile other\n"), nil
+		case "/timer":
+			return managedRealIPRefreshTimerContent(t, "edgeone-prod", "72h"), nil
+		case "/bad-timer":
+			return []byte("# " + marker + "\n[Timer]\nOnBootSec=15m\nOnUnitActiveSec=60s\nRandomizedDelaySec=30m\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n"), nil
+		default:
+			return nil, os.ErrNotExist
+		}
+	}
+
+	if err := validateDeployedRealIPRefreshService("/service", marker, "edgeone-prod"); err != nil {
+		t.Fatalf("validateDeployedRealIPRefreshService(valid) error = %v", err)
+	}
+	if err := validateDeployedRealIPRefreshTimer("/timer", marker, realip.ProfileConfig{RefreshInterval: "72h"}); err != nil {
+		t.Fatalf("validateDeployedRealIPRefreshTimer(valid) error = %v", err)
+	}
+	if err := validateDeployedRealIPRefreshService("/bad-service", marker, "edgeone-prod"); err == nil || !strings.Contains(err.Error(), "ExecStart=/usr/local/bin/lanpanel app realip refresh --profile edgeone-prod") {
+		t.Fatalf("validateDeployedRealIPRefreshService(bad) error = %v, want ExecStart mismatch", err)
+	}
+	if err := validateDeployedRealIPRefreshTimer("/bad-timer", marker, realip.ProfileConfig{RefreshInterval: "72h"}); err == nil || !strings.Contains(err.Error(), "OnUnitActiveSec=259200s") {
+		t.Fatalf("validateDeployedRealIPRefreshTimer(bad) error = %v, want interval mismatch", err)
+	}
+}
+
+func TestDeployedRealIPRegularFileStatusRejectsUnsafeArtifacts(t *testing.T) {
+	previousLstatArtifact := lstatDeployedRealIPArtifactFn
+	t.Cleanup(func() { lstatDeployedRealIPArtifactFn = previousLstatArtifact })
+
+	tests := []struct {
+		name string
+		info fs.FileInfo
+		want string
+	}{
+		{
+			name: "world writable",
+			info: staticFileInfo{name: "active.conf", mode: 0o666, size: 1},
+			want: "must not be writable by group or others",
+		},
+		{
+			name: "group writable",
+			info: staticFileInfo{name: "active.conf", mode: 0o664, size: 1},
+			want: "must not be writable by group or others",
+		},
+		{
+			name: "non root",
+			info: staticFileInfo{name: "active.conf", mode: 0o644, size: 1, uid: 1000},
+			want: "must be owned by root",
+		},
+		{
+			name: "unknown owner",
+			info: staticFileInfo{name: "active.conf", mode: 0o644, size: 1, unknownOwner: true},
+			want: "owner could not be inspected",
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			lstatDeployedRealIPArtifactFn = func(string) (fs.FileInfo, error) {
+				return tt.info, nil
+			}
+			_, err := deployedRealIPRegularFileStatus("/etc/nginx/lanpanel/realip/edgeone-prod/active.conf")
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("deployedRealIPRegularFileStatus() error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestExecute_AppRealIPDiagnosticsJSONFailureReportsCredentialCheck(t *testing.T) {
+	useAppRealIPDiagnosticsGuardFileSystem(t, validAppRealIPDiagnosticsFileSystem(t))
+	useStubRealIPProfileLock(t, "edgeone-prod", nil)
+
+	previousPermission := detectPermissionStateFn
+	previousProfileReader := readDeployedRealIPProfileFn
+	previousStateReader := readDeployedRealIPStateFn
+	previousReferenceReader := readDeployedRealIPReferencesFn
+	previousLoadCredentials := loadEdgeOneCredentialsFn
+	previousLstatArtifact := lstatDeployedRealIPArtifactFn
+	previousReadArtifact := readDeployedRealIPArtifactFn
+	t.Cleanup(func() {
+		detectPermissionStateFn = previousPermission
+		readDeployedRealIPProfileFn = previousProfileReader
+		readDeployedRealIPStateFn = previousStateReader
+		readDeployedRealIPReferencesFn = previousReferenceReader
+		loadEdgeOneCredentialsFn = previousLoadCredentials
+		lstatDeployedRealIPArtifactFn = previousLstatArtifact
+		readDeployedRealIPArtifactFn = previousReadArtifact
+	})
+
+	detectPermissionStateFn = func() preflight.PermissionState { return preflight.PermissionState{IsRoot: true} }
+	readDeployedRealIPProfileFn = func(string) (realip.ProfileConfig, error) {
+		return realip.ProfileConfig{
+			Name:            "edgeone-prod",
+			Provider:        appconfig.RealIPProviderEdgeOne,
+			ZoneID:          "zone-2abcDEF123",
+			EnvFile:         "/etc/lanpanel/realip/edgeone-prod.env",
+			RefreshInterval: "72h",
+		}, nil
+	}
+	readDeployedRealIPStateFn = func(string, string) (realip.State, error) {
+		return realip.State{
+			ProfileName:     "edgeone-prod",
+			Provider:        appconfig.RealIPProviderEdgeOne,
+			ZoneID:          "zone-2abcDEF123",
+			OriginACLStatus: "online",
+			OriginACLFamily: "global",
+			CurrentVersion:  "v1",
+			CurrentCIDRs:    []string{"8.8.8.8/32"},
+			TrustedCIDRs:    []string{"8.8.8.8/32"},
+			UpdatedAt:       time.Date(2026, 6, 2, 1, 2, 3, 0, time.UTC),
+		}, nil
+	}
+	readDeployedRealIPReferencesFn = func(string) ([]realip.Reference, error) {
+		return []realip.Reference{{AppName: "first", Profile: "edgeone-prod", Domains: []string{"app.example.com"}}}, nil
+	}
+	loadEdgeOneCredentialsFn = func(edgeone.FileSystem, string) (edgeone.Credentials, error) {
+		return edgeone.Credentials{}, errors.New("edgeone env_file must be root-only")
+	}
+	lstatDeployedRealIPArtifactFn = func(path string) (fs.FileInfo, error) {
+		return staticFileInfo{name: filepath.Base(path), mode: 0o644, size: 1}, nil
+	}
+	readDeployedRealIPArtifactFn = func(path string) ([]byte, error) {
+		marker := "# Lanpanel-managed: realip.profile=edgeone-prod provider=edgeone\n"
+		switch path {
+		case "/etc/nginx/lanpanel/realip/edgeone-prod/active.conf":
+			return []byte(marker + "set_real_ip_from 8.8.8.8/32;\n"), nil
+		case "/etc/nginx/lanpanel/realip/edgeone-prod/trusted-cidrs.conf":
+			return []byte(marker + "8.8.8.8/32 1;\n"), nil
+		case "/etc/systemd/system/lanpanel-realip-edgeone-prod-refresh.service":
+			return managedRealIPRefreshServiceContent("edgeone-prod"), nil
+		case "/etc/systemd/system/lanpanel-realip-edgeone-prod-refresh.timer":
+			return managedRealIPRefreshTimerContent(t, "edgeone-prod", "72h"), nil
+		default:
+			return []byte(""), nil
+		}
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "realip", "diagnostics", "--profile", "edgeone-prod", "--format", "json")
+	if err == nil || !strings.Contains(err.Error(), "Realip profile diagnostics failed") {
+		t.Fatalf("app realip diagnostics error = %v, want diagnostics failure", err)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Status != "failed" {
+		t.Fatalf("response.Status = %q, want failed", response.Status)
+	}
+	if got, ok := fieldValue(response.Fields, "edgeone credential/env file"); !ok || got != "failed: edgeone env_file must be root-only" {
+		t.Fatalf("edgeone credential/env file = %q, %v; want failure detail", got, ok)
+	}
+}
+
+func TestExecute_AppRealIPDiagnosticsRejectsUnsafeProfileBeforeMetadataRead(t *testing.T) {
+	fileSystem := validAppRealIPDiagnosticsFileSystem(t)
+	names, err := appsvc.NewRealIPProfileNames("edgeone-prod", appconfig.RealIPProviderEdgeOne, "")
+	if err != nil {
+		t.Fatalf("NewRealIPProfileNames() error = %v", err)
+	}
+	fileSystem.files[names.MetadataPath] = mutableRealIPFile{mode: os.ModeSymlink | 0o777}
+	useAppRealIPDiagnosticsGuardFileSystem(t, fileSystem)
+	useStubRealIPProfileLock(t, "edgeone-prod", nil)
+
+	previousPermission := detectPermissionStateFn
+	previousProfileReader := readDeployedRealIPProfileFn
+	previousLoadCredentials := loadEdgeOneCredentialsFn
+	t.Cleanup(func() {
+		detectPermissionStateFn = previousPermission
+		readDeployedRealIPProfileFn = previousProfileReader
+		loadEdgeOneCredentialsFn = previousLoadCredentials
+	})
+
+	detectPermissionStateFn = func() preflight.PermissionState { return preflight.PermissionState{IsRoot: true} }
+	readDeployedRealIPProfileFn = func(string) (realip.ProfileConfig, error) {
+		t.Fatal("readDeployedRealIPProfileFn must not be called before realip directory guard passes")
+		return realip.ProfileConfig{}, nil
+	}
+	loadEdgeOneCredentialsFn = func(edgeone.FileSystem, string) (edgeone.Credentials, error) {
+		t.Fatal("loadEdgeOneCredentialsFn must not be called when realip directory guard fails")
+		return edgeone.Credentials{}, nil
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "realip", "diagnostics", "--profile", "edgeone-prod", "--format", "json")
+	if err == nil || !strings.Contains(err.Error(), "Realip profile diagnostics failed") {
+		t.Fatalf("app realip diagnostics error = %v, want diagnostics failure", err)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Status != "failed" {
+		t.Fatalf("response.Status = %q, want failed", response.Status)
+	}
+	if got, ok := fieldValue(response.Fields, "details"); !ok || !strings.Contains(got, names.MetadataPath+" is a symlink") {
+		t.Fatalf("details = %q, %v; want unsafe metadata guard failure", got, ok)
+	}
+}
+
+func TestExecute_AppRealIPDiagnosticsRejectsStateProfileZoneMismatch(t *testing.T) {
+	useAppRealIPDiagnosticsGuardFileSystem(t, validAppRealIPDiagnosticsFileSystem(t))
+	useStubRealIPProfileLock(t, "edgeone-prod", nil)
+
+	previousPermission := detectPermissionStateFn
+	previousProfileReader := readDeployedRealIPProfileFn
+	previousStateReader := readDeployedRealIPStateFn
+	previousReferenceReader := readDeployedRealIPReferencesFn
+	previousLoadCredentials := loadEdgeOneCredentialsFn
+	t.Cleanup(func() {
+		detectPermissionStateFn = previousPermission
+		readDeployedRealIPProfileFn = previousProfileReader
+		readDeployedRealIPStateFn = previousStateReader
+		readDeployedRealIPReferencesFn = previousReferenceReader
+		loadEdgeOneCredentialsFn = previousLoadCredentials
+	})
+
+	detectPermissionStateFn = func() preflight.PermissionState { return preflight.PermissionState{IsRoot: true} }
+	readDeployedRealIPProfileFn = func(string) (realip.ProfileConfig, error) {
+		return realip.ProfileConfig{
+			Name:            "edgeone-prod",
+			Provider:        appconfig.RealIPProviderEdgeOne,
+			ZoneID:          "zone-2abcDEF123",
+			EnvFile:         "/etc/lanpanel/realip/edgeone-prod.env",
+			RefreshInterval: "72h",
+		}, nil
+	}
+	readDeployedRealIPStateFn = func(string, string) (realip.State, error) {
+		return realip.State{
+			ProfileName:     "edgeone-prod",
+			Provider:        appconfig.RealIPProviderEdgeOne,
+			ZoneID:          "zone-different123",
+			OriginACLStatus: "online",
+			CurrentCIDRs:    []string{"8.8.8.8/32"},
+			TrustedCIDRs:    []string{"8.8.8.8/32"},
+			UpdatedAt:       time.Date(2026, 6, 2, 1, 2, 3, 0, time.UTC),
+		}, nil
+	}
+	readDeployedRealIPReferencesFn = func(string) ([]realip.Reference, error) {
+		t.Fatal("readDeployedRealIPReferencesFn must not be called after state/profile mismatch")
+		return nil, nil
+	}
+	loadEdgeOneCredentialsFn = func(edgeone.FileSystem, string) (edgeone.Credentials, error) {
+		t.Fatal("loadEdgeOneCredentialsFn must not be called after state/profile mismatch")
+		return edgeone.Credentials{}, nil
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "realip", "diagnostics", "--profile", "edgeone-prod", "--format", "json")
+	if err == nil || !strings.Contains(err.Error(), "Realip profile diagnostics failed") {
+		t.Fatalf("app realip diagnostics error = %v, want diagnostics failure", err)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Status != "failed" {
+		t.Fatalf("response.Status = %q, want failed", response.Status)
+	}
+	if got, ok := fieldValue(response.Fields, "details"); !ok || !strings.Contains(got, "state zone_id") || !strings.Contains(got, "profile zone_id") {
+		t.Fatalf("details = %q, %v; want zone mismatch", got, ok)
+	}
+}
+
+func TestExecute_AppRealIPDiagnosticsRejectsStateTrustedCIDRMismatch(t *testing.T) {
+	useAppRealIPDiagnosticsGuardFileSystem(t, validAppRealIPDiagnosticsFileSystem(t))
+	useStubRealIPProfileLock(t, "edgeone-prod", nil)
+
+	previousPermission := detectPermissionStateFn
+	previousProfileReader := readDeployedRealIPProfileFn
+	previousStateReader := readDeployedRealIPStateFn
+	previousReferenceReader := readDeployedRealIPReferencesFn
+	previousLoadCredentials := loadEdgeOneCredentialsFn
+	t.Cleanup(func() {
+		detectPermissionStateFn = previousPermission
+		readDeployedRealIPProfileFn = previousProfileReader
+		readDeployedRealIPStateFn = previousStateReader
+		readDeployedRealIPReferencesFn = previousReferenceReader
+		loadEdgeOneCredentialsFn = previousLoadCredentials
+	})
+
+	detectPermissionStateFn = func() preflight.PermissionState { return preflight.PermissionState{IsRoot: true} }
+	readDeployedRealIPProfileFn = func(string) (realip.ProfileConfig, error) {
+		return realip.ProfileConfig{
+			Name:            "edgeone-prod",
+			Provider:        appconfig.RealIPProviderEdgeOne,
+			ZoneID:          "zone-2abcDEF123",
+			EnvFile:         "/etc/lanpanel/realip/edgeone-prod.env",
+			RefreshInterval: "72h",
+		}, nil
+	}
+	readDeployedRealIPStateFn = func(path string, profileName string) (realip.State, error) {
+		state := realip.State{
+			ProfileName:     "edgeone-prod",
+			Provider:        appconfig.RealIPProviderEdgeOne,
+			ZoneID:          "zone-2abcDEF123",
+			OriginACLStatus: "online",
+			CurrentCIDRs:    []string{"8.8.8.8/32"},
+			TrustedCIDRs:    []string{"9.9.9.9/32"},
+			UpdatedAt:       time.Date(2026, 6, 2, 1, 2, 3, 0, time.UTC),
+		}
+		return parseDeployedRealIPState(managedRealIPStateJSON(t, profileName, state), path, profileName)
+	}
+	readDeployedRealIPReferencesFn = func(string) ([]realip.Reference, error) {
+		t.Fatal("readDeployedRealIPReferencesFn must not be called after state CIDR mismatch")
+		return nil, nil
+	}
+	loadEdgeOneCredentialsFn = func(edgeone.FileSystem, string) (edgeone.Credentials, error) {
+		t.Fatal("loadEdgeOneCredentialsFn must not be called after state CIDR mismatch")
+		return edgeone.Credentials{}, nil
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "realip", "diagnostics", "--profile", "edgeone-prod", "--format", "json")
+	if err == nil || !strings.Contains(err.Error(), "Realip profile diagnostics failed") {
+		t.Fatalf("app realip diagnostics error = %v, want diagnostics failure", err)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Status != "failed" {
+		t.Fatalf("response.Status = %q, want failed", response.Status)
+	}
+	if got, ok := fieldValue(response.Fields, "details"); !ok || !strings.Contains(got, "trusted_cidrs") || !strings.Contains(got, "current_cidrs+next_cidrs") {
+		t.Fatalf("details = %q, %v; want trusted CIDR mismatch", got, ok)
+	}
+}
+
+func TestExecute_AppRealIPDiagnosticsJSONFailureReportsMismatchedIncludes(t *testing.T) {
+	useAppRealIPDiagnosticsGuardFileSystem(t, validAppRealIPDiagnosticsFileSystem(t))
+	useStubRealIPProfileLock(t, "edgeone-prod", nil)
+
+	previousPermission := detectPermissionStateFn
+	previousProfileReader := readDeployedRealIPProfileFn
+	previousStateReader := readDeployedRealIPStateFn
+	previousReferenceReader := readDeployedRealIPReferencesFn
+	previousLoadCredentials := loadEdgeOneCredentialsFn
+	previousLstatArtifact := lstatDeployedRealIPArtifactFn
+	previousReadArtifact := readDeployedRealIPArtifactFn
+	t.Cleanup(func() {
+		detectPermissionStateFn = previousPermission
+		readDeployedRealIPProfileFn = previousProfileReader
+		readDeployedRealIPStateFn = previousStateReader
+		readDeployedRealIPReferencesFn = previousReferenceReader
+		loadEdgeOneCredentialsFn = previousLoadCredentials
+		lstatDeployedRealIPArtifactFn = previousLstatArtifact
+		readDeployedRealIPArtifactFn = previousReadArtifact
+	})
+
+	detectPermissionStateFn = func() preflight.PermissionState { return preflight.PermissionState{IsRoot: true} }
+	readDeployedRealIPProfileFn = func(string) (realip.ProfileConfig, error) {
+		return realip.ProfileConfig{
+			Name:            "edgeone-prod",
+			Provider:        appconfig.RealIPProviderEdgeOne,
+			ZoneID:          "zone-2abcDEF123",
+			EnvFile:         "/etc/lanpanel/realip/edgeone-prod.env",
+			RefreshInterval: "72h",
+		}, nil
+	}
+	readDeployedRealIPStateFn = func(string, string) (realip.State, error) {
+		return realip.State{
+			ProfileName:     "edgeone-prod",
+			Provider:        appconfig.RealIPProviderEdgeOne,
+			ZoneID:          "zone-2abcDEF123",
+			OriginACLStatus: "online",
+			OriginACLFamily: "global",
+			CurrentVersion:  "v1",
+			CurrentCIDRs:    []string{"8.8.8.8/32", "9.9.9.0/24"},
+			TrustedCIDRs:    []string{"8.8.8.8/32", "9.9.9.0/24"},
+			UpdatedAt:       time.Date(2026, 6, 2, 1, 2, 3, 0, time.UTC),
+		}, nil
+	}
+	readDeployedRealIPReferencesFn = func(string) ([]realip.Reference, error) {
+		return []realip.Reference{{AppName: "first", Profile: "edgeone-prod", Domains: []string{"app.example.com"}}}, nil
+	}
+	loadEdgeOneCredentialsFn = func(edgeone.FileSystem, string) (edgeone.Credentials, error) {
+		return edgeone.Credentials{SecretID: "id", SecretKey: "key"}, nil
+	}
+	lstatDeployedRealIPArtifactFn = func(path string) (fs.FileInfo, error) {
+		return staticFileInfo{name: filepath.Base(path), mode: 0o644, size: 1}, nil
+	}
+	readDeployedRealIPArtifactFn = func(path string) ([]byte, error) {
+		marker := "# Lanpanel-managed: realip.profile=edgeone-prod provider=edgeone\n"
+		switch path {
+		case "/etc/nginx/lanpanel/realip/edgeone-prod/active.conf":
+			return []byte(marker + "set_real_ip_from 8.8.8.8/32;\n"), nil
+		case "/etc/nginx/lanpanel/realip/edgeone-prod/trusted-cidrs.conf":
+			return []byte(marker + "8.8.8.8/32 1;\n"), nil
+		case "/etc/systemd/system/lanpanel-realip-edgeone-prod-refresh.service":
+			return managedRealIPRefreshServiceContent("edgeone-prod"), nil
+		case "/etc/systemd/system/lanpanel-realip-edgeone-prod-refresh.timer":
+			return managedRealIPRefreshTimerContent(t, "edgeone-prod", "72h"), nil
+		default:
+			return []byte(""), nil
+		}
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "realip", "diagnostics", "--profile", "edgeone-prod", "--format", "json")
+	if err == nil || !strings.Contains(err.Error(), "Realip profile diagnostics failed") {
+		t.Fatalf("app realip diagnostics error = %v, want diagnostics failure", err)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Status != "failed" {
+		t.Fatalf("response.Status = %q, want failed", response.Status)
+	}
+	if got, ok := fieldValue(response.Fields, "details"); !ok || !strings.Contains(got, "do not match deployed state trusted CIDRs") {
+		t.Fatalf("details = %q, %v; want CIDR mismatch", got, ok)
+	}
+}
+
+func TestExecute_AppRealIPRefreshJSONFailureReportsRuntimePaths(t *testing.T) {
+	previousPermission := detectPermissionStateFn
+	previousProfileReader := readDeployedRealIPProfileFn
+	previousReferenceReader := readDeployedRealIPReferencesFn
+	previousLoadCredentials := loadEdgeOneCredentialsFn
+	previousDescribe := describeEdgeOneOriginACLFn
+	previousAcquireRealIPProfileLock := acquireRealIPProfileLockFn
+	t.Cleanup(func() {
+		detectPermissionStateFn = previousPermission
+		readDeployedRealIPProfileFn = previousProfileReader
+		readDeployedRealIPReferencesFn = previousReferenceReader
+		loadEdgeOneCredentialsFn = previousLoadCredentials
+		describeEdgeOneOriginACLFn = previousDescribe
+		acquireRealIPProfileLockFn = previousAcquireRealIPProfileLock
+	})
+
+	detectPermissionStateFn = func() preflight.PermissionState { return preflight.PermissionState{IsRoot: true} }
+	acquireRealIPProfileLockFn = func(profileName string) (realIPProfileLock, error) {
+		if profileName != "edgeone-prod" {
+			t.Fatalf("realip lock profile = %q", profileName)
+		}
+		return stubRealIPProfileLock{}, nil
+	}
+	readDeployedRealIPProfileFn = func(path string) (realip.ProfileConfig, error) {
+		if path != "/var/lib/lanpanel/realip/edgeone-prod/profile.json" {
+			t.Fatalf("profile metadata path = %q", path)
+		}
+		return realip.ProfileConfig{
+			Name:            "edgeone-prod",
+			Provider:        appconfig.RealIPProviderEdgeOne,
+			ZoneID:          "zone-2abcDEF123",
+			EnvFile:         "/etc/lanpanel/realip/edgeone-prod.env",
+			RefreshInterval: "72h",
+		}, nil
+	}
+	readDeployedRealIPReferencesFn = func(dir string) ([]realip.Reference, error) {
+		if dir != "/var/lib/lanpanel/realip/edgeone-prod/references" {
+			t.Fatalf("reference dir = %q", dir)
+		}
+		return []realip.Reference{{AppName: "review-app", Profile: "edgeone-prod", Domains: []string{"app.example.com"}}}, nil
+	}
+	loadEdgeOneCredentialsFn = func(_ edgeone.FileSystem, envFile string) (edgeone.Credentials, error) {
+		if envFile != "/etc/lanpanel/realip/edgeone-prod.env" {
+			t.Fatalf("envFile = %q", envFile)
+		}
+		return edgeone.Credentials{SecretID: "id", SecretKey: "key"}, nil
+	}
+	describeEdgeOneOriginACLFn = func(stdcontext.Context, edgeone.Credentials, string) (*edgeone.OriginACLInfo, error) {
+		return nil, errors.New("edgeone api unavailable")
+	}
+
+	stdout, stderr, err := runCLI(t, "app", "realip", "refresh", "--profile", "edgeone-prod", "--format", "json")
+	if err == nil || !strings.Contains(err.Error(), "Realip profile refresh failed") {
+		t.Fatalf("app realip refresh error = %v, want refresh failure", err)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	response := mustDecodeResponse(t, stdout)
+	if response.Status != "failed" {
+		t.Fatalf("response.Status = %q, want failed", response.Status)
+	}
+	for label, want := range map[string]string{
+		"profile":          "edgeone-prod",
+		"active include":   "/etc/nginx/lanpanel/realip/edgeone-prod/active.conf",
+		"trusted CIDRs":    "/etc/nginx/lanpanel/realip/edgeone-prod/trusted-cidrs.conf",
+		"state metadata":   "/var/lib/lanpanel/realip/edgeone-prod/state.json",
+		"profile metadata": "/var/lib/lanpanel/realip/edgeone-prod/profile.json",
+		"reference dir":    "/var/lib/lanpanel/realip/edgeone-prod/references",
+		"refresh service":  "/etc/systemd/system/lanpanel-realip-edgeone-prod-refresh.service",
+		"refresh timer":    "/etc/systemd/system/lanpanel-realip-edgeone-prod-refresh.timer",
+		"details":          "edgeone api unavailable",
+	} {
+		got, ok := fieldValue(response.Fields, label)
+		if !ok || got != want {
+			t.Fatalf("field %q = %q, %v; want %q", label, got, ok, want)
+		}
+	}
+}
+
+func TestExecute_AppRealIPRefreshJSONSuccessUsesDeployedMetadataAndReferences(t *testing.T) {
+	previousPermission := detectPermissionStateFn
+	previousProfileReader := readDeployedRealIPProfileFn
+	previousReferenceReader := readDeployedRealIPReferencesFn
+	previousLoadCredentials := loadEdgeOneCredentialsFn
+	previousDescribe := describeEdgeOneOriginACLFn
+	previousStage := stageRealIPRuntimeFilesFn
+	previousExecutor := newHostExecutorFn
+	previousFileSystem := newAppHostFileSystemFn
+	previousInstaller := newAppFileInstallerFn
+	previousSystemd := newHostSystemdFn
+	previousAcquireRealIPProfileLock := acquireRealIPProfileLockFn
+	t.Cleanup(func() {
+		detectPermissionStateFn = previousPermission
+		readDeployedRealIPProfileFn = previousProfileReader
+		readDeployedRealIPReferencesFn = previousReferenceReader
+		loadEdgeOneCredentialsFn = previousLoadCredentials
+		describeEdgeOneOriginACLFn = previousDescribe
+		stageRealIPRuntimeFilesFn = previousStage
+		newHostExecutorFn = previousExecutor
+		newAppHostFileSystemFn = previousFileSystem
+		newAppFileInstallerFn = previousInstaller
+		newHostSystemdFn = previousSystemd
+		acquireRealIPProfileLockFn = previousAcquireRealIPProfileLock
+	})
+
+	detectPermissionStateFn = func() preflight.PermissionState { return preflight.PermissionState{IsRoot: true} }
+	lockEvents := []string{}
+	acquireRealIPProfileLockFn = func(profileName string) (realIPProfileLock, error) {
+		if profileName != "edgeone-prod" {
+			t.Fatalf("realip lock profile = %q", profileName)
+		}
+		lockEvents = append(lockEvents, "lock "+profileName)
+		return stubRealIPProfileLock{release: func() error {
+			lockEvents = append(lockEvents, "unlock "+profileName)
+			return nil
+		}}, nil
+	}
+	readDeployedRealIPProfileFn = func(path string) (realip.ProfileConfig, error) {
+		lockEvents = append(lockEvents, "read-profile")
+		if path != "/var/lib/lanpanel/realip/edgeone-prod/profile.json" {
+			t.Fatalf("profile metadata path = %q", path)
+		}
+		return realip.ProfileConfig{
+			Name:            "edgeone-prod",
+			Provider:        "edgeone",
+			ZoneID:          "zone-2abcDEF123",
+			EnvFile:         "/etc/lanpanel/realip/edgeone-prod.env",
+			RefreshInterval: "72h",
+		}, nil
+	}
+	readDeployedRealIPReferencesFn = func(dir string) ([]realip.Reference, error) {
+		if dir != "/var/lib/lanpanel/realip/edgeone-prod/references" {
+			t.Fatalf("reference dir = %q", dir)
+		}
+		return []realip.Reference{
+			{AppName: "first", Profile: "edgeone-prod", Domains: []string{"app.example.com"}},
+			{AppName: "second", Profile: "edgeone-prod", Domains: []string{"api.example.com"}},
+		}, nil
+	}
+	loadEdgeOneCredentialsFn = func(_ edgeone.FileSystem, envFile string) (edgeone.Credentials, error) {
+		if envFile != "/etc/lanpanel/realip/edgeone-prod.env" {
+			t.Fatalf("envFile = %q", envFile)
+		}
+		return edgeone.Credentials{SecretID: "id", SecretKey: "key"}, nil
+	}
+	describeEdgeOneOriginACLFn = func(_ stdcontext.Context, _ edgeone.Credentials, zoneID string) (*edgeone.OriginACLInfo, error) {
+		if zoneID != "zone-2abcDEF123" {
+			t.Fatalf("zoneID = %q", zoneID)
+		}
+		return &edgeone.OriginACLInfo{
+			Status:          "online",
+			L7Hosts:         []string{"app.example.com", "api.example.com"},
+			OriginACLFamily: "global",
+			CurrentOriginACL: &edgeone.OriginACL{
+				Version:         "v1",
+				ActiveTime:      "2026-06-01T00:00:00Z",
+				EntireAddresses: edgeone.Addresses{IPv4: []string{"8.8.8.8"}},
+			},
+			NextOriginACL: &edgeone.OriginACL{
+				Version:           "v2",
+				ActiveTime:        "2026-06-04T00:00:00Z",
+				PlannedActiveTime: "2026-06-04T00:00:00Z",
+				EntireAddresses:   edgeone.Addresses{IPv4: []string{"9.9.9.0/24"}},
+			},
+		}, nil
+	}
+	marker := "Lanpanel-managed: realip.profile=edgeone-prod provider=edgeone"
+	stageRealIPRuntimeFilesFn = func(profile realip.ProfileConfig, state realip.State, reference realip.Reference) ([]realiprender.StagedFile, error) {
+		if strings.Join(profile.Domains, ",") != "app.example.com,api.example.com" {
+			t.Fatalf("profile domains = %#v, want merged deployed references", profile.Domains)
+		}
+		if reference.AppName != "" {
+			t.Fatalf("refresh stage reference = %#v, want no app reference", reference)
+		}
+		if strings.Join(state.TrustedCIDRs, ",") != "8.8.8.8/32,9.9.9.0/24" {
+			t.Fatalf("trusted CIDRs = %#v", state.TrustedCIDRs)
+		}
+		return []realiprender.StagedFile{{
+			SourcePath: "templates/realip/nginx-realip.conf.tmpl",
+			HostPath:   "/etc/nginx/lanpanel/realip/edgeone-prod/active.conf",
+			Mode:       0o644,
+			Content:    []byte(marker + "\nset_real_ip_from 8.8.8.8/32;\nset_real_ip_from 9.9.9.0/24;\n"),
+		}}, nil
+	}
+	fileSystem := mutableRealIPFileSystem{files: map[string]mutableRealIPFile{
+		"/etc/nginx/lanpanel/realip/edgeone-prod/active.conf": {content: []byte(marker + "\nold\n"), mode: 0o644},
+	}}
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		if event := appDeployOrderEvent(command); event != "" {
+			lockEvents = append(lockEvents, event)
+		}
+		return host.Result{}, nil
+	}}
+	newHostExecutorFn = func(map[string]string) host.Executor { return host.NewExecutor(runner, nil) }
+	newAppHostFileSystemFn = func(host.Executor, host.PrivilegeStrategy) host.FileSystem { return fileSystem }
+	newAppFileInstallerFn = func(host.Executor, host.PrivilegeStrategy) appStagedFileInstaller {
+		return mutableRealIPInstaller{fileSystem: fileSystem}
+	}
+	newHostSystemdFn = func(executor host.Executor) host.Systemd { return host.NewSystemd(executor) }
+
+	stdout, stderr, err := runCLI(t, "app", "realip", "refresh", "--profile", "edgeone-prod", "--format", "json")
+	if err != nil {
+		t.Fatalf("app realip refresh error = %v", err)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	var response output.Response
+	if err := json.Unmarshal([]byte(stdout), &response); err != nil {
+		t.Fatalf("json response decode error = %v\n%s", err, stdout)
+	}
+	if response.Status != "refreshed" {
+		t.Fatalf("response.Status = %q, want refreshed", response.Status)
+	}
+	if got, ok := fieldValue(response.Fields, "profile"); !ok || got != "edgeone-prod (edgeone)" {
+		t.Fatalf("profile field = %q, %v", got, ok)
+	}
+	if got, ok := fieldValue(response.Fields, "current acl version"); !ok || got != "v1" {
+		t.Fatalf("current acl version = %q, %v", got, ok)
+	}
+	for label, want := range map[string]string{
+		"next acl version":     "v2",
+		"realip current CIDRs": "8.8.8.8/32",
+		"realip next CIDRs":    "9.9.9.0/24",
+		"realip trusted CIDRs": "8.8.8.8/32, 9.9.9.0/24",
+	} {
+		got, ok := fieldValue(response.Fields, label)
+		if !ok || got != want {
+			t.Fatalf("field %q = %q, %v; want %q", label, got, ok, want)
+		}
+	}
+	if got := string(fileSystem.files["/etc/nginx/lanpanel/realip/edgeone-prod/active.conf"].content); !strings.Contains(got, "9.9.9.0/24") {
+		t.Fatalf("active artifact = %q, want refreshed content", got)
+	}
+	commands := []string{}
+	for _, command := range runner.commands {
+		actual := unwrapMaybeSudoHostCommand(command)
+		commands = append(commands, actual.Name+" "+strings.Join(actual.Args, " "))
+	}
+	joined := strings.Join(commands, "\n")
+	for _, want := range []string{
+		"systemctl daemon-reload",
+		"nginx -t",
+		"systemctl reload-or-restart nginx.service",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("commands = %q, missing %q", joined, want)
+		}
+	}
+	assertEventBefore(t, lockEvents, "lock edgeone-prod", "read-profile")
+	assertEventBefore(t, lockEvents, "read-profile", "nginx-reload")
+	assertEventBefore(t, lockEvents, "nginx-reload", "unlock edgeone-prod")
+}
+
+func TestRefreshDeployedRealIPProfileSurfacesLockReleaseFailureOnFailure(t *testing.T) {
+	previousPermissionState := detectPermissionStateFn
+	previousExecutor := newHostExecutorFn
+	previousFileSystem := newAppHostFileSystemFn
+	previousAcquireLock := acquireRealIPProfileLockFn
+	previousReadProfile := readDeployedRealIPProfileFn
+	t.Cleanup(func() {
+		detectPermissionStateFn = previousPermissionState
+		newHostExecutorFn = previousExecutor
+		newAppHostFileSystemFn = previousFileSystem
+		acquireRealIPProfileLockFn = previousAcquireLock
+		readDeployedRealIPProfileFn = previousReadProfile
+	})
+	detectPermissionStateFn = func() preflight.PermissionState {
+		return preflight.PermissionState{User: "root", IsRoot: true}
+	}
+	newHostExecutorFn = func(env map[string]string) host.Executor {
+		return host.NewExecutor(&scriptedHostRunner{}, env)
+	}
+	newAppHostFileSystemFn = func(host.Executor, host.PrivilegeStrategy) host.FileSystem {
+		return mutableRealIPFileSystem{files: map[string]mutableRealIPFile{}}
+	}
+	acquireRealIPProfileLockFn = func(profileName string) (realIPProfileLock, error) {
+		if profileName != "edgeone-prod" {
+			t.Fatalf("realip lock profile = %q", profileName)
+		}
+		return stubRealIPProfileLock{release: func() error {
+			return errors.New("release boom")
+		}}, nil
+	}
+	readDeployedRealIPProfileFn = func(path string) (realip.ProfileConfig, error) {
+		if path != "/var/lib/lanpanel/realip/edgeone-prod/profile.json" {
+			t.Fatalf("profile metadata path = %q", path)
+		}
+		return realip.ProfileConfig{}, errors.New("profile boom")
+	}
+
+	var effects appDeployEffects
+	_, _, _, err := refreshDeployedRealIPProfile(stdcontext.Background(), "edgeone-prod", &effects)
+	if err == nil {
+		t.Fatal("refreshDeployedRealIPProfile() error = nil, want profile and lock release failure")
+	}
+	errorText := err.Error()
+	for _, want := range []string{"profile boom", "release EdgeOne realip profile lock failed", "release boom"} {
+		if !strings.Contains(errorText, want) {
+			t.Fatalf("error = %q, want substring %q", errorText, want)
+		}
+	}
+}
+
+func TestRefreshDeployedRealIPProfileRejectsInvalidMetadataBeforeSideEffects(t *testing.T) {
+	previousProfileReader := readDeployedRealIPProfileFn
+	previousReferenceReader := readDeployedRealIPReferencesFn
+	previousLoadCredentials := loadEdgeOneCredentialsFn
+	previousDescribe := describeEdgeOneOriginACLFn
+	previousStage := stageRealIPRuntimeFilesFn
+	previousAcquireRealIPProfileLock := acquireRealIPProfileLockFn
+	t.Cleanup(func() {
+		readDeployedRealIPProfileFn = previousProfileReader
+		readDeployedRealIPReferencesFn = previousReferenceReader
+		loadEdgeOneCredentialsFn = previousLoadCredentials
+		describeEdgeOneOriginACLFn = previousDescribe
+		stageRealIPRuntimeFilesFn = previousStage
+		acquireRealIPProfileLockFn = previousAcquireRealIPProfileLock
+	})
+	acquireRealIPProfileLockFn = func(profileName string) (realIPProfileLock, error) {
+		if profileName != "edgeone-prod" {
+			t.Fatalf("realip lock profile = %q", profileName)
+		}
+		return stubRealIPProfileLock{}, nil
+	}
+
+	invalidPath := writeDeployedRealIPProfileFixture(t, mustJSON(t, realip.ProfileConfig{
+		Name:            "edgeone-prod",
+		Provider:        appconfig.RealIPProviderEdgeOne,
+		ZoneID:          "zone-2abcDEF123",
+		EnvFile:         "/etc/lanpanel/realip/edgeone-prod.env",
+		RefreshInterval: "72h",
+	}))
+	readDeployedRealIPProfileFn = func(path string) (realip.ProfileConfig, error) {
+		if path != "/var/lib/lanpanel/realip/edgeone-prod/profile.json" {
+			t.Fatalf("profile metadata path = %q", path)
+		}
+		return readDeployedRealIPProfile(invalidPath)
+	}
+	readDeployedRealIPReferencesFn = func(string) ([]realip.Reference, error) {
+		t.Fatalf("readDeployedRealIPReferencesFn must not be called after invalid profile metadata")
+		return nil, nil
+	}
+	loadEdgeOneCredentialsFn = func(edgeone.FileSystem, string) (edgeone.Credentials, error) {
+		t.Fatalf("loadEdgeOneCredentialsFn must not be called after invalid profile metadata")
+		return edgeone.Credentials{}, nil
+	}
+	describeEdgeOneOriginACLFn = func(stdcontext.Context, edgeone.Credentials, string) (*edgeone.OriginACLInfo, error) {
+		t.Fatalf("describeEdgeOneOriginACLFn must not be called after invalid profile metadata")
+		return nil, nil
+	}
+	stageRealIPRuntimeFilesFn = func(realip.ProfileConfig, realip.State, realip.Reference) ([]realiprender.StagedFile, error) {
+		t.Fatalf("stageRealIPRuntimeFilesFn must not be called after invalid profile metadata")
+		return nil, nil
+	}
+
+	var effects appDeployEffects
+	_, _, _, err := refreshDeployedRealIPProfile(stdcontext.Background(), "edgeone-prod", &effects)
+	if err == nil || !strings.Contains(err.Error(), "lanpanel_managed marker") {
+		t.Fatalf("refreshDeployedRealIPProfile() error = %v, want marker failure", err)
+	}
+	if len(effects.actions) != 0 || len(effects.modifiedPaths) != 0 {
+		t.Fatalf("effects = %#v, want no side effects recorded", effects)
+	}
+}
+
+func TestCleanupStaleAppRealIPReferencesGuardsSharedArtifactsBeforeRemoval(t *testing.T) {
+	withRootOwnedRealIPCleanupLstat(t)
+
+	previousCleanupRoot := realIPCleanupRoot
+	previousAcquireLock := acquireRealIPProfileLockFn
+	t.Cleanup(func() {
+		realIPCleanupRoot = previousCleanupRoot
+		acquireRealIPProfileLockFn = previousAcquireLock
+	})
+	realIPCleanupRoot = safeRealIPCleanupRoot(t)
+	referenceDir := filepath.Join(realIPCleanupRoot, "old-profile", "references")
+	if err := os.MkdirAll(referenceDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(referenceDir) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(referenceDir, "example-app.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatalf("WriteFile(reference) error = %v", err)
+	}
+	events := []string{}
+	acquireRealIPProfileLockFn = func(profileName string) (realIPProfileLock, error) {
+		if profileName != "old-profile" {
+			t.Fatalf("realip lock profile = %q", profileName)
+		}
+		events = append(events, "lock "+profileName)
+		return stubRealIPProfileLock{release: func() error {
+			events = append(events, "unlock "+profileName)
+			return nil
+		}}, nil
+	}
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		if command.DisplayName == "cleanup-realip-references" {
+			events = append(events, "cleanup-command")
+			return host.Result{Stdout: "lanpanel-realip-cleaned\n"}, nil
+		}
+		if event := appDeployOrderEvent(command); event != "" {
+			events = append(events, event)
+		}
+		return host.Result{}, nil
+	}}
+	effects := appDeployEffects{}
+	if err := cleanupStaleAppRealIPReferences(stdcontext.Background(), host.NewExecutor(runner, nil), "example-app", "", &effects); err != nil {
+		t.Fatalf("cleanupStaleAppRealIPReferences() error = %v", err)
+	}
+	if len(runner.commands) != 2 {
+		t.Fatalf("commands = %d, want cleanup command and daemon-reload", len(runner.commands))
+	}
+	command := runner.commands[0]
+	if command.Name != "sh" || len(command.Args) < 2 {
+		t.Fatalf("cleanup command = %#v, want sh -c script", command)
+	}
+	if len(command.Args) < 8 || strings.TrimSpace(command.Args[5]) == "" || command.Args[6] != realIPCleanupRoot || command.Args[7] != appsvc.NginxBinaryPath {
+		t.Fatalf("cleanup command args = %#v, want validator path as $3, cleanup root as $4, nginx binary as $5", command.Args)
+	}
+	assertEventBefore(t, events, "lock old-profile", "cleanup-command")
+	assertEventBefore(t, events, "cleanup-command", "unlock old-profile")
+	assertEventBefore(t, events, "unlock old-profile", "systemd-daemon-reload")
+	script := command.Args[1]
+	for _, want := range []string{
+		`validator=$3`,
+		`root=$4`,
+		`nginx_binary=$5`,
+		`for artifact in "$service" "$timer" "$nginx_active" "$nginx_trusted" "$state" "$metadata"; do`,
+		`[ -e "$artifact" ] || [ -L "$artifact" ] || continue`,
+		`[ -L "$artifact" ] || [ ! -f "$artifact" ]`,
+		`grep -Fq "$marker" "$artifact"`,
+		`exists but is not this profile's Lanpanel-managed realip artifact; refusing stale cleanup`,
+		`if [ -e "$timer" ]; then`,
+		`systemctl disable --now "lanpanel-realip-$profile-refresh.timer"`,
+		`for other_ref in "$refdir"/*.json; do`,
+		`[ -e "$other_ref" ] || [ -L "$other_ref" ] || continue`,
+		`other_app=$(basename "$other_ref" .json)`,
+		`"$validator" app realip validate-reference --profile "$profile" --app "$other_app" --path "$other_ref" >/dev/null`,
+		`is not a valid Lanpanel-managed realip reference for profile $profile; refusing stale cleanup`,
+		`other_references=$((other_references + 1))`,
+		`if ! "$nginx_binary" -T > "$dump" 2>&1; then`,
+		`grep -Fq "$marker" "$dump"`,
+		`is still present in active Nginx config; refusing stale cleanup`,
+		`# configuration file $include:`,
+		`is still referenced by active Nginx config; refusing stale cleanup`,
+		`contains unexpected stale realip reference entry`,
+		`contains unexpected stale realip profile entry`,
+		`contains unexpected stale realip nginx entry`,
+		`systemctl stop "lanpanel-realip-$profile-refresh.service"`,
+		`for stale_dir in "$refdir" "$profiledir" "$nginx_dir"; do`,
+		`if ! rmdir "$stale_dir"; then`,
+		`failed to remove stale realip directory $stale_dir`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("cleanup script missing %q\n%s", want, script)
+		}
+	}
+	for _, forbidden := range []string{`touch "$lock"`, `chmod 0666 "$lock"`, `flock 9`, `exec 9>`} {
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("cleanup script must not open locks in shell; found %q\n%s", forbidden, script)
+		}
+	}
+	guardPos := strings.Index(script, `grep -Fq "$marker" "$artifact"`)
+	nginxDumpPos := strings.Index(script, `if ! "$nginx_binary" -T > "$dump" 2>&1; then`)
+	activeMarkerPos := strings.Index(script, `grep -Fq "$marker" "$dump"`)
+	includeRefPos := strings.Index(script, `# configuration file $include:`)
+	unexpectedEntryPos := strings.Index(script, `contains unexpected stale realip profile entry`)
+	disablePos := strings.Index(script, `systemctl disable --now`)
+	stopPos := strings.Index(script, `systemctl stop "lanpanel-realip-$profile-refresh.service"`)
+	refRemovePos := strings.Index(script, `rm -f -- "$ref"`)
+	sharedRemovePos := strings.Index(script, `rm -f -- "/etc/systemd/system/lanpanel-realip-$profile-refresh.service"`)
+	if guardPos < 0 || nginxDumpPos < 0 || activeMarkerPos < 0 || includeRefPos < 0 || unexpectedEntryPos < 0 || disablePos < 0 || stopPos < 0 || refRemovePos < 0 || sharedRemovePos < 0 || guardPos > nginxDumpPos || nginxDumpPos > activeMarkerPos || activeMarkerPos > includeRefPos || includeRefPos > unexpectedEntryPos || unexpectedEntryPos > disablePos || disablePos > stopPos || stopPos > refRemovePos || refRemovePos > sharedRemovePos {
+		t.Fatalf("cleanup script must guard artifacts, prove Nginx no longer references includes, reject unexpected entries, disable timer, and stop service before removing references/artifacts\n%s", script)
+	}
+	referenceValidationPos := strings.Index(script, `"$validator" app realip validate-reference --profile "$profile" --app "$other_app" --path "$other_ref" >/dev/null`)
+	otherReferenceCountPos := strings.Index(script, `other_references=$((other_references + 1))`)
+	hasOtherReferencesPos := strings.Index(script, `if [ "$other_references" -gt 0 ]; then`)
+	if referenceValidationPos < 0 || otherReferenceCountPos < 0 || hasOtherReferencesPos < 0 || referenceValidationPos > otherReferenceCountPos || otherReferenceCountPos > hasOtherReferencesPos {
+		t.Fatalf("cleanup script must validate remaining references before counting them\n%s", script)
+	}
+	if strings.Contains(script, `systemctl disable --now "lanpanel-realip-$profile-refresh.timer" >/dev/null 2>&1 || true`) {
+		t.Fatalf("cleanup script must surface realip timer disable failures\n%s", script)
+	}
+	if strings.Contains(script, `rmdir "$refdir" "$profiledir" "/etc/nginx/lanpanel/realip/$profile" 2>/dev/null || true`) {
+		t.Fatalf("cleanup script must surface stale realip directory removal failures\n%s", script)
+	}
+	if strings.Contains(script, `find "$refdir" -maxdepth 1 -type f -name '*.json' ! -path "$ref"`) {
+		t.Fatalf("cleanup script must validate remaining realip references before counting them\n%s", script)
+	}
+	for _, forbidden := range []string{
+		`grep -Fq "$marker" "$other_ref"`,
+		`grep -Eq "\"profile\"[[:space:]]*:[[:space:]]*\"$profile\"" "$other_ref"`,
+		`grep -Eq "\"app_name\"[[:space:]]*:[[:space:]]*\"$other_app\"" "$other_ref"`,
+		`grep -Eq '"domains"[[:space:]]*:[[:space:]]*\[[^]]*"[^"]+"' "$other_ref"`,
+	} {
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("cleanup script must not validate realip reference JSON with grep %q\n%s", forbidden, script)
+		}
+	}
+}
+
+func TestCleanupStaleAppRealIPReferencesRejectsUnsafeSharedCleanupTargets(t *testing.T) {
+	names, err := appsvc.NewRealIPProfileNames("old-profile", appconfig.RealIPProviderEdgeOne, "")
+	if err != nil {
+		t.Fatalf("NewRealIPProfileNames() error = %v", err)
+	}
+	marker := realIPManagedMarker("old-profile", appconfig.RealIPProviderEdgeOne)
+
+	tests := []struct {
+		name        string
+		targetPath  string
+		targetInfo  fs.FileInfo
+		targetBytes []byte
+		want        string
+	}{
+		{
+			name:       "nginx profile directory symlink",
+			targetPath: names.NginxDir,
+			targetInfo: rootOwnedModeFileInfo{name: "old-profile", mode: fs.ModeSymlink | 0o777},
+			want:       "stale realip Nginx directory " + names.NginxDir + " must not be a symlink",
+		},
+		{
+			name:        "nginx active include group writable",
+			targetPath:  names.NginxIncludePath,
+			targetInfo:  rootOwnedModeFileInfo{name: "active.conf", mode: 0o664, size: int64(len(marker))},
+			targetBytes: []byte("# " + marker + "\n"),
+			want:        "must not be writable by group or others",
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			previousCleanupRoot := realIPCleanupRoot
+			previousAcquireLock := acquireRealIPProfileLockFn
+			previousExecutable := currentExecutablePathFn
+			previousLstat := lstatRealIPCleanupPathFn
+			previousReadArtifact := readDeployedRealIPArtifactFn
+			t.Cleanup(func() {
+				realIPCleanupRoot = previousCleanupRoot
+				acquireRealIPProfileLockFn = previousAcquireLock
+				currentExecutablePathFn = previousExecutable
+				lstatRealIPCleanupPathFn = previousLstat
+				readDeployedRealIPArtifactFn = previousReadArtifact
+			})
+
+			realIPCleanupRoot = safeRealIPCleanupRoot(t)
+			referenceDir := filepath.Join(realIPCleanupRoot, "old-profile", "references")
+			if err := os.MkdirAll(referenceDir, 0o755); err != nil {
+				t.Fatalf("MkdirAll(referenceDir) error = %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(referenceDir, "example-app.json"), []byte("{}"), 0o600); err != nil {
+				t.Fatalf("WriteFile(reference) error = %v", err)
+			}
+
+			currentExecutablePathFn = func() (string, error) {
+				return "/usr/bin/lanpanel", nil
+			}
+			events := []string{}
+			acquireRealIPProfileLockFn = func(profileName string) (realIPProfileLock, error) {
+				if profileName != "old-profile" {
+					t.Fatalf("realip lock profile = %q", profileName)
+				}
+				events = append(events, "lock "+profileName)
+				return stubRealIPProfileLock{release: func() error {
+					events = append(events, "unlock "+profileName)
+					return nil
+				}}, nil
+			}
+
+			dirs := map[string]fs.FileInfo{
+				string(os.PathSeparator):     rootOwnedModeFileInfo{name: string(os.PathSeparator), mode: fs.ModeDir | 0o755},
+				"/etc":                       rootOwnedModeFileInfo{name: "etc", mode: fs.ModeDir | 0o755},
+				"/etc/nginx":                 rootOwnedModeFileInfo{name: "nginx", mode: fs.ModeDir | 0o755},
+				"/etc/nginx/lanpanel":        rootOwnedModeFileInfo{name: "lanpanel", mode: fs.ModeDir | 0o755},
+				"/etc/nginx/lanpanel/realip": rootOwnedModeFileInfo{name: "realip", mode: fs.ModeDir | 0o755},
+				names.NginxDir:               rootOwnedModeFileInfo{name: "old-profile", mode: fs.ModeDir | 0o755},
+				"/etc/systemd":               rootOwnedModeFileInfo{name: "systemd", mode: fs.ModeDir | 0o755},
+				"/etc/systemd/system":        rootOwnedModeFileInfo{name: "system", mode: fs.ModeDir | 0o755},
+				realIPCleanupRoot:            rootOwnedModeFileInfo{name: filepath.Base(realIPCleanupRoot), mode: fs.ModeDir | 0o755},
+				filepath.Join(realIPCleanupRoot, "old-profile"):               rootOwnedModeFileInfo{name: "old-profile", mode: fs.ModeDir | 0o755},
+				filepath.Join(realIPCleanupRoot, "old-profile", "references"): rootOwnedModeFileInfo{name: "references", mode: fs.ModeDir | 0o755},
+			}
+			lstatRealIPCleanupPathFn = func(path string) (fs.FileInfo, error) {
+				if path == tt.targetPath {
+					return tt.targetInfo, nil
+				}
+				if info, ok := dirs[path]; ok {
+					return info, nil
+				}
+				if strings.HasPrefix(path, realIPCleanupRoot+string(os.PathSeparator)) {
+					info, err := os.Lstat(path)
+					if err != nil {
+						return nil, err
+					}
+					return ownedFileInfo{FileInfo: info, uid: 0}, nil
+				}
+				return nil, os.ErrNotExist
+			}
+			readDeployedRealIPArtifactFn = func(path string) ([]byte, error) {
+				if path == tt.targetPath {
+					return append([]byte(nil), tt.targetBytes...), nil
+				}
+				return nil, os.ErrNotExist
+			}
+
+			runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+				t.Fatalf("cleanup command must not run after unsafe shared target: %#v", command)
+				return host.Result{}, nil
+			}}
+			effects := appDeployEffects{}
+			err := cleanupStaleAppRealIPReferences(stdcontext.Background(), host.NewExecutor(runner, nil), "example-app", "", &effects)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("cleanupStaleAppRealIPReferences() error = %v, want substring %q", err, tt.want)
+			}
+			assertEventBefore(t, events, "lock old-profile", "unlock old-profile")
+			if len(runner.commands) != 0 {
+				t.Fatalf("commands = %#v, want none", runner.commands)
+			}
+		})
+	}
+}
+
+func TestCleanupStaleAppRealIPReferencesNoopSkipsExecutableResolution(t *testing.T) {
+	withRootOwnedRealIPCleanupLstat(t)
+
+	previousCleanupRoot := realIPCleanupRoot
+	previousExecutable := currentExecutablePathFn
+	previousAcquireLock := acquireRealIPProfileLockFn
+	t.Cleanup(func() {
+		realIPCleanupRoot = previousCleanupRoot
+		currentExecutablePathFn = previousExecutable
+		acquireRealIPProfileLockFn = previousAcquireLock
+	})
+	realIPCleanupRoot = safeRealIPCleanupRoot(t)
+	currentExecutablePathFn = func() (string, error) {
+		t.Fatal("currentExecutablePathFn must not be called when no stale realip references exist")
+		return "", nil
+	}
+	acquireRealIPProfileLockFn = func(profileName string) (realIPProfileLock, error) {
+		t.Fatalf("acquireRealIPProfileLockFn(%q) must not be called when no stale realip references exist", profileName)
+		return nil, nil
+	}
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		t.Fatalf("unexpected cleanup command: %#v", command)
+		return host.Result{}, nil
+	}}
+	effects := appDeployEffects{}
+	if err := cleanupStaleAppRealIPReferences(stdcontext.Background(), host.NewExecutor(runner, nil), "example-app", "", &effects); err != nil {
+		t.Fatalf("cleanupStaleAppRealIPReferences() error = %v", err)
+	}
+	if len(runner.commands) != 0 {
+		t.Fatalf("commands = %#v, want none", runner.commands)
+	}
+	if !hasString(effects.actions, "checked stale realip references") {
+		t.Fatalf("effects.actions = %#v, want checked stale realip references", effects.actions)
+	}
+}
+
+func capturedStaleRealIPCleanupScript(t *testing.T) string {
+	t.Helper()
+
+	var captured host.Command
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		captured = command
+		return host.Result{}, nil
+	}}
+	_, err := cleanupStaleAppRealIPReferenceForProfile(stdcontext.Background(), host.NewExecutor(runner, nil), "example-app", "old-profile", "/bin/true")
+	if err != nil {
+		t.Fatalf("cleanupStaleAppRealIPReferenceForProfile() error = %v", err)
+	}
+	if captured.Name != "sh" || len(captured.Args) < 2 {
+		t.Fatalf("cleanup command = %#v, want sh -c script", captured)
+	}
+	return captured.Args[1]
+}
+
+func writeExecutableScript(t *testing.T, path string, content string) {
+	t.Helper()
+
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		t.Fatalf("WriteFile(%s) error = %v", path, err)
+	}
+}
+
+func TestCleanupStaleAppRealIPReferenceScriptRejectsUnexpectedEntriesBeforeRemoval(t *testing.T) {
+	script := capturedStaleRealIPCleanupScript(t)
+	dir := t.TempDir()
+	root := filepath.Join(dir, "realip")
+	profileDir := filepath.Join(root, "old-profile")
+	referenceDir := filepath.Join(profileDir, "references")
+	if err := os.MkdirAll(referenceDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(referenceDir) error = %v", err)
+	}
+	referencePath := filepath.Join(referenceDir, "example-app.json")
+	if err := os.WriteFile(referencePath, []byte("{}"), 0o600); err != nil {
+		t.Fatalf("WriteFile(reference) error = %v", err)
+	}
+	unexpectedPath := filepath.Join(profileDir, "unexpected.txt")
+	if err := os.WriteFile(unexpectedPath, []byte("do-not-remove"), 0o600); err != nil {
+		t.Fatalf("WriteFile(unexpected) error = %v", err)
+	}
+	validatorPath := filepath.Join(dir, "validator")
+	writeExecutableScript(t, validatorPath, "#!/bin/sh\nexit 0\n")
+	nginxPath := filepath.Join(dir, "nginx")
+	writeExecutableScript(t, nginxPath, "#!/bin/sh\ncat <<'EOF'\n# configuration file /etc/nginx/nginx.conf:\nhttp {}\nEOF\n")
+
+	cmd := exec.Command("sh", "-c", script, "lanpanel-app-realip-stale-reference-cleanup", "example-app", "old-profile", validatorPath, root, nginxPath)
+	output, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "contains unexpected stale realip profile entry") {
+		t.Fatalf("cleanup script error = %v output=%s, want unexpected profile entry refusal", err, output)
+	}
+	if _, err := os.Lstat(referencePath); err != nil {
+		t.Fatalf("reference was removed before cleanup refusal: %v", err)
+	}
+	if _, err := os.Lstat(unexpectedPath); err != nil {
+		t.Fatalf("unexpected file was removed before cleanup refusal: %v", err)
+	}
+}
+
+func TestCleanupStaleAppRealIPReferenceScriptRejectsActiveMarkerThroughSymlinkInclude(t *testing.T) {
+	script := capturedStaleRealIPCleanupScript(t)
+	dir := t.TempDir()
+	root := filepath.Join(dir, "realip")
+	referenceDir := filepath.Join(root, "old-profile", "references")
+	if err := os.MkdirAll(referenceDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(referenceDir) error = %v", err)
+	}
+	referencePath := filepath.Join(referenceDir, "example-app.json")
+	if err := os.WriteFile(referencePath, []byte("{}"), 0o600); err != nil {
+		t.Fatalf("WriteFile(reference) error = %v", err)
+	}
+	validatorPath := filepath.Join(dir, "validator")
+	writeExecutableScript(t, validatorPath, "#!/bin/sh\nexit 0\n")
+	nginxPath := filepath.Join(dir, "nginx")
+	writeExecutableScript(t, nginxPath, `#!/bin/sh
+cat <<'EOF'
+# configuration file /etc/nginx/nginx.conf:
+http {
+# configuration file /etc/nginx/sites-enabled/realip-link.conf:
+# Lanpanel-managed: realip.profile=old-profile provider=edgeone
+set_real_ip_from 8.8.8.8/32;
+}
+EOF
+`)
+
+	cmd := exec.Command("sh", "-c", script, "lanpanel-app-realip-stale-reference-cleanup", "example-app", "old-profile", validatorPath, root, nginxPath)
+	output, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "is still present in active Nginx config") {
+		t.Fatalf("cleanup script error = %v output=%s, want active marker refusal", err, output)
+	}
+	if _, err := os.Lstat(referencePath); err != nil {
+		t.Fatalf("reference was removed before active marker refusal: %v", err)
+	}
+}
+
+func TestCleanupStaleAppRealIPReferenceScriptValidatesBrokenSymlinkReferences(t *testing.T) {
+	script := capturedStaleRealIPCleanupScript(t)
+	dir := t.TempDir()
+	root := filepath.Join(dir, "realip")
+	referenceDir := filepath.Join(root, "old-profile", "references")
+	if err := os.MkdirAll(referenceDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(referenceDir) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(referenceDir, "example-app.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatalf("WriteFile(reference) error = %v", err)
+	}
+	brokenSymlink := filepath.Join(referenceDir, "other-app.json")
+	if err := os.Symlink(filepath.Join(dir, "missing-reference.json"), brokenSymlink); err != nil {
+		t.Fatalf("Symlink(other reference) error = %v", err)
+	}
+	validatorPath := filepath.Join(dir, "validator")
+	writeExecutableScript(t, validatorPath, `#!/bin/sh
+for arg in "$@"; do
+    if [ -L "$arg" ]; then
+        exit 7
+    fi
+done
+exit 0
+`)
+	nginxPath := filepath.Join(dir, "nginx")
+	writeExecutableScript(t, nginxPath, "#!/bin/sh\ncat <<'EOF'\n# configuration file /etc/nginx/nginx.conf:\nhttp {}\nEOF\n")
+
+	cmd := exec.Command("sh", "-c", script, "lanpanel-app-realip-stale-reference-cleanup", "example-app", "old-profile", validatorPath, root, nginxPath)
+	output, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "is not a valid Lanpanel-managed realip reference") {
+		t.Fatalf("cleanup script error = %v output=%s, want broken symlink validation refusal", err, output)
+	}
+	if _, err := os.Lstat(brokenSymlink); err != nil {
+		t.Fatalf("broken symlink was removed before cleanup refusal: %v", err)
+	}
+}
+
+func TestStaleAppRealIPReferenceProfilesRejectsUnsafePaths(t *testing.T) {
+	withRootOwnedRealIPCleanupLstat(t)
+
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, root string)
+		want  string
+	}{
+		{
+			name: "symlink profile directory",
+			setup: func(t *testing.T, root string) {
+				outside := t.TempDir()
+				referenceDir := filepath.Join(outside, "references")
+				if err := os.MkdirAll(referenceDir, 0o755); err != nil {
+					t.Fatalf("MkdirAll(outside references) error = %v", err)
+				}
+				if err := os.WriteFile(filepath.Join(referenceDir, "example-app.json"), managedRealIPReferenceJSON(t, "old-profile", "example-app", []string{"app.example.com"}), 0o600); err != nil {
+					t.Fatalf("WriteFile(outside reference) error = %v", err)
+				}
+				if err := os.Symlink(outside, filepath.Join(root, "old-profile")); err != nil {
+					t.Fatalf("Symlink(profile) error = %v", err)
+				}
+			},
+			want: "stale realip profile directory",
+		},
+		{
+			name: "symlink reference directory",
+			setup: func(t *testing.T, root string) {
+				profileDir := filepath.Join(root, "old-profile")
+				if err := os.MkdirAll(profileDir, 0o755); err != nil {
+					t.Fatalf("MkdirAll(profileDir) error = %v", err)
+				}
+				outsideReferences := filepath.Join(t.TempDir(), "references")
+				if err := os.MkdirAll(outsideReferences, 0o755); err != nil {
+					t.Fatalf("MkdirAll(outsideReferences) error = %v", err)
+				}
+				if err := os.WriteFile(filepath.Join(outsideReferences, "example-app.json"), managedRealIPReferenceJSON(t, "old-profile", "example-app", []string{"app.example.com"}), 0o600); err != nil {
+					t.Fatalf("WriteFile(outside reference) error = %v", err)
+				}
+				if err := os.Symlink(outsideReferences, filepath.Join(profileDir, "references")); err != nil {
+					t.Fatalf("Symlink(references) error = %v", err)
+				}
+			},
+			want: "stale realip reference directory",
+		},
+		{
+			name: "symlink reference file",
+			setup: func(t *testing.T, root string) {
+				referenceDir := filepath.Join(root, "old-profile", "references")
+				if err := os.MkdirAll(referenceDir, 0o755); err != nil {
+					t.Fatalf("MkdirAll(referenceDir) error = %v", err)
+				}
+				outsideReference := filepath.Join(t.TempDir(), "example-app.json")
+				if err := os.WriteFile(outsideReference, managedRealIPReferenceJSON(t, "old-profile", "example-app", []string{"app.example.com"}), 0o600); err != nil {
+					t.Fatalf("WriteFile(outside reference) error = %v", err)
+				}
+				if err := os.Symlink(outsideReference, filepath.Join(referenceDir, "example-app.json")); err != nil {
+					t.Fatalf("Symlink(reference) error = %v", err)
+				}
+			},
+			want: "must not be a symlink",
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			previousCleanupRoot := realIPCleanupRoot
+			t.Cleanup(func() {
+				realIPCleanupRoot = previousCleanupRoot
+			})
+			realIPCleanupRoot = safeRealIPCleanupRoot(t)
+			tt.setup(t, realIPCleanupRoot)
+
+			_, err := staleAppRealIPReferenceProfiles("example-app", "")
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("staleAppRealIPReferenceProfiles() error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestCleanupStaleAppRealIPReferencesReleasesLockOnCleanupFailure(t *testing.T) {
+	withRootOwnedRealIPCleanupLstat(t)
+
+	previousCleanupRoot := realIPCleanupRoot
+	previousAcquireLock := acquireRealIPProfileLockFn
+	t.Cleanup(func() {
+		realIPCleanupRoot = previousCleanupRoot
+		acquireRealIPProfileLockFn = previousAcquireLock
+	})
+	realIPCleanupRoot = safeRealIPCleanupRoot(t)
+	referenceDir := filepath.Join(realIPCleanupRoot, "old-profile", "references")
+	if err := os.MkdirAll(referenceDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(referenceDir) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(referenceDir, "example-app.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatalf("WriteFile(reference) error = %v", err)
+	}
+
+	events := []string{}
+	acquireRealIPProfileLockFn = func(profileName string) (realIPProfileLock, error) {
+		if profileName != "old-profile" {
+			t.Fatalf("realip lock profile = %q", profileName)
+		}
+		events = append(events, "lock "+profileName)
+		return stubRealIPProfileLock{release: func() error {
+			events = append(events, "unlock "+profileName)
+			return nil
+		}}, nil
+	}
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		if command.DisplayName == "cleanup-realip-references" {
+			events = append(events, "cleanup-command")
+			return host.Result{Stderr: "cleanup failed\n", ExitCode: 1}, errors.New("cleanup failed")
+		}
+		if event := appDeployOrderEvent(command); event != "" {
+			events = append(events, event)
+		}
+		return host.Result{}, nil
+	}}
+
+	effects := appDeployEffects{}
+	err := cleanupStaleAppRealIPReferences(stdcontext.Background(), host.NewExecutor(runner, nil), "example-app", "", &effects)
+	if err == nil || !strings.Contains(err.Error(), "cleanup failed") {
+		t.Fatalf("cleanupStaleAppRealIPReferences() error = %v, want cleanup failure", err)
+	}
+	assertEventBefore(t, events, "lock old-profile", "cleanup-command")
+	assertEventBefore(t, events, "cleanup-command", "unlock old-profile")
+	if slices.Contains(events, "systemd-daemon-reload") {
+		t.Fatalf("events = %v, want no daemon-reload after cleanup failure", events)
+	}
+}
+
+func TestRealIPProfileLockRejectsUntrustedPaths(t *testing.T) {
+	path, err := realIPProfileLockPath("edgeone-prod")
+	if err != nil {
+		t.Fatalf("realIPProfileLockPath() error = %v", err)
+	}
+	if path != "/run/lanpanel/lanpanel-realip-edgeone-prod.lock" {
+		t.Fatalf("realIPProfileLockPath() = %q", path)
+	}
+	if _, err := realIPProfileLockPath("Bad"); err == nil {
+		t.Fatal("realIPProfileLockPath(Bad) error = nil, want unsafe name failure")
+	}
+
+	previousLockDir := realIPLockDir
+	t.Cleanup(func() { realIPLockDir = previousLockDir })
+	realIPLockDir = t.TempDir()
+	if err := os.Chmod(realIPLockDir, 0o777); err != nil {
+		t.Fatalf("Chmod(lock dir) error = %v", err)
+	}
+	if _, err := acquireRealIPProfileLock("edgeone-prod"); err == nil || (!strings.Contains(err.Error(), "must be owned by root") && !strings.Contains(err.Error(), "must be root-only")) {
+		t.Fatalf("acquireRealIPProfileLock() error = %v, want unsafe directory refusal", err)
+	}
+
+	lockPath := filepath.Join(t.TempDir(), "lock")
+	file, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o666)
+	if err != nil {
+		t.Fatalf("OpenFile(lock) error = %v", err)
+	}
+	defer file.Close()
+	if err := validateRealIPLockFile(file, lockPath); err == nil || (!strings.Contains(err.Error(), "must be owned by root") && !strings.Contains(err.Error(), "must be root-only")) {
+		t.Fatalf("validateRealIPLockFile() error = %v, want unsafe lock file refusal", err)
+	}
+}
+
+func TestRestoreRealIPDeploySnapshotsRemovesNewEmptyProfileDirectories(t *testing.T) {
+	names, err := appsvc.NewRealIPProfileNames("edgeone-prod", appconfig.RealIPProviderEdgeOne, "review-app")
+	if err != nil {
+		t.Fatalf("NewRealIPProfileNames() error = %v", err)
+	}
+	nginxRootDir := filepath.Dir(names.NginxDir)
+	nginxBaseDir := filepath.Dir(nginxRootDir)
+	stateRootDir := filepath.Dir(names.StateDir)
+	stateBaseDir := filepath.Dir(stateRootDir)
+	fileSystem := mutableRealIPFileSystem{files: map[string]mutableRealIPFile{
+		nginxBaseDir:             {mode: fs.ModeDir | 0o755},
+		nginxRootDir:             {mode: fs.ModeDir | 0o755},
+		names.NginxDir:           {mode: fs.ModeDir | 0o755},
+		stateBaseDir:             {mode: fs.ModeDir | 0o755},
+		stateRootDir:             {mode: fs.ModeDir | 0o755},
+		names.StateDir:           {mode: fs.ModeDir | 0o755},
+		names.ReferenceDir:       {mode: fs.ModeDir | 0o755},
+		names.NginxIncludePath:   {content: []byte("new active\n"), mode: 0o644},
+		names.TrustedCIDRPath:    {content: []byte("new trusted\n"), mode: 0o644},
+		names.StatePath:          {content: []byte("{}\n"), mode: 0o600},
+		names.MetadataPath:       {content: []byte("{}\n"), mode: 0o600},
+		names.RefreshServicePath: {content: []byte("[Service]\n"), mode: 0o644},
+		names.RefreshTimerPath:   {content: []byte("[Timer]\n"), mode: 0o644},
+	}}
+	fileSnapshots := []realIPFileSnapshot{
+		{hostPath: names.NginxIncludePath},
+		{hostPath: names.TrustedCIDRPath},
+		{hostPath: names.StatePath},
+		{hostPath: names.MetadataPath},
+		{hostPath: names.RefreshServicePath},
+		{hostPath: names.RefreshTimerPath},
+	}
+	directorySnapshots := []realIPDirectorySnapshot{
+		{path: names.ReferenceDir},
+		{path: names.StateDir},
+		{path: stateRootDir},
+		{path: stateBaseDir},
+		{path: names.NginxDir},
+		{path: nginxRootDir},
+		{path: nginxBaseDir},
+	}
+	var events []string
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		actual := unwrapMaybeSudoHostCommand(command)
+		switch actual.Name {
+		case "rm":
+			if len(actual.Args) == 3 && actual.Args[0] == "-f" && actual.Args[1] == "--" {
+				path := actual.Args[2]
+				delete(fileSystem.files, path)
+				events = append(events, "rm "+path)
+				return host.Result{}, nil
+			}
+		case "rmdir":
+			if len(actual.Args) == 2 && actual.Args[0] == "--" {
+				path := actual.Args[1]
+				for existingPath := range fileSystem.files {
+					if existingPath != path && strings.HasPrefix(existingPath, path+string(os.PathSeparator)) {
+						return host.Result{Stderr: "directory not empty"}, errors.New("directory not empty")
+					}
+				}
+				delete(fileSystem.files, path)
+				events = append(events, "rmdir "+path)
+				return host.Result{}, nil
+			}
+		}
+		t.Fatalf("unexpected command: %#v", actual)
+		return host.Result{}, nil
+	}}
+
+	err = restoreRealIPDeploySnapshots(stdcontext.Background(), host.NewExecutor(runner, nil), fileSystem, fileSnapshots, directorySnapshots)
+	if err != nil {
+		t.Fatalf("restoreRealIPDeploySnapshots() error = %v", err)
+	}
+	for _, path := range []string{
+		names.NginxDir,
+		nginxRootDir,
+		nginxBaseDir,
+		names.StateDir,
+		stateRootDir,
+		stateBaseDir,
+		names.ReferenceDir,
+		names.NginxIncludePath,
+		names.TrustedCIDRPath,
+		names.StatePath,
+		names.MetadataPath,
+		names.RefreshServicePath,
+		names.RefreshTimerPath,
+	} {
+		if _, ok := fileSystem.files[path]; ok {
+			t.Fatalf("%s still exists after rollback", path)
+		}
+	}
+	gotRmdirEvents := make([]string, 0, 3)
+	for _, event := range events {
+		if strings.HasPrefix(event, "rmdir ") {
+			gotRmdirEvents = append(gotRmdirEvents, event)
+		}
+	}
+	wantRmdirEvents := []string{
+		"rmdir " + names.ReferenceDir,
+		"rmdir " + names.StateDir,
+		"rmdir " + stateRootDir,
+		"rmdir " + stateBaseDir,
+		"rmdir " + names.NginxDir,
+		"rmdir " + nginxRootDir,
+		"rmdir " + nginxBaseDir,
+	}
+	if !slices.Equal(gotRmdirEvents, wantRmdirEvents) {
+		t.Fatalf("rmdir events = %v, want %v", gotRmdirEvents, wantRmdirEvents)
+	}
+}
+
+func TestSnapshotRealIPFilesRejectsUnsafeExistingArtifacts(t *testing.T) {
+	t.Parallel()
+
+	names, err := appsvc.NewRealIPProfileNames("edgeone-prod", appconfig.RealIPProviderEdgeOne, "review-app")
+	if err != nil {
+		t.Fatalf("NewRealIPProfileNames() error = %v", err)
+	}
+	staged := []realiprender.StagedFile{{
+		SourcePath: "templates/realip/nginx-realip.conf.tmpl",
+		HostPath:   names.NginxIncludePath,
+		Mode:       0o644,
+		Content:    []byte("new active\n"),
+	}}
+	tests := []struct {
+		name string
+		file mutableRealIPFile
+		want string
+	}{
+		{
+			name: "group writable",
+			file: mutableRealIPFile{content: []byte("old active\n"), mode: 0o664},
+			want: "must not be writable by group or others",
+		},
+		{
+			name: "non root",
+			file: mutableRealIPFile{content: []byte("old active\n"), mode: 0o644, uid: 1000},
+			want: "must be owned by root",
+		},
+		{
+			name: "unknown owner",
+			file: mutableRealIPFile{content: []byte("old active\n"), mode: 0o644, unknownOwner: true},
+			want: "owner could not be inspected",
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fileSystem := mutableRealIPFileSystem{files: map[string]mutableRealIPFile{
+				names.NginxIncludePath: tt.file,
+			}}
+			_, err := snapshotRealIPFiles(fileSystem, staged, true)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("snapshotRealIPFiles() error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
+	fileSystem := mutableRealIPFileSystem{files: map[string]mutableRealIPFile{
+		names.NginxIncludePath: {content: []byte("old active\n"), mode: 0o644},
+	}}
+	if _, err := snapshotRealIPFiles(fileSystem, staged, true); err != nil {
+		t.Fatalf("snapshotRealIPFiles(valid) error = %v", err)
+	}
+}
+
+func TestRestoreRealIPDeploySnapshotsRemovesRealIPDirectoriesCreatedByInstaller(t *testing.T) {
+	names, err := appsvc.NewRealIPProfileNames("edgeone-prod", appconfig.RealIPProviderEdgeOne, "review-app")
+	if err != nil {
+		t.Fatalf("NewRealIPProfileNames() error = %v", err)
+	}
+	staged := []realiprender.StagedFile{
+		{SourcePath: "generated/realip/nginx-realip.conf", HostPath: names.NginxIncludePath, Mode: 0o644, Content: []byte("active\n")},
+		{SourcePath: "generated/realip/trusted-cidrs.conf", HostPath: names.TrustedCIDRPath, Mode: 0o644, Content: []byte("trusted\n")},
+		{SourcePath: "generated/realip/state.json", HostPath: names.StatePath, Mode: 0o600, Content: []byte("{}\n")},
+		{SourcePath: "generated/realip/profile.json", HostPath: names.MetadataPath, Mode: 0o600, Content: []byte("{}\n")},
+		{SourcePath: "generated/realip/refresh.service", HostPath: names.RefreshServicePath, Mode: 0o644, Content: []byte("[Service]\n")},
+		{SourcePath: "generated/realip/refresh.timer", HostPath: names.RefreshTimerPath, Mode: 0o644, Content: []byte("[Timer]\n")},
+	}
+	fileSystem := mutableRealIPFileSystem{files: map[string]mutableRealIPFile{}}
+	directorySnapshots, err := snapshotRealIPDirectories(fileSystem, names)
+	if err != nil {
+		t.Fatalf("snapshotRealIPDirectories() error = %v", err)
+	}
+	fileSnapshots, err := snapshotRealIPFiles(fileSystem, staged, false)
+	if err != nil {
+		t.Fatalf("snapshotRealIPFiles() error = %v", err)
+	}
+	if _, err := host.NewFileInstaller(fileSystem, "").Install(realiprender.ConvertStagedFiles(staged)); err != nil {
+		t.Fatalf("Install(realip shared artifacts) error = %v", err)
+	}
+
+	var events []string
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		actual := unwrapMaybeSudoHostCommand(command)
+		switch actual.Name {
+		case "rm":
+			if len(actual.Args) == 3 && actual.Args[0] == "-f" && actual.Args[1] == "--" {
+				path := actual.Args[2]
+				delete(fileSystem.files, path)
+				return host.Result{}, nil
+			}
+		case "rmdir":
+			if len(actual.Args) == 2 && actual.Args[0] == "--" {
+				path := actual.Args[1]
+				for existingPath := range fileSystem.files {
+					if existingPath != path && strings.HasPrefix(existingPath, path+string(os.PathSeparator)) {
+						return host.Result{Stderr: "directory not empty"}, errors.New("directory not empty")
+					}
+				}
+				delete(fileSystem.files, path)
+				events = append(events, "rmdir "+path)
+				return host.Result{}, nil
+			}
+		}
+		t.Fatalf("unexpected command: %#v", actual)
+		return host.Result{}, nil
+	}}
+
+	err = restoreRealIPDeploySnapshots(stdcontext.Background(), host.NewExecutor(runner, nil), fileSystem, fileSnapshots, directorySnapshots)
+	if err != nil {
+		t.Fatalf("restoreRealIPDeploySnapshots() error = %v", err)
+	}
+	wantRemovedDirs := []string{
+		names.StateDir,
+		filepath.Dir(names.StateDir),
+		filepath.Dir(filepath.Dir(names.StateDir)),
+		names.NginxDir,
+		filepath.Dir(names.NginxDir),
+		filepath.Dir(filepath.Dir(names.NginxDir)),
+	}
+	for _, path := range wantRemovedDirs {
+		if _, ok := fileSystem.files[path]; ok {
+			t.Fatalf("%s still exists after rollback", path)
+		}
+	}
+	for _, path := range []string{names.ReferenceDir, names.NginxIncludePath, names.StatePath, names.MetadataPath} {
+		if _, ok := fileSystem.files[path]; ok {
+			t.Fatalf("%s still exists after rollback", path)
+		}
+	}
+	wantRmdirEvents := []string{
+		"rmdir " + names.StateDir,
+		"rmdir " + filepath.Dir(names.StateDir),
+		"rmdir " + filepath.Dir(filepath.Dir(names.StateDir)),
+		"rmdir " + names.NginxDir,
+		"rmdir " + filepath.Dir(names.NginxDir),
+		"rmdir " + filepath.Dir(filepath.Dir(names.NginxDir)),
+	}
+	if !slices.Equal(events, wantRmdirEvents) {
+		t.Fatalf("rmdir events = %v, want %v", events, wantRmdirEvents)
+	}
+}
+
+func TestRestoreRealIPDeploySnapshotsKeepsExistingAndSkipsMissingProfileDirectories(t *testing.T) {
+	names, err := appsvc.NewRealIPProfileNames("edgeone-prod", appconfig.RealIPProviderEdgeOne, "review-app")
+	if err != nil {
+		t.Fatalf("NewRealIPProfileNames() error = %v", err)
+	}
+	fileSystem := mutableRealIPFileSystem{files: map[string]mutableRealIPFile{
+		filepath.Dir(filepath.Dir(names.NginxDir)): {mode: fs.ModeDir | 0o755},
+		filepath.Dir(names.NginxDir):               {mode: fs.ModeDir | 0o755},
+		names.NginxDir:                             {mode: fs.ModeDir | 0o755},
+		filepath.Dir(filepath.Dir(names.StateDir)): {mode: fs.ModeDir | 0o755},
+		filepath.Dir(names.StateDir):               {mode: fs.ModeDir | 0o755},
+		names.StateDir:                             {mode: fs.ModeDir | 0o755},
+	}}
+	directorySnapshots := []realIPDirectorySnapshot{
+		{path: names.ReferenceDir},
+		{path: filepath.Dir(filepath.Dir(names.StateDir)), exists: true},
+		{path: filepath.Dir(names.StateDir), exists: true},
+		{path: names.StateDir, exists: true},
+		{path: filepath.Dir(filepath.Dir(names.NginxDir)), exists: true},
+		{path: filepath.Dir(names.NginxDir), exists: true},
+		{path: names.NginxDir, exists: true},
+	}
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		t.Fatalf("unexpected command: %#v", unwrapMaybeSudoHostCommand(command))
+		return host.Result{}, nil
+	}}
+
+	err = restoreRealIPDeploySnapshots(stdcontext.Background(), host.NewExecutor(runner, nil), fileSystem, nil, directorySnapshots)
+	if err != nil {
+		t.Fatalf("restoreRealIPDeploySnapshots() error = %v", err)
+	}
+	for _, path := range []string{names.NginxDir, names.StateDir} {
+		if _, ok := fileSystem.files[path]; !ok {
+			t.Fatalf("%s was removed", path)
+		}
+	}
+}
+
+func TestInstallAndActivateRealIPRefreshRollsBackOnNginxTestFailure(t *testing.T) {
+	previousSystemd := newHostSystemdFn
+	t.Cleanup(func() { newHostSystemdFn = previousSystemd })
+	newHostSystemdFn = func(executor host.Executor) host.Systemd { return host.NewSystemd(executor) }
+
+	fileSystem := mutableRealIPFileSystem{files: map[string]mutableRealIPFile{
+		"/etc/nginx/lanpanel/realip/edgeone-prod/active.conf": {content: []byte("old active\n"), mode: 0o644},
+	}}
+	staged := []realiprender.StagedFile{{
+		SourcePath: "templates/realip/nginx-realip.conf.tmpl",
+		HostPath:   "/etc/nginx/lanpanel/realip/edgeone-prod/active.conf",
+		Mode:       0o644,
+		Content:    []byte("new active\n"),
+	}}
+	nginxTests := 0
+	nginxReloads := 0
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		actual := unwrapMaybeSudoHostCommand(command)
+		switch {
+		case actual.Name == appsvc.NginxBinaryPath && strings.Join(actual.Args, " ") == "-t":
+			nginxTests++
+			if nginxTests == 1 {
+				return host.Result{Stderr: "nginx test failed"}, errors.New("nginx test failed")
+			}
+		case actual.Name == "systemctl" && strings.Join(actual.Args, " ") == "reload-or-restart nginx.service":
+			nginxReloads++
+		}
+		return host.Result{}, nil
+	}}
+	effects := appDeployEffects{}
+	err := installAndActivateRealIPRefresh(stdcontext.Background(), host.NewExecutor(runner, nil), fileSystem, mutableRealIPInstaller{fileSystem: fileSystem}, staged, &effects)
+	if err == nil || !strings.Contains(err.Error(), "nginx -t failed after realip refresh") {
+		t.Fatalf("installAndActivateRealIPRefresh() error = %v, want nginx -t failure", err)
+	}
+	if got := string(fileSystem.files["/etc/nginx/lanpanel/realip/edgeone-prod/active.conf"].content); got != "old active\n" {
+		t.Fatalf("active artifact content = %q, want rollback to old active", got)
+	}
+	if nginxTests != 2 {
+		t.Fatalf("nginx -t calls = %d, want failed test plus rollback verification", nginxTests)
+	}
+	if nginxReloads != 0 {
+		t.Fatalf("nginx reload calls = %d, want none before reload was attempted", nginxReloads)
+	}
+}
+
+func TestInstallAndActivateRealIPRefreshRollsBackOnNginxReloadFailure(t *testing.T) {
+	previousSystemd := newHostSystemdFn
+	t.Cleanup(func() { newHostSystemdFn = previousSystemd })
+	newHostSystemdFn = func(executor host.Executor) host.Systemd { return host.NewSystemd(executor) }
+
+	fileSystem := mutableRealIPFileSystem{files: map[string]mutableRealIPFile{
+		"/etc/nginx/lanpanel/realip/edgeone-prod/active.conf": {content: []byte("old active\n"), mode: 0o644},
+	}}
+	staged := []realiprender.StagedFile{{
+		SourcePath: "templates/realip/nginx-realip.conf.tmpl",
+		HostPath:   "/etc/nginx/lanpanel/realip/edgeone-prod/active.conf",
+		Mode:       0o644,
+		Content:    []byte("new active\n"),
+	}}
+	nginxTests := 0
+	nginxReloads := 0
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		actual := unwrapMaybeSudoHostCommand(command)
+		switch actual.Name {
+		case appsvc.NginxBinaryPath:
+			if strings.Join(actual.Args, " ") == "-t" {
+				nginxTests++
+			}
+		case "systemctl":
+			if strings.Join(actual.Args, " ") == "reload-or-restart nginx.service" {
+				nginxReloads++
+				if nginxReloads == 1 {
+					return host.Result{Stderr: "reload failed"}, errors.New("reload failed")
+				}
+			}
+		}
+		return host.Result{}, nil
+	}}
+	effects := appDeployEffects{}
+	err := installAndActivateRealIPRefresh(stdcontext.Background(), host.NewExecutor(runner, nil), fileSystem, mutableRealIPInstaller{fileSystem: fileSystem}, staged, &effects)
+	if err == nil || !strings.Contains(err.Error(), "nginx reload failed after realip refresh") {
+		t.Fatalf("installAndActivateRealIPRefresh() error = %v, want nginx reload failure", err)
+	}
+	if got := string(fileSystem.files["/etc/nginx/lanpanel/realip/edgeone-prod/active.conf"].content); got != "old active\n" {
+		t.Fatalf("active artifact content = %q, want rollback to old active", got)
+	}
+	if nginxTests != 2 {
+		t.Fatalf("nginx -t calls = %d, want pre-reload test plus rollback verification", nginxTests)
+	}
+	if nginxReloads != 2 {
+		t.Fatalf("nginx reload calls = %d, want failed reload plus restored config reload", nginxReloads)
+	}
+}
+
+func TestRollbackRealIPDeployReloadsRestoredNginxAfterReloadFailure(t *testing.T) {
+	previousSystemd := newHostSystemdFn
+	t.Cleanup(func() { newHostSystemdFn = previousSystemd })
+	newHostSystemdFn = func(executor host.Executor) host.Systemd { return host.NewSystemd(executor) }
+
+	fileSystem := mutableRealIPFileSystem{files: map[string]mutableRealIPFile{
+		"/etc/nginx/lanpanel/realip/edgeone-prod/active.conf": {content: []byte("new active\n"), mode: 0o644},
+	}}
+	snapshots := []realIPFileSnapshot{{
+		hostPath: "/etc/nginx/lanpanel/realip/edgeone-prod/active.conf",
+		exists:   true,
+		content:  []byte("old active\n"),
+		mode:     0o644,
+	}}
+	nginxTests := 0
+	nginxReloads := 0
+	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
+		actual := unwrapMaybeSudoHostCommand(command)
+		switch actual.Name {
+		case appsvc.NginxBinaryPath:
+			if strings.Join(actual.Args, " ") == "-t" {
+				nginxTests++
+			}
+		case "systemctl":
+			if strings.Join(actual.Args, " ") == "reload-or-restart nginx.service" {
+				nginxReloads++
+			}
+		}
+		return host.Result{}, nil
+	}}
+	cause := errors.New("app nginx reload failed")
+
+	err := rollbackRealIPDeploy(stdcontext.Background(), host.NewExecutor(runner, nil), fileSystem, snapshots, nil, cause, true)
+	if !errors.Is(err, cause) {
+		t.Fatalf("rollbackRealIPDeploy() error = %v, want original cause", err)
+	}
+	if got := string(fileSystem.files["/etc/nginx/lanpanel/realip/edgeone-prod/active.conf"].content); got != "old active\n" {
+		t.Fatalf("active artifact content = %q, want rollback to old active", got)
+	}
+	if nginxTests != 1 {
+		t.Fatalf("nginx -t calls = %d, want restored config verification", nginxTests)
+	}
+	if nginxReloads != 1 {
+		t.Fatalf("nginx reload calls = %d, want restored config reload", nginxReloads)
+	}
+}
+
 func TestEnsureAppHostDependenciesFailsWhenLegoArchitectureCannotBeDetected(t *testing.T) {
 	runner := &scriptedHostRunner{run: func(command host.Command) (host.Result, error) {
 		actual := unwrapMaybeSudoHostCommand(command)
 		switch actual.Name {
-		case "/opt/meshify/bin/lego":
+		case "/opt/lanpanel/bin/lego":
 			if strings.Join(actual.Args, " ") == "--version" {
 				return host.Result{Stderr: "lego: command not found"}, errors.New("lego: command not found")
 			}
@@ -7181,7 +11475,7 @@ func TestActivateAppNginxDoesNotFallbackAfterSystemctlReloadFailure(t *testing.T
 	}
 	for _, command := range runner.commands {
 		actual := unwrapMaybeSudoHostCommand(command)
-		if actual.Name == "nginx" && strings.Join(actual.Args, " ") == "-s reload" {
+		if actual.Name == appsvc.NginxBinaryPath && strings.Join(actual.Args, " ") == "-s reload" {
 			t.Fatalf("commands = %#v, must not fallback to nginx -s reload", runner.commands)
 		}
 	}
@@ -7220,12 +11514,29 @@ func (info rootOwnedFileInfo) Sys() any {
 	}{UID: 0, GID: 0}
 }
 
+type ownedFileInfo struct {
+	os.FileInfo
+	uid          uint32
+	unknownOwner bool
+}
+
+func (info ownedFileInfo) Sys() any {
+	if info.unknownOwner {
+		return nil
+	}
+	return struct {
+		UID uint32
+		GID uint32
+	}{UID: info.uid, GID: 0}
+}
+
 type rootOwnedModeFileInfo struct {
-	name string
-	mode os.FileMode
-	size int64
-	uid  uint32
-	gid  uint32
+	name         string
+	mode         os.FileMode
+	size         int64
+	uid          uint32
+	gid          uint32
+	unknownOwner bool
 }
 
 func (info rootOwnedModeFileInfo) Name() string {
@@ -7249,6 +11560,9 @@ func (info rootOwnedModeFileInfo) IsDir() bool {
 }
 
 func (info rootOwnedModeFileInfo) Sys() any {
+	if info.unknownOwner {
+		return nil
+	}
 	return struct {
 		UID uint32
 		GID uint32
@@ -7259,7 +11573,7 @@ func TestDeployDesiredStateDigestIgnoresShellCredentialSecretValues(t *testing.T
 	cfg := config.ExampleConfig()
 	cfg.Default.ACMEChallenge = config.ACMEChallengeDNS01
 	cfg.Advanced.DNS01.Provider = "route53"
-	cfg.Advanced.DNS01.EnvFile = "/etc/meshify/dns01/route53.env"
+	cfg.Advanced.DNS01.EnvFile = "/etc/lanpanel/dns01/route53.env"
 
 	t.Setenv("AWS_ACCESS_KEY_ID", "key")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "first-secret")
@@ -7532,7 +11846,7 @@ table inet filter {
 
 func TestExecute_DeployInstallsRuntimeAssetsAndStatusShowsPersistedCheckpoint(t *testing.T) {
 	baseDir := t.TempDir()
-	configPath := filepath.Join(baseDir, "meshify.yaml")
+	configPath := filepath.Join(baseDir, "lanpanel.yaml")
 	if err := config.WriteExampleFile(configPath); err != nil {
 		t.Fatalf("WriteExampleFile() error = %v", err)
 	}
@@ -7590,7 +11904,7 @@ func TestExecute_DeployInstallsRuntimeAssetsAndStatusShowsPersistedCheckpoint(t 
 	if stderr != "" {
 		t.Fatalf("stderr = %q, want empty", stderr)
 	}
-	if !strings.Contains(stdout, "meshify deploy: preflight passed, server components were installed, runtime assets were applied, and verification checks passed") {
+	if !strings.Contains(stdout, "lanpanel deploy: preflight passed, server components were installed, runtime assets were applied, and verification checks passed") {
 		t.Fatalf("stdout = %q, want deploy success summary", stdout)
 	}
 	if !strings.Contains(stdout, "checkpoint path: "+checkpointPath) {
@@ -7668,7 +11982,7 @@ func TestExecute_DeployInstallsRuntimeAssetsAndStatusShowsPersistedCheckpoint(t 
 	if statusStderr != "" {
 		t.Fatalf("status stderr = %q, want empty", statusStderr)
 	}
-	if !strings.Contains(statusStdout, "meshify status: config is valid; last deploy context is available") {
+	if !strings.Contains(statusStdout, "lanpanel status: config is valid; last deploy context is available") {
 		t.Fatalf("status stdout = %q, want last deploy summary", statusStdout)
 	}
 	if strings.Contains(statusStdout, "current checkpoint:") {
@@ -7690,7 +12004,7 @@ func TestExecute_DeployInstallsRuntimeAssetsAndStatusShowsPersistedCheckpoint(t 
 
 func TestExecute_DeployHTTP01FreshHostDoesNotRequirePreexistingChallengeRoute(t *testing.T) {
 	baseDir := t.TempDir()
-	configPath := filepath.Join(baseDir, "meshify.yaml")
+	configPath := filepath.Join(baseDir, "lanpanel.yaml")
 	cfg := config.ExampleConfig()
 	cfg.Default.ServerURL = "https://fresh-host.invalid"
 	if err := cfg.WriteFile(configPath); err != nil {
@@ -7743,7 +12057,7 @@ func TestExecute_DeployHTTP01FreshHostDoesNotRequirePreexistingChallengeRoute(t 
 	if stderr != "" {
 		t.Fatalf("stderr = %q, want empty", stderr)
 	}
-	if !strings.Contains(stdout, "meshify deploy: preflight passed") {
+	if !strings.Contains(stdout, "lanpanel deploy: preflight passed") {
 		t.Fatalf("stdout = %q, want deploy to proceed beyond preflight", stdout)
 	}
 	if strings.Contains(stdout, "HTTP-01 readiness could not be confirmed") {
@@ -7919,7 +12233,7 @@ func TestDetectPackageSourceStateUsesOfflineLegoArchiveWithoutRemoteProbe(t *tes
 
 func TestExecute_DeployChecksArchitectureBeforePackageMutations(t *testing.T) {
 	baseDir := t.TempDir()
-	configPath := filepath.Join(baseDir, "meshify.yaml")
+	configPath := filepath.Join(baseDir, "lanpanel.yaml")
 	if err := config.WriteExampleFile(configPath); err != nil {
 		t.Fatalf("WriteExampleFile() error = %v", err)
 	}
@@ -7999,7 +12313,7 @@ func TestExecute_DeployChecksArchitectureBeforePackageMutations(t *testing.T) {
 
 func TestExecute_DeployDNS01InstallsHostDependenciesWithoutCertbotPlugins(t *testing.T) {
 	baseDir := t.TempDir()
-	configPath := filepath.Join(baseDir, "meshify.yaml")
+	configPath := filepath.Join(baseDir, "lanpanel.yaml")
 	if err := config.WriteExampleFile(configPath); err != nil {
 		t.Fatalf("WriteExampleFile() error = %v", err)
 	}
@@ -8009,7 +12323,7 @@ func TestExecute_DeployDNS01InstallsHostDependenciesWithoutCertbotPlugins(t *tes
 	}
 	cfg.Default.ACMEChallenge = config.ACMEChallengeDNS01
 	cfg.Advanced.DNS01.Provider = "cloudflare"
-	cfg.Advanced.DNS01.EnvFile = "/etc/meshify/dns01/cloudflare.env"
+	cfg.Advanced.DNS01.EnvFile = "/etc/lanpanel/dns01/cloudflare.env"
 	if err := cfg.WriteFile(configPath); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
@@ -8094,7 +12408,7 @@ func TestExecute_DeployDNS01InstallsHostDependenciesWithoutCertbotPlugins(t *tes
 
 func TestExecute_DeployDNS01SourcesEnvFileThroughSudo(t *testing.T) {
 	baseDir := t.TempDir()
-	configPath := filepath.Join(baseDir, "meshify.yaml")
+	configPath := filepath.Join(baseDir, "lanpanel.yaml")
 	if err := config.WriteExampleFile(configPath); err != nil {
 		t.Fatalf("WriteExampleFile() error = %v", err)
 	}
@@ -8104,7 +12418,7 @@ func TestExecute_DeployDNS01SourcesEnvFileThroughSudo(t *testing.T) {
 	}
 	cfg.Default.ACMEChallenge = config.ACMEChallengeDNS01
 	cfg.Advanced.DNS01.Provider = "cloudflare"
-	cfg.Advanced.DNS01.EnvFile = "/etc/meshify/dns01/cloudflare.env"
+	cfg.Advanced.DNS01.EnvFile = "/etc/lanpanel/dns01/cloudflare.env"
 	if err := cfg.WriteFile(configPath); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
@@ -8166,7 +12480,7 @@ func TestExecute_DeployDNS01SourcesEnvFileThroughSudo(t *testing.T) {
 	foundLegoIssue := false
 	for _, command := range runner.commands {
 		actual := unwrapMaybeSudoHostCommand(command)
-		if actual.Name != "sh" || !strings.Contains(strings.Join(actual.Args, " "), "meshify-lego-dns01") {
+		if actual.Name != "sh" || !strings.Contains(strings.Join(actual.Args, " "), "lanpanel-lego-dns01") {
 			continue
 		}
 		foundLegoIssue = true
@@ -8174,14 +12488,14 @@ func TestExecute_DeployDNS01SourcesEnvFileThroughSudo(t *testing.T) {
 			t.Fatalf("lego issuance command = %q, want sudo-wrapped command", command.String())
 		}
 		actualArgs := strings.Join(actual.Args, " ")
-		if !strings.Contains(actualArgs, "/etc/meshify/dns01/cloudflare.env") {
+		if !strings.Contains(actualArgs, "/etc/lanpanel/dns01/cloudflare.env") {
 			t.Fatalf("sudo shell args = %q, want env_file path", actualArgs)
 		}
 		display := command.String()
-		if !strings.Contains(display, "/opt/meshify/bin/lego run --path /var/lib/meshify/lego") || !strings.Contains(display, "--dns cloudflare") || !strings.Contains(display, "--deploy-hook") {
+		if !strings.Contains(display, "/opt/lanpanel/bin/lego run --path /var/lib/lanpanel/lego") || !strings.Contains(display, "--dns cloudflare") || !strings.Contains(display, "--deploy-hook") {
 			t.Fatalf("lego display command = %q, want lego DNS-01 command", display)
 		}
-		if strings.Contains(display, "/etc/meshify/dns01/cloudflare.env") {
+		if strings.Contains(display, "/etc/lanpanel/dns01/cloudflare.env") {
 			t.Fatalf("lego display command = %q, want env_file hidden from display", display)
 		}
 	}
@@ -8192,7 +12506,7 @@ func TestExecute_DeployDNS01SourcesEnvFileThroughSudo(t *testing.T) {
 
 func TestExecute_DeployResumesFromRecordedCheckpoint(t *testing.T) {
 	baseDir := t.TempDir()
-	configPath := filepath.Join(baseDir, "meshify.yaml")
+	configPath := filepath.Join(baseDir, "lanpanel.yaml")
 	if err := config.WriteExampleFile(configPath); err != nil {
 		t.Fatalf("WriteExampleFile() error = %v", err)
 	}
@@ -8290,7 +12604,7 @@ func TestExecute_DeployResumesFromRecordedCheckpoint(t *testing.T) {
 	if stderr != "" {
 		t.Fatalf("stderr = %q, want empty", stderr)
 	}
-	if !strings.Contains(stdout, "meshify deploy: preflight passed; runtime assets already match the desired state and verification checks passed") {
+	if !strings.Contains(stdout, "lanpanel deploy: preflight passed; runtime assets already match the desired state and verification checks passed") {
 		t.Fatalf("stdout = %q, want resumed deploy summary", stdout)
 	}
 	if stageCalls != 2 {
@@ -8303,7 +12617,7 @@ func TestExecute_DeployResumesFromRecordedCheckpoint(t *testing.T) {
 	issueIndex := -1
 	for index, command := range runner.commands {
 		actual := unwrapMaybeSudoHostCommand(command)
-		if actual.Name == "sh" && len(actual.Args) >= 3 && actual.Args[2] == "meshify-lego-v5-migration-gate" {
+		if actual.Name == "sh" && len(actual.Args) >= 3 && actual.Args[2] == "lanpanel-lego-v5-migration-gate" {
 			migrationIndex = index
 		}
 		if actual.Name == legocomponent.BinaryPath && strings.Join(actual.Args, " ") != "--version" {
@@ -8386,8 +12700,8 @@ derp:
   server:
     enabled: true
     region_id: 999
-    region_code: "meshify"
-    region_name: "Meshify Embedded DERP"
+    region_code: "lanpanel"
+    region_name: "Lanpanel Embedded DERP"
     verify_clients: true
     stun_listen_addr: "0.0.0.0:3478"
     private_key_path: "/var/lib/headscale/derp_server_private.key"
@@ -8409,10 +12723,10 @@ logtail:
   enabled: false
 `), nil
 		case "/etc/nginx/sites-available/headscale.conf":
-			return []byte(`map $http_host $meshify_host_header_valid {
+			return []byte(`map $http_host $lanpanel_host_header_valid {
     default 0;
 }
-map $ssl_server_name $meshify_sni_valid {
+map $ssl_server_name $lanpanel_sni_valid {
     default 0;
 }
 upstream headscale_upstream {
@@ -8420,9 +12734,9 @@ upstream headscale_upstream {
 }
 server {
     location /.well-known/acme-challenge/ {
-        root /var/lib/meshify/acme-challenges;
+        root /var/lib/lanpanel/acme-challenges;
     }
-    ssl_certificate /etc/meshify/tls/old.example.com/fullchain.pem;
+    ssl_certificate /etc/lanpanel/tls/old.example.com/fullchain.pem;
     location / {
         proxy_pass http://headscale_upstream;
     }
@@ -8440,15 +12754,15 @@ server {
 }
 
 func TestHTTP01ChallengeRouteCommandTargetsLocalNginxWithHostHeader(t *testing.T) {
-	command := http01ChallengeRouteCommand("hs.example.com", "/var/lib/meshify/acme-challenges")
+	command := http01ChallengeRouteCommand("hs.example.com", "/var/lib/lanpanel/acme-challenges")
 
 	if command.Name != "sh" {
 		t.Fatalf("command.Name = %q, want sh", command.Name)
 	}
 	args := strings.Join(command.Args, " ")
 	for _, want := range []string{
-		"meshify-http01-route-check",
-		"/var/lib/meshify/acme-challenges",
+		"lanpanel-http01-route-check",
+		"/var/lib/lanpanel/acme-challenges",
 		"--noproxy '*'",
 		"--resolve \"$server_name:80:127.0.0.1\"",
 	} {
@@ -8481,7 +12795,7 @@ func TestCertificateIssueRemediationsAreChallengeSpecific(t *testing.T) {
 
 func TestCommandErrorWithOutputIncludesFirstOutputLine(t *testing.T) {
 	result := host.Result{
-		Command:  host.Command{Name: "/opt/meshify/bin/lego", Args: []string{"run"}},
+		Command:  host.Command{Name: "/opt/lanpanel/bin/lego", Args: []string{"run"}},
 		ExitCode: 1,
 		Stderr:   "could not obtain certificates: connection refused\nverbose details",
 	}
@@ -8498,10 +12812,10 @@ func TestCommandErrorWithOutputIncludesFirstOutputLine(t *testing.T) {
 
 func TestCommandErrorWithOutputPrefersDiagnosticLine(t *testing.T) {
 	result := host.Result{
-		Command:  host.Command{Name: "/opt/meshify/bin/lego", Args: []string{"run"}},
+		Command:  host.Command{Name: "/opt/lanpanel/bin/lego", Args: []string{"run"}},
 		ExitCode: 1,
 		Stdout: strings.Join([]string{
-			"2026-05-21T22:47:59+08:00 INFO Private key saved. filepath=/var/lib/meshify/lego/accounts/acme-v02.api.letsencrypt.org/ops@example.com/ops@example.com.key",
+			"2026-05-21T22:47:59+08:00 INFO Private key saved. filepath=/var/lib/lanpanel/lego/accounts/acme-v02.api.letsencrypt.org/ops@example.com/ops@example.com.key",
 			"2026-05-21T22:48:00+08:00 INFO Could not find the solver. domain=hs.example.com type=tls-alpn-01 solvers=http-01",
 			"2026-05-21T22:48:01+08:00 ERR Could not obtain certificates error=\"one or more domains had a problem\"",
 		}, "\n"),
@@ -8522,7 +12836,7 @@ func TestCommandErrorWithOutputPrefersDiagnosticLine(t *testing.T) {
 
 func TestExecute_DeployCertificateFailureIncludesLegoOutput(t *testing.T) {
 	baseDir := t.TempDir()
-	configPath := filepath.Join(baseDir, "meshify.yaml")
+	configPath := filepath.Join(baseDir, "lanpanel.yaml")
 	if err := config.WriteExampleFile(configPath); err != nil {
 		t.Fatalf("WriteExampleFile() error = %v", err)
 	}
@@ -8575,7 +12889,7 @@ func TestExecute_DeployCertificateFailureIncludesLegoOutput(t *testing.T) {
 		actual := unwrapMaybeSudoHostCommand(command)
 		if actual.Name == "sh" && len(actual.Args) >= 3 {
 			switch actual.Args[2] {
-			case "meshify-lego-v5-migration-gate", "meshify-http01-route-check":
+			case "lanpanel-lego-v5-migration-gate", "lanpanel-http01-route-check":
 				return host.Result{Command: command}, nil
 			}
 		}
@@ -8611,7 +12925,7 @@ func TestExecute_DeployCertificateFailureIncludesLegoOutput(t *testing.T) {
 
 func TestExecute_DeployClearsServicesCheckpointWhenOnboardingFails(t *testing.T) {
 	baseDir := t.TempDir()
-	configPath := filepath.Join(baseDir, "meshify.yaml")
+	configPath := filepath.Join(baseDir, "lanpanel.yaml")
 	if err := config.WriteExampleFile(configPath); err != nil {
 		t.Fatalf("WriteExampleFile() error = %v", err)
 	}
@@ -8691,7 +13005,7 @@ func TestExecute_DeployClearsServicesCheckpointWhenOnboardingFails(t *testing.T)
 	if stderr != "" {
 		t.Fatalf("stderr = %q, want empty", stderr)
 	}
-	if !strings.Contains(stdout, "meshify deploy: create onboarding preauthkey failed") {
+	if !strings.Contains(stdout, "lanpanel deploy: create onboarding preauthkey failed") {
 		t.Fatalf("stdout = %q, want onboarding failure summary", stdout)
 	}
 	if !strings.Contains(stdout, "journalctl -u headscale.service") {
@@ -8718,7 +13032,7 @@ func TestExecute_DeployClearsServicesCheckpointWhenOnboardingFails(t *testing.T)
 
 func TestExecute_DeployIgnoresCompletedCheckpointWhenDesiredStateChanges(t *testing.T) {
 	baseDir := t.TempDir()
-	configPath := filepath.Join(baseDir, "meshify.yaml")
+	configPath := filepath.Join(baseDir, "lanpanel.yaml")
 	if err := config.WriteExampleFile(configPath); err != nil {
 		t.Fatalf("WriteExampleFile() error = %v", err)
 	}
@@ -8818,7 +13132,7 @@ func TestExecute_DeployIgnoresCompletedCheckpointWhenDesiredStateChanges(t *test
 	if !stageCalled {
 		t.Fatal("stageRuntimeFilesFn() was not called, want runtime staging for changed desired state")
 	}
-	if !strings.Contains(stdout, "meshify deploy: preflight passed, server components were installed, runtime assets were applied, and verification checks passed") {
+	if !strings.Contains(stdout, "lanpanel deploy: preflight passed, server components were installed, runtime assets were applied, and verification checks passed") {
 		t.Fatalf("stdout = %q, want fresh deploy summary", stdout)
 	}
 
@@ -8933,7 +13247,7 @@ func TestDeployDesiredStateDigestTracksStagedRuntimeOutput(t *testing.T) {
 
 func TestExecute_DeployDeferredMissingLegoPersistsFailureAndStatusShowsCheckpoint(t *testing.T) {
 	baseDir := t.TempDir()
-	configPath := filepath.Join(baseDir, "meshify.yaml")
+	configPath := filepath.Join(baseDir, "lanpanel.yaml")
 	if err := config.WriteExampleFile(configPath); err != nil {
 		t.Fatalf("WriteExampleFile() error = %v", err)
 	}
@@ -8969,7 +13283,7 @@ func TestExecute_DeployDeferredMissingLegoPersistsFailureAndStatusShowsCheckpoin
 		switch command.Name {
 		case "apt-get", "mkdir", "sh", "curl", "sha256sum", "tar", "chmod", "ln", "nginx":
 			return host.Result{}, nil
-		case "/opt/meshify/bin/lego":
+		case "/opt/lanpanel/bin/lego":
 			if strings.Join(command.Args, " ") == "--version" {
 				legoVersionChecks++
 			}
@@ -9005,7 +13319,7 @@ func TestExecute_DeployDeferredMissingLegoPersistsFailureAndStatusShowsCheckpoin
 	if !strings.Contains(err.Error(), "check lego command failed") {
 		t.Fatalf("error = %q, want lego command failure", err.Error())
 	}
-	if !strings.Contains(stdout, "meshify deploy: check lego command failed: running /opt/meshify/bin/lego --version to confirm certificate tooling reachability") {
+	if !strings.Contains(stdout, "lanpanel deploy: check lego command failed: running /opt/lanpanel/bin/lego --version to confirm certificate tooling reachability") {
 		t.Fatalf("stdout = %q, want deferred lego failure summary", stdout)
 	}
 	if strings.Contains(stdout, "Join at least two clients") {
@@ -9043,7 +13357,7 @@ func TestExecute_DeployDeferredMissingLegoPersistsFailureAndStatusShowsCheckpoin
 	if statusStderr != "" {
 		t.Fatalf("status stderr = %q, want empty", statusStderr)
 	}
-	if !strings.Contains(statusStdout, "meshify status: check lego command failed: running /opt/meshify/bin/lego --version to confirm certificate tooling reachability") {
+	if !strings.Contains(statusStdout, "lanpanel status: check lego command failed: running /opt/lanpanel/bin/lego --version to confirm certificate tooling reachability") {
 		t.Fatalf("status stdout = %q, want persisted lego failure summary", statusStdout)
 	}
 	if !strings.Contains(statusStdout, "current checkpoint: lego-command-deferred") {
@@ -9062,7 +13376,7 @@ func TestExecute_DeployDeferredMissingLegoPersistsFailureAndStatusShowsCheckpoin
 
 func TestExecute_DeployDeferredSystemdPersistsFailureBeforeServicesAndOnboarding(t *testing.T) {
 	baseDir := t.TempDir()
-	configPath := filepath.Join(baseDir, "meshify.yaml")
+	configPath := filepath.Join(baseDir, "lanpanel.yaml")
 	if err := config.WriteExampleFile(configPath); err != nil {
 		t.Fatalf("WriteExampleFile() error = %v", err)
 	}
@@ -9096,7 +13410,7 @@ func TestExecute_DeployDeferredSystemdPersistsFailureBeforeServicesAndOnboarding
 	runner.run = func(command host.Command) (host.Result, error) {
 		actual := unwrapMaybeSudoHostCommand(command)
 		switch actual.Name {
-		case "apt-get", "mkdir", "sh", "curl", "sha256sum", "tar", "chmod", "ln", "nginx", "/opt/meshify/bin/lego":
+		case "apt-get", "mkdir", "sh", "curl", "sha256sum", "tar", "chmod", "ln", "nginx", "/opt/lanpanel/bin/lego":
 			return host.Result{Command: command}, nil
 		case "dpkg":
 			return host.Result{Command: command, Stdout: "amd64\n"}, nil
@@ -9125,7 +13439,7 @@ func TestExecute_DeployDeferredSystemdPersistsFailureBeforeServicesAndOnboarding
 	if !strings.Contains(err.Error(), "reload systemd failed") {
 		t.Fatalf("error = %q, want systemd reload failure", err.Error())
 	}
-	if !strings.Contains(stdout, "meshify deploy: reload systemd failed: running systemctl daemon-reload to confirm service manager reachability") {
+	if !strings.Contains(stdout, "lanpanel deploy: reload systemd failed: running systemctl daemon-reload to confirm service manager reachability") {
 		t.Fatalf("stdout = %q, want deferred systemd failure summary", stdout)
 	}
 	if strings.Contains(stdout, "Join at least two clients") {
@@ -9170,7 +13484,7 @@ func TestExecute_DeployDeferredSystemdPersistsFailureBeforeServicesAndOnboarding
 	if statusStderr != "" {
 		t.Fatalf("status stderr = %q, want empty", statusStderr)
 	}
-	if !strings.Contains(statusStdout, "meshify status: reload systemd failed: running systemctl daemon-reload to confirm service manager reachability") {
+	if !strings.Contains(statusStdout, "lanpanel status: reload systemd failed: running systemctl daemon-reload to confirm service manager reachability") {
 		t.Fatalf("status stdout = %q, want persisted systemd failure summary", statusStdout)
 	}
 	if !strings.Contains(statusStdout, "current checkpoint: systemd-daemon-reload-deferred") {
@@ -9183,7 +13497,7 @@ func TestExecute_DeployDeferredSystemdPersistsFailureBeforeServicesAndOnboarding
 
 func TestExecute_DeployRerunClearsDeferredLegoCheckpointAfterSuccess(t *testing.T) {
 	baseDir := t.TempDir()
-	configPath := filepath.Join(baseDir, "meshify.yaml")
+	configPath := filepath.Join(baseDir, "lanpanel.yaml")
 	if err := config.WriteExampleFile(configPath); err != nil {
 		t.Fatalf("WriteExampleFile() error = %v", err)
 	}
@@ -9214,7 +13528,7 @@ func TestExecute_DeployRerunClearsDeferredLegoCheckpointAfterSuccess(t *testing.
 			deployCheckpointLegoCommandDeferred,
 		},
 		LastFailure: &workflow.FailureSnapshot{
-			Summary: "check lego command failed: running /opt/meshify/bin/lego --version to confirm certificate tooling reachability",
+			Summary: "check lego command failed: running /opt/lanpanel/bin/lego --version to confirm certificate tooling reachability",
 			Step:    "check lego command",
 		},
 	}); err != nil {
@@ -9284,7 +13598,7 @@ func TestExecute_DeployRerunClearsDeferredLegoCheckpointAfterSuccess(t *testing.
 
 func TestExecute_DeployUsesSudoOnlyForPrivilegedHostMutationsAndDefersMissingLego(t *testing.T) {
 	baseDir := t.TempDir()
-	configPath := filepath.Join(baseDir, "meshify.yaml")
+	configPath := filepath.Join(baseDir, "lanpanel.yaml")
 	if err := config.WriteExampleFile(configPath); err != nil {
 		t.Fatalf("WriteExampleFile() error = %v", err)
 	}
@@ -9339,7 +13653,7 @@ func TestExecute_DeployUsesSudoOnlyForPrivilegedHostMutationsAndDefersMissingLeg
 				t.Fatalf("privileged mutation was not sudo-wrapped: %q", command.String())
 			}
 			return host.Result{Command: command}, nil
-		case "/opt/meshify/bin/lego":
+		case "/opt/lanpanel/bin/lego":
 			if strings.Join(actual.Args, " ") == "--version" && command.Name != "sudo" {
 				result := host.Result{Command: command}
 				return result, &host.CommandError{Result: result, Err: exec.ErrNotFound}
@@ -9364,7 +13678,7 @@ func TestExecute_DeployUsesSudoOnlyForPrivilegedHostMutationsAndDefersMissingLeg
 			}
 			switch args := strings.Join(actual.Args, " "); {
 			case strings.Contains(args, "users list"):
-				return host.Result{Command: command, Stdout: "ID | Name\n1 | meshify\n"}, nil
+				return host.Result{Command: command, Stdout: "ID | Name\n1 | lanpanel\n"}, nil
 			case strings.Contains(args, "preauthkeys create"):
 				return host.Result{Command: command, Stdout: "tskey-test\n"}, nil
 			default:
@@ -9392,7 +13706,7 @@ func TestExecute_DeployUsesSudoOnlyForPrivilegedHostMutationsAndDefersMissingLeg
 	if !strings.Contains(err.Error(), "check lego command failed") {
 		t.Fatalf("error = %q, want lego command failure", err.Error())
 	}
-	if !strings.Contains(stdout, "meshify deploy: check lego command failed") {
+	if !strings.Contains(stdout, "lanpanel deploy: check lego command failed") {
 		t.Fatalf("stdout = %q, want lego deferred failure", stdout)
 	}
 
@@ -9434,7 +13748,7 @@ func TestExecute_DeployUsesSudoOnlyForPrivilegedHostMutationsAndDefersMissingLeg
 				t.Fatalf("architecture probe was sudo-wrapped: %q", command.String())
 			}
 			sawUnprivilegedProbe = true
-		case "/opt/meshify/bin/lego":
+		case "/opt/lanpanel/bin/lego":
 			if strings.Join(actual.Args, " ") == "--version" {
 				if command.Name != "sudo" {
 					sawUnprivilegedProbe = true
@@ -9473,8 +13787,8 @@ func TestSystemdCommandDeferredRejectsPermissionDeniedBusErrors(t *testing.T) {
 
 func TestExecute_DeployUsesConfiguredProxyForGoPreflightProbes(t *testing.T) {
 	baseDir := t.TempDir()
-	configPath := filepath.Join(baseDir, "meshify.yaml")
-	packageBody := []byte("meshify-package-probe")
+	configPath := filepath.Join(baseDir, "lanpanel.yaml")
+	packageBody := []byte("lanpanel-package-probe")
 	packageDigest := sha256.Sum256(packageBody)
 
 	var (
@@ -9495,7 +13809,7 @@ func TestExecute_DeployUsesConfiguredProxyForGoPreflightProbes(t *testing.T) {
 			_, _ = w.Write(packageBody)
 		case r.Method == http.MethodHead && r.URL.Host == "github.com" && strings.Contains(r.URL.Path, "/go-acme/lego/releases/download/"):
 			w.WriteHeader(http.StatusOK)
-		case r.Method == http.MethodGet && r.URL.Host == "hs-proxy.invalid" && r.URL.Path == "/.well-known/acme-challenge/meshify-preflight":
+		case r.Method == http.MethodGet && r.URL.Host == "hs-proxy.invalid" && r.URL.Path == "/.well-known/acme-challenge/lanpanel-preflight":
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("ok"))
 		default:
@@ -9719,7 +14033,7 @@ func TestDeployProxyConfiguredTreatsNoProxyAsExplicitProxyConfiguration(t *testi
 
 func TestExecute_DeployHostCommandFailurePersistsRecoveryPointAndStatusShowsIt(t *testing.T) {
 	baseDir := t.TempDir()
-	configPath := filepath.Join(baseDir, "meshify.yaml")
+	configPath := filepath.Join(baseDir, "lanpanel.yaml")
 	if err := config.WriteExampleFile(configPath); err != nil {
 		t.Fatalf("WriteExampleFile() error = %v", err)
 	}
@@ -9782,7 +14096,7 @@ func TestExecute_DeployHostCommandFailurePersistsRecoveryPointAndStatusShowsIt(t
 	if !strings.Contains(err.Error(), "confirm package architecture failed: collecting host package architecture via dpkg") {
 		t.Fatalf("error = %q, want host command failure summary", err.Error())
 	}
-	if !strings.Contains(stdout, "meshify deploy: confirm package architecture failed: collecting host package architecture via dpkg") {
+	if !strings.Contains(stdout, "lanpanel deploy: confirm package architecture failed: collecting host package architecture via dpkg") {
 		t.Fatalf("stdout = %q, want host command failure response", stdout)
 	}
 	if !strings.Contains(stdout, "details: dpkg --print-architecture exited with status 2") {
@@ -9843,7 +14157,7 @@ func TestExecute_StatusSuppressesStaleDeployContextAfterConfigChange(t *testing.
 				ActivationHistory: []assets.Activation{assets.ActivationRestartHeadscale},
 			},
 			unwanted: []string{
-				"meshify status: config is valid; resumable deploy checkpoint is available",
+				"lanpanel status: config is valid; resumable deploy checkpoint is available",
 				"current checkpoint:",
 				"completed checkpoints:",
 				"modified paths:",
@@ -9862,7 +14176,7 @@ func TestExecute_StatusSuppressesStaleDeployContextAfterConfigChange(t *testing.
 				},
 			},
 			unwanted: []string{
-				"meshify status: confirm package architecture failed: collecting host package architecture via dpkg",
+				"lanpanel status: confirm package architecture failed: collecting host package architecture via dpkg",
 				"current checkpoint:",
 				"completed checkpoints:",
 				"step: confirm package architecture",
@@ -9875,7 +14189,7 @@ func TestExecute_StatusSuppressesStaleDeployContextAfterConfigChange(t *testing.
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			baseDir := t.TempDir()
-			configPath := filepath.Join(baseDir, "meshify.yaml")
+			configPath := filepath.Join(baseDir, "lanpanel.yaml")
 			if err := config.WriteExampleFile(configPath); err != nil {
 				t.Fatalf("WriteExampleFile() error = %v", err)
 			}
@@ -9921,10 +14235,10 @@ func TestExecute_StatusSuppressesStaleDeployContextAfterConfigChange(t *testing.
 			if statusStderr != "" {
 				t.Fatalf("status stderr = %q, want empty", statusStderr)
 			}
-			if !strings.Contains(statusStdout, "meshify status: config is valid; persisted deploy context is stale for the current desired state") {
+			if !strings.Contains(statusStdout, "lanpanel status: config is valid; persisted deploy context is stale for the current desired state") {
 				t.Fatalf("status stdout = %q, want stale deploy context summary", statusStdout)
 			}
-			if !strings.Contains(statusStdout, "stale context: config changed since the recorded deploy context was saved; meshify will ignore that recovery data on the next deploy") {
+			if !strings.Contains(statusStdout, "stale context: config changed since the recorded deploy context was saved; lanpanel will ignore that recovery data on the next deploy") {
 				t.Fatalf("status stdout = %q, want stale context explanation", statusStdout)
 			}
 			if !strings.Contains(statusStdout, "checkpoint path: "+checkpointPath) {
@@ -9933,7 +14247,7 @@ func TestExecute_StatusSuppressesStaleDeployContextAfterConfigChange(t *testing.
 			if !strings.Contains(statusStdout, "minimum client version: Tailscale >= v1.74.0") {
 				t.Fatalf("status stdout = %q, want minimum client version", statusStdout)
 			}
-			if !strings.Contains(statusStdout, "meshify deploy --config "+configPath) {
+			if !strings.Contains(statusStdout, "lanpanel deploy --config "+configPath) {
 				t.Fatalf("status stdout = %q, want deploy next step", statusStdout)
 			}
 			for _, unwanted := range tt.unwanted {
@@ -9947,7 +14261,7 @@ func TestExecute_StatusSuppressesStaleDeployContextAfterConfigChange(t *testing.
 
 func TestExecute_StatusTreatsDigestlessDeployContextAsStale(t *testing.T) {
 	baseDir := t.TempDir()
-	configPath := filepath.Join(baseDir, "meshify.yaml")
+	configPath := filepath.Join(baseDir, "lanpanel.yaml")
 	if err := config.WriteExampleFile(configPath); err != nil {
 		t.Fatalf("WriteExampleFile() error = %v", err)
 	}
@@ -9985,13 +14299,13 @@ func TestExecute_StatusTreatsDigestlessDeployContextAsStale(t *testing.T) {
 	if statusStderr != "" {
 		t.Fatalf("status stderr = %q, want empty", statusStderr)
 	}
-	if !strings.Contains(statusStdout, "meshify status: config is valid; persisted deploy context is missing its desired-state fingerprint") {
+	if !strings.Contains(statusStdout, "lanpanel status: config is valid; persisted deploy context is missing its desired-state fingerprint") {
 		t.Fatalf("status stdout = %q, want digestless stale summary", statusStdout)
 	}
-	if !strings.Contains(statusStdout, "stale context: checkpoint data has no desired-state fingerprint; meshify will ignore that recovery data on the next deploy") {
+	if !strings.Contains(statusStdout, "stale context: checkpoint data has no desired-state fingerprint; lanpanel will ignore that recovery data on the next deploy") {
 		t.Fatalf("status stdout = %q, want digestless stale explanation", statusStdout)
 	}
-	if !strings.Contains(statusStdout, "meshify deploy --config "+configPath) {
+	if !strings.Contains(statusStdout, "lanpanel deploy --config "+configPath) {
 		t.Fatalf("status stdout = %q, want deploy next step", statusStdout)
 	}
 	if !strings.Contains(statusStdout, "minimum client version: Tailscale >= v1.74.0") {
@@ -10011,7 +14325,7 @@ func TestExecute_StatusTreatsDigestlessDeployContextAsStale(t *testing.T) {
 
 func TestExecute_DeployHostCommandFailureStillWritesReadableFailureWhenCheckpointSaveFails(t *testing.T) {
 	baseDir := t.TempDir()
-	configPath := filepath.Join(baseDir, "meshify.yaml")
+	configPath := filepath.Join(baseDir, "lanpanel.yaml")
 	if err := config.WriteExampleFile(configPath); err != nil {
 		t.Fatalf("WriteExampleFile() error = %v", err)
 	}
@@ -10083,7 +14397,7 @@ func TestExecute_DeployHostCommandFailureStillWritesReadableFailureWhenCheckpoin
 	if !strings.Contains(err.Error(), "could not save recovery point") {
 		t.Fatalf("error = %q, want checkpoint warning", err.Error())
 	}
-	if !strings.Contains(stdout, "meshify deploy: confirm package architecture failed: collecting host package architecture via dpkg") {
+	if !strings.Contains(stdout, "lanpanel deploy: confirm package architecture failed: collecting host package architecture via dpkg") {
 		t.Fatalf("stdout = %q, want failure response", stdout)
 	}
 	if !strings.Contains(stdout, "details: dpkg --print-architecture exited with status 2") {
@@ -10096,7 +14410,7 @@ func TestExecute_DeployHostCommandFailureStillWritesReadableFailureWhenCheckpoin
 
 func TestExecute_DeployUsesSudoForPrivilegedHostMutations(t *testing.T) {
 	baseDir := t.TempDir()
-	configPath := filepath.Join(baseDir, "meshify.yaml")
+	configPath := filepath.Join(baseDir, "lanpanel.yaml")
 	if err := config.WriteExampleFile(configPath); err != nil {
 		t.Fatalf("WriteExampleFile() error = %v", err)
 	}
@@ -10151,7 +14465,7 @@ func TestExecute_DeployUsesSudoForPrivilegedHostMutations(t *testing.T) {
 				t.Fatalf("architecture probe was sudo-wrapped: %q", command.String())
 			}
 			return host.Result{Command: command, Stdout: "amd64\n"}, nil
-		case "/opt/meshify/bin/lego":
+		case "/opt/lanpanel/bin/lego":
 			if strings.Join(actual.Args, " ") == "--version" {
 				return host.Result{Command: command}, nil
 			}
@@ -10170,7 +14484,7 @@ func TestExecute_DeployUsesSudoForPrivilegedHostMutations(t *testing.T) {
 			}
 			switch args := strings.Join(actual.Args, " "); {
 			case strings.Contains(args, "users list"):
-				return host.Result{Command: command, Stdout: "ID | Name\n1 | meshify\n"}, nil
+				return host.Result{Command: command, Stdout: "ID | Name\n1 | lanpanel\n"}, nil
 			case strings.Contains(args, "preauthkeys create"):
 				return host.Result{Command: command, Stdout: "tskey-test\n"}, nil
 			default:
@@ -10205,7 +14519,7 @@ func TestExecute_DeployUsesSudoForPrivilegedHostMutations(t *testing.T) {
 	if stderr != "" {
 		t.Fatalf("stderr = %q, want empty", stderr)
 	}
-	if !strings.Contains(stdout, "meshify deploy: preflight passed") {
+	if !strings.Contains(stdout, "lanpanel deploy: preflight passed") {
 		t.Fatalf("stdout = %q, want deploy success summary", stdout)
 	}
 
@@ -10272,7 +14586,7 @@ func TestExecute_CommandsFormatCheckpointLoadFailures(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			baseDir := t.TempDir()
-			configPath := filepath.Join(baseDir, "meshify.yaml")
+			configPath := filepath.Join(baseDir, "lanpanel.yaml")
 			if err := config.WriteExampleFile(configPath); err != nil {
 				t.Fatalf("WriteExampleFile() error = %v", err)
 			}
@@ -10302,7 +14616,7 @@ func TestExecute_CommandsFormatCheckpointLoadFailures(t *testing.T) {
 			if !strings.Contains(err.Error(), "load deploy checkpoint failed") {
 				t.Fatalf("error = %q, want formatted checkpoint failure", err.Error())
 			}
-			if !strings.Contains(stdout, "meshify "+tc.command+": load deploy checkpoint failed: reading persisted deploy recovery state") {
+			if !strings.Contains(stdout, "lanpanel "+tc.command+": load deploy checkpoint failed: reading persisted deploy recovery state") {
 				t.Fatalf("stdout = %q, want formatted checkpoint failure summary", stdout)
 			}
 			if !strings.Contains(stdout, "checkpoint path: "+checkpointPath) {
@@ -10323,7 +14637,7 @@ func TestExecute_CommandsFormatCheckpointLoadFailures(t *testing.T) {
 
 func TestExecute_DeployFormatsDesiredStateFingerprintFailures(t *testing.T) {
 	baseDir := t.TempDir()
-	configPath := filepath.Join(baseDir, "meshify.yaml")
+	configPath := filepath.Join(baseDir, "lanpanel.yaml")
 	if err := config.WriteExampleFile(configPath); err != nil {
 		t.Fatalf("WriteExampleFile() error = %v", err)
 	}
@@ -10357,7 +14671,7 @@ func TestExecute_DeployFormatsDesiredStateFingerprintFailures(t *testing.T) {
 	if !strings.Contains(err.Error(), "fingerprint desired state failed") {
 		t.Fatalf("error = %q, want formatted fingerprint failure", err.Error())
 	}
-	if !strings.Contains(stdout, "meshify deploy: fingerprint desired state failed: building the current runtime asset fingerprint") {
+	if !strings.Contains(stdout, "lanpanel deploy: fingerprint desired state failed: building the current runtime asset fingerprint") {
 		t.Fatalf("stdout = %q, want formatted fingerprint failure summary", stdout)
 	}
 	if !strings.Contains(stdout, "details: render runtime manifest: missing template value") {
@@ -10381,7 +14695,7 @@ func TestExecute_DeployFormatsDesiredStateFingerprintFailures(t *testing.T) {
 
 func TestExecute_StatusFormatsDesiredStateFingerprintFailures(t *testing.T) {
 	baseDir := t.TempDir()
-	configPath := filepath.Join(baseDir, "meshify.yaml")
+	configPath := filepath.Join(baseDir, "lanpanel.yaml")
 	if err := config.WriteExampleFile(configPath); err != nil {
 		t.Fatalf("WriteExampleFile() error = %v", err)
 	}
@@ -10423,7 +14737,7 @@ func TestExecute_StatusFormatsDesiredStateFingerprintFailures(t *testing.T) {
 	if !strings.Contains(err.Error(), "fingerprint desired state failed") {
 		t.Fatalf("error = %q, want formatted fingerprint failure", err.Error())
 	}
-	if !strings.Contains(stdout, "meshify status: fingerprint desired state failed: building the current runtime asset fingerprint") {
+	if !strings.Contains(stdout, "lanpanel status: fingerprint desired state failed: building the current runtime asset fingerprint") {
 		t.Fatalf("stdout = %q, want formatted fingerprint failure summary", stdout)
 	}
 	if !strings.Contains(stdout, "details: render runtime manifest: missing template value") {
@@ -10436,7 +14750,7 @@ func TestExecute_StatusFormatsDesiredStateFingerprintFailures(t *testing.T) {
 
 func TestExecute_DeployFailurePersistsFailureSnapshotAndStatusShowsIt(t *testing.T) {
 	baseDir := t.TempDir()
-	configPath := filepath.Join(baseDir, "meshify.yaml")
+	configPath := filepath.Join(baseDir, "lanpanel.yaml")
 	if err := config.WriteExampleFile(configPath); err != nil {
 		t.Fatalf("WriteExampleFile() error = %v", err)
 	}
@@ -10493,7 +14807,7 @@ func TestExecute_DeployFailurePersistsFailureSnapshotAndStatusShowsIt(t *testing
 	if !strings.Contains(err.Error(), "install runtime assets failed: writing runtime files to host paths") {
 		t.Fatalf("error = %q, want failure summary", err.Error())
 	}
-	if !strings.Contains(stdout, "meshify deploy: install runtime assets failed: writing runtime files to host paths") {
+	if !strings.Contains(stdout, "lanpanel deploy: install runtime assets failed: writing runtime files to host paths") {
 		t.Fatalf("stdout = %q, want failure response", stdout)
 	}
 	if !strings.Contains(stdout, "details: write /etc/headscale/config.yaml: permission denied") {
@@ -10524,7 +14838,7 @@ func TestExecute_DeployFailurePersistsFailureSnapshotAndStatusShowsIt(t *testing
 	if statusStderr != "" {
 		t.Fatalf("status stderr = %q, want empty", statusStderr)
 	}
-	if !strings.Contains(statusStdout, "meshify status: install runtime assets failed: writing runtime files to host paths") {
+	if !strings.Contains(statusStdout, "lanpanel status: install runtime assets failed: writing runtime files to host paths") {
 		t.Fatalf("status stdout = %q, want persisted failure summary", statusStdout)
 	}
 	if !strings.Contains(statusStdout, "details: write /etc/headscale/config.yaml: permission denied") {
@@ -10548,6 +14862,104 @@ type stubFileInstaller struct {
 
 func (installer stubFileInstaller) Install(_ []render.StagedFile) ([]host.FileInstallResult, error) {
 	return append([]host.FileInstallResult(nil), installer.results...), installer.err
+}
+
+type mutableRealIPFile struct {
+	content      []byte
+	mode         fs.FileMode
+	uid          uint32
+	unknownOwner bool
+}
+
+type mutableRealIPFileSystem struct {
+	files map[string]mutableRealIPFile
+}
+
+func (fileSystem mutableRealIPFileSystem) MkdirAll(path string, perm fs.FileMode) error {
+	if fileSystem.files == nil {
+		return fmt.Errorf("mutable realip filesystem is not initialized")
+	}
+	path = filepath.Clean(strings.TrimSpace(path))
+	if path == "" || !filepath.IsAbs(path) {
+		return fmt.Errorf("mkdir path %q must be absolute", path)
+	}
+	current := string(os.PathSeparator)
+	for _, part := range strings.Split(strings.TrimPrefix(path, string(os.PathSeparator)), string(os.PathSeparator)) {
+		if part == "" {
+			continue
+		}
+		current = filepath.Join(current, part)
+		if file, ok := fileSystem.files[current]; ok {
+			if file.mode&fs.ModeSymlink != 0 || !file.mode.IsDir() {
+				return fmt.Errorf("%s exists and is not a directory", current)
+			}
+			continue
+		}
+		fileSystem.files[current] = mutableRealIPFile{mode: fs.ModeDir | perm.Perm()}
+	}
+	return nil
+}
+
+func (fileSystem mutableRealIPFileSystem) ReadFile(name string) ([]byte, error) {
+	file, ok := fileSystem.files[name]
+	if !ok {
+		return nil, os.ErrNotExist
+	}
+	return append([]byte(nil), file.content...), nil
+}
+
+func (fileSystem mutableRealIPFileSystem) WriteFile(name string, data []byte, mode fs.FileMode) error {
+	if fileSystem.files == nil {
+		fileSystem.files = map[string]mutableRealIPFile{}
+	}
+	fileSystem.files[name] = mutableRealIPFile{content: append([]byte(nil), data...), mode: mode}
+	return nil
+}
+
+func (fileSystem mutableRealIPFileSystem) Stat(name string) (fs.FileInfo, error) {
+	return fileSystem.Lstat(name)
+}
+
+func (fileSystem mutableRealIPFileSystem) Lstat(name string) (fs.FileInfo, error) {
+	file, ok := fileSystem.files[name]
+	if !ok {
+		return nil, os.ErrNotExist
+	}
+	return rootOwnedModeFileInfo{name: filepath.Base(name), mode: file.mode, size: int64(len(file.content)), uid: file.uid, unknownOwner: file.unknownOwner}, nil
+}
+
+type mutableRealIPInstaller struct {
+	fileSystem mutableRealIPFileSystem
+}
+
+func (installer mutableRealIPInstaller) Install(files []render.StagedFile) ([]host.FileInstallResult, error) {
+	results := make([]host.FileInstallResult, 0, len(files))
+	for _, file := range files {
+		if err := installer.fileSystem.WriteFile(file.HostPath, file.Content, file.Mode); err != nil {
+			return results, err
+		}
+		results = append(results, host.FileInstallResult{SourcePath: file.SourcePath, HostPath: file.HostPath, Changed: true, ContentChanged: true})
+	}
+	return results, nil
+}
+
+type partialFailingRealIPReferenceInstaller struct {
+	fileSystem mutableRealIPFileSystem
+	failPath   string
+}
+
+func (installer partialFailingRealIPReferenceInstaller) Install(files []render.StagedFile) ([]host.FileInstallResult, error) {
+	results := make([]host.FileInstallResult, 0, len(files))
+	for _, file := range files {
+		if err := installer.fileSystem.WriteFile(file.HostPath, file.Content, file.Mode); err != nil {
+			return results, err
+		}
+		results = append(results, host.FileInstallResult{SourcePath: file.SourcePath, HostPath: file.HostPath, Changed: true, ContentChanged: true})
+		if file.HostPath == installer.failPath {
+			return results, errors.New("reference install boom")
+		}
+	}
+	return results, nil
 }
 
 type stubHeadscaleOnboarder struct {
@@ -10590,13 +15002,13 @@ func successfulDeployHostResult(command host.Command) (host.Result, error) {
 		args := strings.Join(actual.Args, " ")
 		switch {
 		case strings.Contains(args, "users list"):
-			return host.Result{Command: command, Stdout: "ID | Name\n1 | meshify\n"}, nil
+			return host.Result{Command: command, Stdout: "ID | Name\n1 | lanpanel\n"}, nil
 		case strings.Contains(args, "preauthkeys create"):
 			return host.Result{Command: command, Stdout: "tskey-test\n"}, nil
 		default:
 			return host.Result{Command: command}, nil
 		}
-	case "apt-get", "mkdir", "sh", "curl", "sha256sum", "tar", "chmod", "/opt/meshify/bin/lego", "ln", "nginx", "systemctl":
+	case "apt-get", "mkdir", "sh", "curl", "sha256sum", "tar", "chmod", "/opt/lanpanel/bin/lego", "ln", "nginx", "systemctl":
 		return host.Result{Command: command}, nil
 	case appsvc.GoAccessBinaryPath:
 		switch strings.Join(actual.Args, " ") {
@@ -10631,6 +15043,17 @@ func testLegoArchiveHash(t *testing.T, rawURL string) (string, bool) {
 type scriptedHostRunner struct {
 	commands []host.Command
 	run      func(command host.Command) (host.Result, error)
+}
+
+type stubRealIPProfileLock struct {
+	release func() error
+}
+
+func (lock stubRealIPProfileLock) Release() error {
+	if lock.release == nil {
+		return nil
+	}
+	return lock.release()
 }
 
 func (runner *scriptedHostRunner) Run(_ stdcontext.Context, command host.Command) (host.Result, error) {
@@ -10768,7 +15191,7 @@ func TestExecute_DeployAndVerifyJSONMissingConfig(t *testing.T) {
 			if len(response.Fields) < 1 || response.Fields[0].Value != configPath {
 				t.Fatalf("response.Fields = %#v, want config path %q", response.Fields, configPath)
 			}
-			if len(response.NextSteps) != 1 || !strings.Contains(response.NextSteps[0], "meshify init --config "+configPath) {
+			if len(response.NextSteps) != 1 || !strings.Contains(response.NextSteps[0], "lanpanel init --config "+configPath) {
 				t.Fatalf("response.NextSteps = %#v, want init hint", response.NextSteps)
 			}
 		})
@@ -10791,7 +15214,7 @@ func TestExecute_DeployAndVerifyJSONInvalidConfig(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			configPath := filepath.Join(t.TempDir(), "meshify.yaml")
+			configPath := filepath.Join(t.TempDir(), "lanpanel.yaml")
 			if err := config.WriteExampleFile(configPath); err != nil {
 				t.Fatalf("WriteExampleFile() error = %v", err)
 			}
@@ -10838,7 +15261,7 @@ func TestExecute_DeployAndVerifyJSONInvalidConfig(t *testing.T) {
 			if !strings.Contains(response.Fields[1].Value, "default.server_url must use https") {
 				t.Fatalf("details = %q, want validation error", response.Fields[1].Value)
 			}
-			if len(response.NextSteps) != 1 || !strings.Contains(response.NextSteps[0], "meshify "+tc.command+" --config "+configPath) {
+			if len(response.NextSteps) != 1 || !strings.Contains(response.NextSteps[0], "lanpanel "+tc.command+" --config "+configPath) {
 				t.Fatalf("response.NextSteps = %#v, want rerun hint", response.NextSteps)
 			}
 		})
@@ -10846,7 +15269,7 @@ func TestExecute_DeployAndVerifyJSONInvalidConfig(t *testing.T) {
 }
 
 func TestExecute_VerifyReportsInvalidConfigDetails(t *testing.T) {
-	configPath := filepath.Join(t.TempDir(), "meshify.yaml")
+	configPath := filepath.Join(t.TempDir(), "lanpanel.yaml")
 	data, err := config.ExampleYAML()
 	if err != nil {
 		t.Fatalf("ExampleYAML() error = %v", err)
@@ -10864,7 +15287,7 @@ func TestExecute_VerifyReportsInvalidConfigDetails(t *testing.T) {
 	if stderr != "" {
 		t.Fatalf("stderr = %q, want empty", stderr)
 	}
-	if !strings.Contains(stdout, "meshify verify: config file exists but failed validation") {
+	if !strings.Contains(stdout, "lanpanel verify: config file exists but failed validation") {
 		t.Fatalf("stdout = %q, want invalid-config summary", stdout)
 	}
 	if !strings.Contains(stdout, "unsupported DNS-01 provider \"unsupported\"") {
@@ -10893,7 +15316,7 @@ func TestExecute_VerifyReportsInvalidConfigDetails(t *testing.T) {
 
 func TestExecute_StatusJSONIncludesClientVersionForDeployHistory(t *testing.T) {
 	baseDir := t.TempDir()
-	configPath := filepath.Join(baseDir, "meshify.yaml")
+	configPath := filepath.Join(baseDir, "lanpanel.yaml")
 	if err := config.WriteExampleFile(configPath); err != nil {
 		t.Fatalf("WriteExampleFile() error = %v", err)
 	}
@@ -10957,13 +15380,13 @@ func TestExecute_StatusMissingConfig(t *testing.T) {
 	if stderr != "" {
 		t.Fatalf("stderr = %q, want empty", stderr)
 	}
-	if !strings.Contains(stdout, "meshify status: no config file found") {
+	if !strings.Contains(stdout, "lanpanel status: no config file found") {
 		t.Fatalf("stdout = %q, want missing-config summary", stdout)
 	}
 	if !strings.Contains(stdout, configPath) {
 		t.Fatalf("stdout = %q, want config path %q", stdout, configPath)
 	}
-	if !strings.Contains(stdout, "meshify init --config "+configPath) {
+	if !strings.Contains(stdout, "lanpanel init --config "+configPath) {
 		t.Fatalf("stdout = %q, want init hint", stdout)
 	}
 }

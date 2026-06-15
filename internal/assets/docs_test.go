@@ -34,8 +34,8 @@ func TestDeployDocsAlignWithCLIAndSupportMatrix(t *testing.T) {
 
 	combined := strings.Join(mapValues(docs), "\n")
 	for _, want := range []string{
-			"init -> verify -> deploy -> verify -> status",
-		"meshify status",
+		"init -> verify -> deploy -> verify -> status",
+		"lanpanel status",
 		"Debian-family",
 		"apt/dpkg/systemd",
 		"Windows",
@@ -64,17 +64,17 @@ func TestRootReadmePointsToPrimaryDocs(t *testing.T) {
 
 	content := readRepoDoc(t, "README.md")
 	for _, want := range []string{
-		"meshify init --config meshify.yaml",
-		"meshify deploy --config meshify.yaml",
-		"meshify verify --config meshify.yaml",
-		"meshify status --config meshify.yaml",
+		"lanpanel init --config lanpanel.yaml",
+		"lanpanel deploy --config lanpanel.yaml",
+		"lanpanel verify --config lanpanel.yaml",
+		"lanpanel status --config lanpanel.yaml",
 		"Debian, Ubuntu, or a Debian-family distribution with apt/dpkg/systemd",
 		"pinned lego v5.1.0",
 		"## Supported Scope",
 		"## Server Guide",
 		"## Client Guide",
 		"checksums.txt",
-		"[Releases](https://github.com/simp-lee/meshify/releases)",
+		"[Releases](https://github.com/simp-lee/lanpanel/releases)",
 		"do not copy the placeholder literally",
 		"`verify` is a static config and runtime-template check",
 		"it does not read host systemd state, certificate files, Nginx runtime state, Headscale process state, or client online state",
@@ -138,11 +138,11 @@ func TestOnboardingFreshKeyFlowIsConditional(t *testing.T) {
 
 	content := readRepoDoc(t, "README.md")
 	for _, want := range []string{
-		"Only if the meshify user is missing from users list",
+		"Only if the lanpanel user is missing from users list",
 		"preauthkeys create --user <ID> --expiration 24h",
 		"creates a key that can register one client and expires after",
 		"preauthkeys create --user <ID> --expiration 24h --reusable",
-		"Use the numeric user ID shown by `users list` for the `meshify` user.",
+		"Use the numeric user ID shown by `users list` for the `lanpanel` user.",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("onboarding doc missing conditional fresh-key guidance %q", want)
@@ -155,16 +155,16 @@ func TestUserGuideDocumentsRuntimeSecurityBoundaries(t *testing.T) {
 
 	content := readRepoDoc(t, "README.md")
 	for _, want := range []string{
-		"Nginx serves HTTP-01 challenges from `/var/lib/meshify/acme-challenges`",
-		"Nginx uses `/etc/meshify/tls/<server>/fullchain.pem` and `/etc/meshify/tls/<server>/privkey.pem`",
+		"Nginx serves HTTP-01 challenges from `/var/lib/lanpanel/acme-challenges`",
+		"Nginx uses `/etc/lanpanel/tls/<server>/fullchain.pem` and `/etc/lanpanel/tls/<server>/privkey.pem`",
 		"Explicit HTTP and HTTPS `default_server` catch-all blocks reject unmatched Host or SNI traffic",
 		"Existing Nginx can coexist by `server_name`",
 		"Headscale exposes STUN on `3478/udp`",
-		"Cloudflare, DigitalOcean, and Tencent Cloud require a root-only `advanced.dns01.env_file`",
-		"TENCENTCLOUD_SECRET_ID_FILE=/etc/meshify/dns01/tencentcloud-secret-id",
+		"Cloudflare, DigitalOcean, and Tencent Cloud require a root-owned, root-only `advanced.dns01.env_file`",
+		"TENCENTCLOUD_SECRET_ID_FILE=/etc/lanpanel/dns01/tencentcloud-secret-id",
 		`provider: "tencentcloud"`,
-			"Route53 and gcloud may use the host credential chain",
-			"do not put raw tokens or keys directly in `env_file`",
+		"Route53 and gcloud may use the host credential chain",
+		"do not put raw tokens or keys directly in `env_file`",
 		"v5.1.0",
 	} {
 		if !strings.Contains(content, want) {
@@ -187,18 +187,18 @@ func TestChineseReadmeDocumentsAppCLI(t *testing.T) {
 		t.Fatal("README.zh-CN.md must remain localized")
 	}
 	for _, want := range []string{
-		"meshify app init --config meshify-apps/abc.yaml",
-		"sudo meshify app deploy --config meshify-apps/abc.yaml",
-		"meshify app verify --config meshify-apps/abc.yaml",
-		"deploy/config/meshify-app.yaml.example",
-		"`meshify app verify`",
+		"lanpanel app init --config lanpanel-apps/abc.yaml",
+		"sudo lanpanel app deploy --config lanpanel-apps/abc.yaml",
+		"lanpanel app verify --config lanpanel-apps/abc.yaml",
+		"deploy/config/lanpanel-app.yaml.example",
+		"`lanpanel app verify`",
 		"`static-passed`",
 		"systemd",
 		"Nginx runtime",
 		"GoAccess",
 		"Tailscale",
 		"`listen`",
-		"`meshify.yaml`",
+		"`lanpanel.yaml`",
 		"`upstream`",
 		"Tailscale client",
 		"`tailscale.login_server`",
@@ -220,7 +220,7 @@ func TestChineseReadmeDocumentsAppCLI(t *testing.T) {
 		"loopback WebSocket",
 		"`nginx.goaccess.websocket_path`",
 		"`nginx.access_log`",
-		"`/var/log/meshify/apps/<app-name>/access.log`",
+		"`/var/log/lanpanel/apps/<app-name>/access.log`",
 		"`user:hash`",
 		"root-owned",
 		"primary domain",
@@ -237,14 +237,14 @@ func TestChineseReadmeDocumentsAppCLI(t *testing.T) {
 		"`<canonical-access-log>`",
 		"`<error-log>`",
 		"GoAccess runtime identity",
-			"外部 `access_log` 安全要求",
+		"外部 `access_log` 安全要求",
 		"`/var/log/nginx`",
 		"`ProtectHome=true`",
 		"`PrivateTmp=true`",
 		"journalctl -u <app-name>.service -e",
 		"`proxy.read_timeout`",
 		"tailnet upstream",
-		"`meshify app status`",
+		"`lanpanel app status`",
 		"`deploy/templates/app/`",
 	} {
 		if !strings.Contains(content, want) {
@@ -280,7 +280,7 @@ func TestReadmeUpstreamAppExamplesIncludeAPIVersion(t *testing.T) {
 	for _, doc := range docs {
 		content := readRepoDoc(t, doc.path)
 		block := readmeYAMLBlockContaining(t, content, `name: "tailapp"`)
-		if !strings.Contains(block, "api_version: meshify/app/v1alpha1") {
+		if !strings.Contains(block, "api_version: lanpanel/app/v1alpha1") {
 			t.Fatalf("%s upstream app example missing api_version", doc.name)
 		}
 		if !strings.Contains(block, "tailscale:") || !strings.Contains(block, "login_server") || !strings.Contains(block, "auth_key_file") {
@@ -295,7 +295,7 @@ func TestReadmeDocumentsStaticLocationCacheHeaderContract(t *testing.T) {
 	english := readRepoDoc(t, "README.md")
 	for _, want := range []string{
 		"Prefer either `expires` or `cache_control`",
-		"if both are set, Meshify renders both directives",
+		"if both are set, Lanpanel renders both directives",
 	} {
 		if !strings.Contains(english, want) {
 			t.Fatalf("README missing static cache-header contract %q", want)
@@ -313,13 +313,13 @@ func TestReadmeDocumentsStaticLocationCacheHeaderContract(t *testing.T) {
 		}
 	}
 
-	example := readRepoDoc(t, "deploy", "config", "meshify-app.yaml.example")
+	example := readRepoDoc(t, "deploy", "config", "lanpanel-app.yaml.example")
 	if !strings.Contains(example, "Prefer either expires or cache_control. If both are set, both directives render.") {
 		t.Fatal("app config example missing static cache-header contract")
 	}
 	for _, want := range []string{
 		"Set false for older distro Nginx packages",
-		"For app-only upstream configs without a main meshify.yaml",
+		"For app-only upstream configs without a main lanpanel.yaml",
 		"login_server explicitly",
 	} {
 		if !strings.Contains(example, want) {
@@ -346,7 +346,7 @@ func TestEnglishReadmeDocumentsAppGoAccess(t *testing.T) {
 		"does not expose a static-only GoAccess mode",
 		"`persist true` and `restore true`",
 		"`nginx.access_log` is empty",
-		"`/var/log/meshify/apps/<app-name>/access.log`",
+		"`/var/log/lanpanel/apps/<app-name>/access.log`",
 		"regular, non-empty file",
 		"`user:hash` credential line",
 		"user and hash contain no whitespace",
@@ -363,11 +363,11 @@ func TestEnglishReadmeDocumentsAppGoAccess(t *testing.T) {
 		"raw log fields",
 		"request serving time",
 		"`nginx.error_log`",
-		"must stay outside Meshify-managed app and GoAccess runtime paths",
+		"must stay outside Lanpanel-managed app and GoAccess runtime paths",
 		"must not equal the GoAccess canonical access log",
 		"Other loopback IP literals are valid",
-			"external canonical access log",
-		"During deploy, Meshify creates or confirms the GoAccess runtime identity before the final readability check",
+		"external canonical access log",
+		"During deploy, Lanpanel creates or confirms the GoAccess runtime identity before the final readability check",
 		"Do not place explicit GoAccess access logs under",
 		"`/var/log/nginx`",
 		"`ProtectHome=true` and `PrivateTmp=true`",
@@ -401,13 +401,13 @@ func TestEnglishReadmeDocumentsAppGoAccess(t *testing.T) {
 func TestAppRuntimeTemplatesAreCanonicalDeployAssets(t *testing.T) {
 	t.Parallel()
 
-	if _, err := os.Stat(filepath.Join("..", "..", "deploy", "config", "meshify-app.yaml.example")); err != nil {
+	if _, err := os.Stat(filepath.Join("..", "..", "deploy", "config", "lanpanel-app.yaml.example")); err != nil {
 		t.Fatalf("canonical app config example is not present: %v", err)
 	}
-	if _, ok := Lookup("config/meshify-app.yaml.example"); !ok {
+	if _, ok := Lookup("config/lanpanel-app.yaml.example"); !ok {
 		t.Fatal("app config example is missing from embedded asset catalog")
 	}
-	example := readRepoDoc(t, "deploy", "config", "meshify-app.yaml.example")
+	example := readRepoDoc(t, "deploy", "config", "lanpanel-app.yaml.example")
 	for _, want := range []string{
 		"enabled: false",
 		"auth_basic_user_file",
@@ -419,10 +419,10 @@ func TestAppRuntimeTemplatesAreCanonicalDeployAssets(t *testing.T) {
 		"not writable by group or others",
 		"searchable by the Nginx runtime user",
 		"With GoAccess enabled and access_log empty",
-		"/var/log/meshify/apps/<app-name>/access.log",
+		"/var/log/lanpanel/apps/<app-name>/access.log",
 		"manages logrotate",
-		"exact /var/log/meshify/apps/<app-name>/access.log path is still managed",
-		"or install Meshify logrotate for them",
+		"exact /var/log/lanpanel/apps/<app-name>/access.log path is still managed",
+		"or install Lanpanel logrotate for them",
 		"Deploy creates or confirms the GoAccess runtime user before the final readability check",
 		"GoAccess rejects explicit access_log paths under /home, /root, /run/user",
 		"/var/log/nginx",

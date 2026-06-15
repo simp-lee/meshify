@@ -1,15 +1,15 @@
-// Package workflow orchestrates user-facing meshify flows.
+// Package workflow orchestrates user-facing lanpanel flows.
 package workflow
 
 import (
 	"fmt"
-	"meshify/internal/config"
-	"meshify/internal/output"
+	"lanpanel/internal/config"
+	"lanpanel/internal/output"
 	"net/url"
 	"path/filepath"
 	"strings"
 
-	tlscomponent "meshify/internal/components/tls"
+	tlscomponent "lanpanel/internal/components/tls"
 )
 
 type InitMode string
@@ -137,13 +137,13 @@ func (result InitResult) nextSteps(configPath string) []string {
 	case InitSourceExample:
 		steps = append(steps,
 			"Edit default.server_url, default.base_domain, and default.certificate_email for your environment.",
-			fmt.Sprintf("If you want guided advanced questions later, generate a separate advanced config with 'meshify init --advanced --config %s' and copy the advanced values you need into %s.", advancedConfigPath, configPath),
+			fmt.Sprintf("If you want guided advanced questions later, generate a separate advanced config with 'lanpanel init --advanced --config %s' and copy the advanced values you need into %s.", advancedConfigPath, configPath),
 		)
 	case InitSourceGuided:
 		if result.Mode == InitModeDefault {
 			steps = append(steps,
 				"Review the generated default section and edit the advanced section only if your environment needs it.",
-				fmt.Sprintf("If you later need guided advanced answers for DNS-01, mirror or offline packages, offline lego archives, package probe timeouts, proxy, architecture, or public IP overrides, generate a separate advanced config with 'meshify init --advanced --config %s' and copy the advanced values you need into %s.", advancedConfigPath, configPath),
+				fmt.Sprintf("If you later need guided advanced answers for DNS-01, mirror or offline packages, offline lego archives, package probe timeouts, proxy, architecture, or public IP overrides, generate a separate advanced config with 'lanpanel init --advanced --config %s' and copy the advanced values you need into %s.", advancedConfigPath, configPath),
 			)
 		} else {
 			steps = append(steps, "Review the generated advanced section before deploy, especially Headscale source, lego source, package probe timeouts, proxy, DNS-01, architecture, and public IP overrides.")
@@ -161,8 +161,8 @@ func (result InitResult) nextSteps(configPath string) []string {
 	}
 
 	steps = append(steps,
-		fmt.Sprintf("Run 'meshify deploy --config %s' to validate the deploy surface with this config.", configPath),
-		fmt.Sprintf("Run 'meshify verify --config %s' to validate this config now.", configPath),
+		fmt.Sprintf("Run 'lanpanel deploy --config %s' to validate the deploy surface with this config.", configPath),
+		fmt.Sprintf("Run 'lanpanel verify --config %s' to validate this config now.", configPath),
 	)
 
 	return steps
@@ -348,7 +348,7 @@ func validationBaseDomainForServerURL(value string) string {
 	}
 
 	host := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(parsedURL.Hostname()), "."))
-	for _, baseDomain := range []string{"meshify-init.invalid", "meshify-init.example", "meshify-init.test"} {
+	for _, baseDomain := range []string{"lanpanel-init.invalid", "lanpanel-init.example", "lanpanel-init.test"} {
 		if host != baseDomain && !strings.HasSuffix(host, "."+baseDomain) {
 			return baseDomain
 		}

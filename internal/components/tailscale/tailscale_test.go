@@ -3,8 +3,8 @@ package tailscale
 import (
 	"context"
 	"errors"
-	"meshify/internal/host"
-	"meshify/internal/preflight"
+	"lanpanel/internal/host"
+	"lanpanel/internal/preflight"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -103,7 +103,7 @@ func TestRepositoryFileCommandDoesNotHideCurlFailure(t *testing.T) {
 		t.Fatalf("repository script = %q, must not pipe curl through tee", script)
 	}
 
-	cmd := exec.Command("sh", "-c", script, "meshify-tailscale-repo-file", command.Args[3], target)
+	cmd := exec.Command("sh", "-c", script, "lanpanel-tailscale-repo-file", command.Args[3], target)
 	cmd.Env = append(os.Environ(), "PATH="+binDir+":"+os.Getenv("PATH"))
 	output, err := cmd.CombinedOutput()
 	if err == nil {
@@ -137,7 +137,7 @@ printf 'repo file\n' > "$out"
 	target := filepath.Join(dir, "repo", "tailscale.list")
 	command := repositoryFileCommand("install-test-repo", "https://pkgs.tailscale.com/stable/debian/trixie.tailscale-keyring.list", target)
 
-	cmd := exec.Command("sh", "-c", command.Args[1], "meshify-tailscale-repo-file", command.Args[3], target)
+	cmd := exec.Command("sh", "-c", command.Args[1], "lanpanel-tailscale-repo-file", command.Args[3], target)
 	cmd.Env = append(os.Environ(), "PATH="+binDir+":"+os.Getenv("PATH"))
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -150,12 +150,12 @@ printf 'repo file\n' > "$out"
 	if string(content) != "repo file\n" {
 		t.Fatalf("target content = %q, want downloaded content", content)
 	}
-	marker, err := os.ReadFile(target + ".meshify-managed")
+	marker, err := os.ReadFile(target + ".lanpanel-managed")
 	if err != nil {
 		t.Fatalf("ReadFile(marker) error = %v", err)
 	}
-	if !strings.Contains(string(marker), "Meshify-managed: tailscale repo file") {
-		t.Fatalf("marker = %q, want Meshify marker", marker)
+	if !strings.Contains(string(marker), "Lanpanel-managed: tailscale repo file") {
+		t.Fatalf("marker = %q, want Lanpanel marker", marker)
 	}
 }
 
@@ -188,7 +188,7 @@ printf 'downloaded repo file\n' > "$out"
 	}
 	command := repositoryFileCommand("install-test-repo", "https://pkgs.tailscale.com/stable/debian/trixie.tailscale-keyring.list", target)
 
-	cmd := exec.Command("sh", "-c", command.Args[1], "meshify-tailscale-repo-file", command.Args[3], target)
+	cmd := exec.Command("sh", "-c", command.Args[1], "lanpanel-tailscale-repo-file", command.Args[3], target)
 	cmd.Env = append(os.Environ(), "PATH="+binDir+":"+os.Getenv("PATH"))
 	output, err := cmd.CombinedOutput()
 	if err == nil {
@@ -723,14 +723,14 @@ func TestEnsureSkipsWhenLoggedInControlURLAndPolicyMatchWithMissingMarkerCommand
 			{},
 			{Stdout: `{"BackendState":"Running","Self":{"Online":true}}`},
 			{Stdout: `{"ControlURL":"https://hs.example.com","RouteAll":false,"CorpDNS":false,"ShieldsUp":true}`},
-			{Stderr: "cat: /var/lib/meshify/tailscale-client.json: No such file or directory\n", ExitCode: 1},
+			{Stderr: "cat: /var/lib/lanpanel/tailscale-client.json: No such file or directory\n", ExitCode: 1},
 		},
 		errors: []error{
 			nil,
 			nil,
 			nil,
 			nil,
-			&host.CommandError{Err: errors.New("exit status 1"), Result: host.Result{ExitCode: 1, Stderr: "cat: /var/lib/meshify/tailscale-client.json: No such file or directory\n"}},
+			&host.CommandError{Err: errors.New("exit status 1"), Result: host.Result{ExitCode: 1, Stderr: "cat: /var/lib/lanpanel/tailscale-client.json: No such file or directory\n"}},
 		},
 	}
 	client := NewClient(host.NewExecutor(runner, nil), preflight.PlatformInfo{})

@@ -2,7 +2,8 @@ package appconfig
 
 import (
 	"fmt"
-	"meshify/internal/acme"
+	"lanpanel/internal/acme"
+	"lanpanel/internal/realip"
 	"net"
 	"net/mail"
 	"net/url"
@@ -10,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -40,6 +42,7 @@ func (c *Config) normalize() {
 	c.Service.WorkingDirectory = strings.TrimSpace(c.Service.WorkingDirectory)
 	c.Service.EnvFile = strings.TrimSpace(c.Service.EnvFile)
 	c.Nginx.ClientMaxBodySize = strings.TrimSpace(c.Nginx.ClientMaxBodySize)
+	c.Nginx.RealIPProfile = strings.TrimSpace(c.Nginx.RealIPProfile)
 	c.Nginx.AccessLog = strings.TrimSpace(c.Nginx.AccessLog)
 	c.Nginx.ErrorLog = strings.TrimSpace(c.Nginx.ErrorLog)
 	c.Nginx.GoAccess.Language = strings.TrimSpace(c.Nginx.GoAccess.Language)
@@ -62,9 +65,16 @@ func (c *Config) normalize() {
 		c.Nginx.StaticLocations[i].Expires = strings.TrimSpace(c.Nginx.StaticLocations[i].Expires)
 		c.Nginx.StaticLocations[i].CacheControl = strings.TrimSpace(c.Nginx.StaticLocations[i].CacheControl)
 	}
+	for name, profile := range c.RealIP.Profiles {
+		profile.Provider = strings.TrimSpace(profile.Provider)
+		profile.RefreshInterval = strings.TrimSpace(profile.RefreshInterval)
+		profile.EdgeOne.ZoneID = strings.TrimSpace(profile.EdgeOne.ZoneID)
+		profile.EdgeOne.EnvFile = strings.TrimSpace(profile.EdgeOne.EnvFile)
+		c.RealIP.Profiles[name] = profile
+	}
 	c.DNS01.Provider = strings.TrimSpace(c.DNS01.Provider)
 	c.DNS01.EnvFile = strings.TrimSpace(c.DNS01.EnvFile)
-	c.Tailscale.MeshifyConfig = strings.TrimSpace(c.Tailscale.MeshifyConfig)
+	c.Tailscale.LanpanelConfig = strings.TrimSpace(c.Tailscale.LanpanelConfig)
 	c.Tailscale.LoginServer = normalizeLoginServer(c.Tailscale.LoginServer)
 	c.Tailscale.Hostname = strings.TrimSpace(c.Tailscale.Hostname)
 	c.Tailscale.AuthKeyFile = strings.TrimSpace(c.Tailscale.AuthKeyFile)
@@ -86,6 +96,7 @@ func (c Config) Validate() error {
 	validateMode(&errs, c)
 	validateService(&errs, c)
 	validateNginx(&errs, c)
+	validateRealIP(&errs, c)
 	validateGoAccessAppListenConflict(&errs, c)
 	validateGoAccessPathConflicts(&errs, c)
 	validateDNS01(&errs, c.App.ACMEChallenge, c.DNS01)
@@ -109,7 +120,7 @@ func validateAppName(errs *validationErrors, name string) {
 		*errs = append(*errs, "app.name must start with a lowercase letter, contain only lowercase letters, digits, and hyphens, and must not end with a hyphen")
 	}
 	if isReservedAppName(name) {
-		*errs = append(*errs, "app.name is reserved by meshify, Headscale, Nginx, or Tailscale")
+		*errs = append(*errs, "app.name is reserved by lanpanel, Headscale, Nginx, or Tailscale")
 	}
 }
 
@@ -263,6 +274,9 @@ func validateNginx(errs *validationErrors, c Config) {
 	if cfg.ClientMaxBodySize != "" && !nginxSizeValuePattern.MatchString(cfg.ClientMaxBodySize) {
 		*errs = append(*errs, "nginx.client_max_body_size must be a simple nginx size such as 20m")
 	}
+	if cfg.RealIPProfile != "" && !isSafeRealIPProfileName(cfg.RealIPProfile) {
+		*errs = append(*errs, "nginx.realip_profile must start with a lowercase letter, contain only lowercase letters, digits, and hyphens, and must not end with a hyphen")
+	}
 	validateNginxOptionalLogPath(errs, "nginx.access_log", cfg.AccessLog, true)
 	validateNginxOptionalLogPath(errs, "nginx.error_log", cfg.ErrorLog, false)
 	validateNginxGoAccess(errs, c)
@@ -314,6 +328,87 @@ func validateNginx(errs *validationErrors, c Config) {
 			*errs = append(*errs, field+".path must not duplicate another static location")
 		}
 		seenPaths[location.Path] = struct{}{}
+	}
+}
+
+func validateRealIP(errs *validationErrors, c Config) {
+	seenNames := map[string]string{}
+	for rawName, profile := range c.RealIP.Profiles {
+		name := strings.TrimSpace(rawName)
+		field := "realip.profiles." + rawName
+		if name == "" {
+			*errs = append(*errs, "realip.profiles profile name must not be empty")
+			continue
+		}
+		if name != rawName {
+			*errs = append(*errs, field+" name must not contain surrounding whitespace")
+		}
+		if !isSafeRealIPProfileName(name) {
+			*errs = append(*errs, field+" name must start with a lowercase letter, contain only lowercase letters, digits, and hyphens, and must not end with a hyphen")
+		}
+		if existing, ok := seenNames[name]; ok {
+			*errs = append(*errs, fmt.Sprintf("realip.profiles contains duplicate normalized profile names %q and %q", existing, rawName))
+		}
+		seenNames[name] = rawName
+		validateRealIPProfile(errs, field, profile)
+	}
+
+	profileName := strings.TrimSpace(c.Nginx.RealIPProfile)
+	if profileName == "" {
+		return
+	}
+	profile, ok := c.RealIP.Profiles[profileName]
+	if !ok {
+		*errs = append(*errs, "nginx.realip_profile references undefined realip profile "+profileName)
+		return
+	}
+	if !profile.IsEnabled() {
+		*errs = append(*errs, "nginx.realip_profile references disabled realip profile "+profileName)
+	}
+	if strings.TrimSpace(profile.Provider) == RealIPProviderEdgeOne && c.App.ACMEChallenge != ACMEChallengeDNS01 {
+		*errs = append(*errs, "app.acme_challenge must be dns-01 when nginx.realip_profile references an EdgeOne profile")
+	}
+}
+
+func validateRealIPProfile(errs *validationErrors, field string, profile RealIPProfileConfig) {
+	if profile.Enabled == nil {
+		*errs = append(*errs, field+".enabled is required")
+	}
+	provider := strings.TrimSpace(profile.Provider)
+	if provider == "" {
+		*errs = append(*errs, field+".provider is required")
+		return
+	}
+	if provider != RealIPProviderEdgeOne {
+		*errs = append(*errs, field+".provider must be edgeone")
+		return
+	}
+	if profile.RefreshInterval != "" {
+		duration, err := realip.RefreshIntervalDuration(profile.RefreshInterval)
+		if err != nil {
+			*errs = append(*errs, field+"."+err.Error())
+		} else if duration < time.Hour {
+			*errs = append(*errs, field+".refresh_interval must be at least 1h; use an explicit refresh command for immediate synchronization")
+		}
+	}
+	enabled := profile.IsEnabled()
+	validateRealIPEdgeOne(errs, field+".edgeone", profile.EdgeOne, enabled)
+}
+
+func validateRealIPEdgeOne(errs *validationErrors, field string, edgeone RealIPEdgeOneConfig, required bool) {
+	zoneID := strings.TrimSpace(edgeone.ZoneID)
+	envFile := strings.TrimSpace(edgeone.EnvFile)
+	if required && zoneID == "" {
+		*errs = append(*errs, field+".zone_id is required when the EdgeOne realip profile is enabled")
+	}
+	if zoneID != "" && !isSafeEdgeOneZoneID(zoneID) {
+		*errs = append(*errs, field+".zone_id must be an EdgeOne zone id such as zone-xxxxxxxx")
+	}
+	if required && envFile == "" {
+		*errs = append(*errs, field+".env_file is required when the EdgeOne realip profile is enabled")
+	}
+	if envFile != "" {
+		validatePathField(errs, field+".env_file", envFile, true)
 	}
 }
 
@@ -443,8 +538,8 @@ func validateGoAccessWebSocketListen(errs *validationErrors, listen string) {
 	if !ok {
 		return
 	}
-	if isReservedMeshifyPort(port) {
-		*errs = append(*errs, "nginx.goaccess.websocket_listen must not reuse Meshify, Headscale, Nginx, or Tailscale reserved ports")
+	if isReservedLanpanelPort(port) {
+		*errs = append(*errs, "nginx.goaccess.websocket_listen must not reuse Lanpanel, Headscale, Nginx, or Tailscale reserved ports")
 	}
 }
 
@@ -570,13 +665,13 @@ func validateGoAccessPathConflicts(errs *validationErrors, c Config) {
 	validateGoAccessAuthFileAppEtcPath(errs, c, authFile)
 	for _, forbidden := range goAccessManagedArtifactPaths(c, canonicalAccessLog) {
 		if cleanPathEqual(authFile, forbidden.path) {
-			*errs = append(*errs, "nginx.goaccess.auth_basic_user_file must not point to Meshify-managed "+forbidden.label+" path")
+			*errs = append(*errs, "nginx.goaccess.auth_basic_user_file must not point to Lanpanel-managed "+forbidden.label+" path")
 			return
 		}
 	}
 	reportDir := filepath.Join("/var/lib", c.ResourceName(), "goaccess")
 	if pathIsUnder(authFile, reportDir) {
-		*errs = append(*errs, "nginx.goaccess.auth_basic_user_file must not be under Meshify-managed GoAccess report directory")
+		*errs = append(*errs, "nginx.goaccess.auth_basic_user_file must not be under Lanpanel-managed GoAccess report directory")
 		return
 	}
 	validateGoAccessAuthFileManagedRootPath(errs, c, authFile)
@@ -605,12 +700,12 @@ func validateGoAccessAuthFileManagedRootPath(errs *validationErrors, c Config, a
 			if !strings.HasSuffix(label, "directory") {
 				label += " directory"
 			}
-			*errs = append(*errs, "nginx.goaccess.auth_basic_user_file must not be under Meshify-managed "+label)
+			*errs = append(*errs, "nginx.goaccess.auth_basic_user_file must not be under Lanpanel-managed "+label)
 			return
 		}
 	}
-	if pathIsUnder(authFile, "/var/log/meshify/apps") {
-		*errs = append(*errs, "nginx.goaccess.auth_basic_user_file must not be under Meshify-managed app log namespace")
+	if pathIsUnder(authFile, "/var/log/lanpanel/apps") {
+		*errs = append(*errs, "nginx.goaccess.auth_basic_user_file must not be under Lanpanel-managed app log namespace")
 		return
 	}
 }
@@ -634,23 +729,23 @@ func validateGoAccessErrorLogPathConflicts(errs *validationErrors, c Config, can
 			continue
 		}
 		if cleanPathEqual(errorLog, forbidden.path) {
-			*errs = append(*errs, "nginx.error_log must not point to Meshify-managed "+forbidden.label+" path")
+			*errs = append(*errs, "nginx.error_log must not point to Lanpanel-managed "+forbidden.label+" path")
 			return
 		}
 	}
 	reportDir := filepath.Join("/var/lib", c.ResourceName(), "goaccess")
 	if pathIsUnder(errorLog, reportDir) {
-		*errs = append(*errs, "nginx.error_log must not be under Meshify-managed GoAccess report directory")
+		*errs = append(*errs, "nginx.error_log must not be under Lanpanel-managed GoAccess report directory")
 		return
 	}
 	for _, root := range goAccessManagedRootPaths(c) {
 		if pathIsUnder(errorLog, root.path) {
-			*errs = append(*errs, "nginx.error_log must not be under Meshify-managed "+root.label+" directory")
+			*errs = append(*errs, "nginx.error_log must not be under Lanpanel-managed "+root.label+" directory")
 			return
 		}
 	}
-	if pathIsUnder(errorLog, "/var/log/meshify/apps") {
-		*errs = append(*errs, "nginx.error_log must not be under Meshify-managed app log namespace")
+	if pathIsUnder(errorLog, "/var/log/lanpanel/apps") {
+		*errs = append(*errs, "nginx.error_log must not be under Lanpanel-managed app log namespace")
 		return
 	}
 }
@@ -660,19 +755,19 @@ func validateGoAccessCanonicalAccessLogPathConflicts(errs *validationErrors, c C
 	if accessLog == "" || accessLog == "off" {
 		return
 	}
-	meshifyAppsLogRoot := "/var/log/meshify/apps"
-	currentAppLogDir := filepath.Join(meshifyAppsLogRoot, c.ResourceName())
+	lanpanelAppsLogRoot := "/var/log/lanpanel/apps"
+	currentAppLogDir := filepath.Join(lanpanelAppsLogRoot, c.ResourceName())
 	currentAppManagedLog := filepath.Join(currentAppLogDir, "access.log")
 	if cleanPathEqual(canonicalAccessLog, currentAppLogDir) {
-		*errs = append(*errs, "nginx.access_log must be a file under the Meshify-managed GoAccess log directory, not the directory itself")
+		*errs = append(*errs, "nginx.access_log must be a file under the Lanpanel-managed GoAccess log directory, not the directory itself")
 		return
 	}
-	if pathIsUnder(canonicalAccessLog, meshifyAppsLogRoot) && !pathIsUnder(canonicalAccessLog, currentAppLogDir) {
-		*errs = append(*errs, "nginx.access_log under /var/log/meshify/apps must stay under the current app log directory")
+	if pathIsUnder(canonicalAccessLog, lanpanelAppsLogRoot) && !pathIsUnder(canonicalAccessLog, currentAppLogDir) {
+		*errs = append(*errs, "nginx.access_log under /var/log/lanpanel/apps must stay under the current app log directory")
 		return
 	}
 	if pathIsUnder(canonicalAccessLog, currentAppLogDir) && !cleanPathEqual(canonicalAccessLog, currentAppManagedLog) {
-		*errs = append(*errs, "nginx.access_log under the Meshify-managed GoAccess log directory must be the direct access.log file")
+		*errs = append(*errs, "nginx.access_log under the Lanpanel-managed GoAccess log directory must be the direct access.log file")
 		return
 	}
 	authFile := strings.TrimSpace(c.Nginx.GoAccess.AuthBasicUserFile)
@@ -685,13 +780,13 @@ func validateGoAccessCanonicalAccessLogPathConflicts(errs *validationErrors, c C
 			continue
 		}
 		if cleanPathEqual(canonicalAccessLog, forbidden.path) {
-			*errs = append(*errs, "nginx.access_log must not point to Meshify-managed "+forbidden.label+" path")
+			*errs = append(*errs, "nginx.access_log must not point to Lanpanel-managed "+forbidden.label+" path")
 			return
 		}
 	}
 	reportDir := filepath.Join("/var/lib", c.ResourceName(), "goaccess")
 	if pathIsUnder(canonicalAccessLog, reportDir) {
-		*errs = append(*errs, "nginx.access_log must not be under Meshify-managed GoAccess report directory")
+		*errs = append(*errs, "nginx.access_log must not be under Lanpanel-managed GoAccess report directory")
 		return
 	}
 	if cleanPathEqual(canonicalAccessLog, currentAppManagedLog) {
@@ -699,7 +794,7 @@ func validateGoAccessCanonicalAccessLogPathConflicts(errs *validationErrors, c C
 	}
 	for _, root := range goAccessManagedRootPaths(c) {
 		if pathIsUnder(canonicalAccessLog, root.path) {
-			*errs = append(*errs, "nginx.access_log must not be under Meshify-managed "+root.label+" directory")
+			*errs = append(*errs, "nginx.access_log must not be under Lanpanel-managed "+root.label+" directory")
 			return
 		}
 	}
@@ -719,7 +814,7 @@ func goAccessManagedArtifactPaths(c Config, canonicalAccessLog string) []goAcces
 	primaryDomain := c.PrimaryDomain()
 	varLibDir := filepath.Join("/var/lib", appName)
 	etcDir := filepath.Join("/etc", appName)
-	hookDir := filepath.Join("/usr/local/lib/meshify/apps", appName)
+	hookDir := filepath.Join("/usr/local/lib/lanpanel/apps", appName)
 	goAccessReportDir := filepath.Join(varLibDir, "goaccess")
 	paths := []goAccessManagedPath{
 		{label: "Nginx site", path: filepath.Join("/etc/nginx/sites-available", appName+".conf")},
@@ -728,9 +823,9 @@ func goAccessManagedArtifactPaths(c Config, canonicalAccessLog string) []goAcces
 		{label: "lego renew service", path: filepath.Join("/etc/systemd/system", appName+"-lego-renew.service")},
 		{label: "lego renew timer", path: filepath.Join("/etc/systemd/system", appName+"-lego-renew.timer")},
 		{label: "deploy hook", path: filepath.Join(hookDir, "install-cert-and-reload-nginx.sh")},
-		{label: "app var marker", path: filepath.Join(varLibDir, ".meshify-managed")},
-		{label: "app etc marker", path: filepath.Join(etcDir, ".meshify-managed")},
-		{label: "app hook marker", path: filepath.Join(hookDir, ".meshify-managed")},
+		{label: "app var marker", path: filepath.Join(varLibDir, ".lanpanel-managed")},
+		{label: "app etc marker", path: filepath.Join(etcDir, ".lanpanel-managed")},
+		{label: "app hook marker", path: filepath.Join(hookDir, ".lanpanel-managed")},
 		{label: "GoAccess config", path: filepath.Join(etcDir, "goaccess.conf")},
 		{label: "GoAccess service", path: filepath.Join("/etc/systemd/system", appName+"-goaccess.service")},
 		{label: "GoAccess logrotate", path: filepath.Join("/etc/logrotate.d", appName+"-goaccess")},
@@ -738,12 +833,12 @@ func goAccessManagedArtifactPaths(c Config, canonicalAccessLog string) []goAcces
 		{label: "GoAccess report", path: filepath.Join(goAccessReportDir, "report.html")},
 		{label: "GoAccess db", path: filepath.Join(goAccessReportDir, "db")},
 		{label: "GoAccess canonical access log", path: canonicalAccessLog},
-		{label: "GoAccess log marker", path: filepath.Join("/var/log/meshify/apps", appName, ".meshify-managed")},
+		{label: "GoAccess log marker", path: filepath.Join("/var/log/lanpanel/apps", appName, ".lanpanel-managed")},
 	}
 	if primaryDomain != "" {
 		tlsDir := filepath.Join(etcDir, "tls", primaryDomain)
 		paths = append(paths,
-			goAccessManagedPath{label: "TLS marker", path: filepath.Join(tlsDir, ".meshify-managed")},
+			goAccessManagedPath{label: "TLS marker", path: filepath.Join(tlsDir, ".lanpanel-managed")},
 			goAccessManagedPath{label: "TLS fullchain", path: filepath.Join(tlsDir, "fullchain.pem")},
 			goAccessManagedPath{label: "TLS private key", path: filepath.Join(tlsDir, "privkey.pem")},
 		)
@@ -756,8 +851,8 @@ func goAccessManagedRootPaths(c Config) []goAccessManagedPath {
 	return []goAccessManagedPath{
 		{label: "app var root", path: filepath.Join("/var/lib", appName)},
 		{label: "app etc root", path: filepath.Join("/etc", appName)},
-		{label: "app hook root", path: filepath.Join("/usr/local/lib/meshify/apps", appName)},
-		{label: "GoAccess log directory", path: filepath.Join("/var/log/meshify/apps", appName)},
+		{label: "app hook root", path: filepath.Join("/usr/local/lib/lanpanel/apps", appName)},
+		{label: "GoAccess log directory", path: filepath.Join("/var/log/lanpanel/apps", appName)},
 	}
 }
 
@@ -946,12 +1041,12 @@ func validateTailscale(errs *validationErrors, c Config) {
 	if c.Tailscale.LoginServer != "" {
 		validateLoginServer(errs, c.Tailscale.LoginServer)
 		validateLoginServerDoesNotReuseAppDomain(errs, c.Tailscale.LoginServer, c.App.Domains)
-		if c.Tailscale.MeshifyConfig != "" {
-			*errs = append(*errs, "tailscale.meshify_config must be empty when tailscale.login_server is set")
+		if c.Tailscale.LanpanelConfig != "" {
+			*errs = append(*errs, "tailscale.lanpanel_config must be empty when tailscale.login_server is set")
 		}
 	}
-	if c.Tailscale.MeshifyConfig != "" {
-		validateConfigPathField(errs, "tailscale.meshify_config", c.Tailscale.MeshifyConfig)
+	if c.Tailscale.LanpanelConfig != "" {
+		validateConfigPathField(errs, "tailscale.lanpanel_config", c.Tailscale.LanpanelConfig)
 	}
 	if c.Tailscale.Hostname != "" && !isSafeHostname(c.Tailscale.Hostname) {
 		*errs = append(*errs, "tailscale.hostname must contain only lowercase letters, digits, and hyphens, and must not start or end with a hyphen")
@@ -1044,8 +1139,8 @@ func validateListenAddress(errs *validationErrors, field string, address string)
 	if !ok {
 		return
 	}
-	if isReservedMeshifyPort(port) {
-		*errs = append(*errs, field+" must not reuse Meshify, Headscale, Nginx, or Tailscale reserved ports")
+	if isReservedLanpanelPort(port) {
+		*errs = append(*errs, field+" must not reuse Lanpanel, Headscale, Nginx, or Tailscale reserved ports")
 	}
 }
 
@@ -1145,6 +1240,22 @@ func isSafeAppName(value string) bool {
 	return isSafeName(value) && value[0] >= 'a' && value[0] <= 'z'
 }
 
+func isSafeRealIPProfileName(value string) bool {
+	return isSafeName(value) && value[0] >= 'a' && value[0] <= 'z'
+}
+
+func isSafeEdgeOneZoneID(value string) bool {
+	if !strings.HasPrefix(value, "zone-") || len(value) <= len("zone-") {
+		return false
+	}
+	for _, r := range value[len("zone-"):] {
+		if (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') && (r < '0' || r > '9') {
+			return false
+		}
+	}
+	return true
+}
+
 func isSafeHostname(value string) bool {
 	return isSafeName(value)
 }
@@ -1181,7 +1292,7 @@ func isReservedAppName(name string) bool {
 		"mail",
 		"man",
 		"messagebus",
-		"meshify",
+		"lanpanel",
 		"news",
 		"nginx",
 		"nogroup",
@@ -1243,7 +1354,7 @@ func isTailscaleIPv4(ip net.IP) bool {
 	return ip4 != nil && ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127
 }
 
-func isReservedMeshifyPort(port int) bool {
+func isReservedLanpanelPort(port int) bool {
 	switch port {
 	case 80, 443, 3478, 8080, 50443, 19090:
 		return true

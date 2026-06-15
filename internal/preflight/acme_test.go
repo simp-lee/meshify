@@ -1,7 +1,7 @@
 package preflight
 
 import (
-	"meshify/internal/config"
+	"lanpanel/internal/config"
 	"strings"
 	"testing"
 )
@@ -24,7 +24,7 @@ func TestCheckACMEPrerequisites(t *testing.T) {
 				CertificateEmail: "ops@example.com",
 			},
 			wantStatus:  StatusPass,
-			wantSummary: "HTTP-01 challenge routing will be verified after meshify installs and activates Nginx.",
+			wantSummary: "HTTP-01 challenge routing will be verified after lanpanel installs and activates Nginx.",
 			wantText:    "Certificate host: hs.example.com.",
 		},
 		{
@@ -35,10 +35,10 @@ func TestCheckACMEPrerequisites(t *testing.T) {
 				CertificateEmail: "ops@example.com",
 				HTTP01Checked:    true,
 				HTTP01Ready:      false,
-				HTTP01Detail:     "http://hs.example.com/.well-known/acme-challenge/meshify-preflight returned 403.",
+				HTTP01Detail:     "http://hs.example.com/.well-known/acme-challenge/lanpanel-preflight returned 403.",
 			},
 			wantStatus:  StatusWarn,
-			wantSummary: "HTTP-01 challenge routing was not reachable before deploy; meshify will verify it after Nginx is installed.",
+			wantSummary: "HTTP-01 challenge routing was not reachable before deploy; lanpanel will verify it after Nginx is installed.",
 			wantText:    "HTTP-01 detail",
 		},
 		{
@@ -51,7 +51,7 @@ func TestCheckACMEPrerequisites(t *testing.T) {
 				HTTP01Ready:      true,
 			},
 			wantStatus:  StatusPass,
-			wantSummary: "HTTP-01 challenge routing will be verified after meshify installs and activates Nginx.",
+			wantSummary: "HTTP-01 challenge routing will be verified after lanpanel installs and activates Nginx.",
 		},
 		{
 			name: "dns01 fails when provider is missing",
@@ -84,7 +84,7 @@ func TestCheckACMEPrerequisites(t *testing.T) {
 				DNSProvider:           "cloudflare",
 				DNSCredentialsChecked: true,
 				DNSCredentialsReady:   false,
-				DNSCredentialsDetail:  "DNS provider \"cloudflare\" requires advanced.dns01.env_file so initial issuance and meshify-lego-renew.service use the same provider environment.",
+				DNSCredentialsDetail:  "DNS provider \"cloudflare\" requires advanced.dns01.env_file so initial issuance and lanpanel-lego-renew.service use the same provider environment.",
 			},
 			wantStatus:  StatusFail,
 			wantSummary: "DNS-01 credentials are not ready for certificate issuance or renewal.",
@@ -99,13 +99,13 @@ func TestCheckACMEPrerequisites(t *testing.T) {
 				PlatformID:            "debian",
 				PlatformVersion:       "13",
 				DNSProvider:           "digitalocean",
-				DNSCredentialEnvFile:  "/etc/meshify/dns01/digitalocean.env",
+				DNSCredentialEnvFile:  "/etc/lanpanel/dns01/digitalocean.env",
 				DNSCredentialsChecked: true,
 				DNSCredentialsReady:   true,
 			},
 			wantStatus:  StatusPass,
 			wantSummary: "DNS-01 prerequisites look ready for certificate issuance.",
-			wantText:    "DNS-01 env file: /etc/meshify/dns01/digitalocean.env.",
+			wantText:    "DNS-01 env file: /etc/lanpanel/dns01/digitalocean.env.",
 		},
 		{
 			name: "dns01 passes for google application credentials on ubuntu",
@@ -116,10 +116,10 @@ func TestCheckACMEPrerequisites(t *testing.T) {
 				PlatformID:            "ubuntu",
 				PlatformVersion:       "24.04",
 				DNSProvider:           "google",
-				DNSCredentialEnvFile:  "/etc/meshify/dns01/gcloud.env",
+				DNSCredentialEnvFile:  "/etc/lanpanel/dns01/gcloud.env",
 				DNSCredentialsChecked: true,
 				DNSCredentialsReady:   true,
-				DNSCredentialsDetail:  "Using lego env_file for DNS provider \"gcloud\": /etc/meshify/dns01/gcloud.env.",
+				DNSCredentialsDetail:  "Using lego env_file for DNS provider \"gcloud\": /etc/lanpanel/dns01/gcloud.env.",
 			},
 			wantStatus:  StatusPass,
 			wantSummary: "DNS-01 prerequisites look ready for certificate issuance.",

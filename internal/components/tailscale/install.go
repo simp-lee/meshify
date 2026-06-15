@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"meshify/internal/host"
-	"meshify/internal/preflight"
+	"lanpanel/internal/host"
+	"lanpanel/internal/preflight"
 	"os"
 	"strings"
 )
@@ -88,13 +88,13 @@ func (client Client) Ensure(ctx context.Context, plan EnsurePlan) (EnsureResult,
 				return result, err
 			}
 			if prefs.ControlURL == "" {
-				return result, fmt.Errorf("tailscale is already logged in, but Meshify cannot prove its login server; refusing to reset or rejoin automatically")
+				return result, fmt.Errorf("tailscale is already logged in, but Lanpanel cannot prove its login server; refusing to reset or rejoin automatically")
 			}
 			if prefs.ControlURL != normalizeControlURL(loginServer) {
 				return result, fmt.Errorf("tailscale is already logged in to %s, not %s; refusing to reset or rejoin automatically", prefs.ControlURL, loginServer)
 			}
-			if !prefs.MatchesMeshifyPolicy() {
-				return result, fmt.Errorf("tailscale is already logged in but live policy does not match Meshify app policy (%s); refusing to change policy, reset, or rejoin automatically", prefs.PolicySummary())
+			if !prefs.MatchesLanpanelPolicy() {
+				return result, fmt.Errorf("tailscale is already logged in but live policy does not match Lanpanel app policy (%s); refusing to change policy, reset, or rejoin automatically", prefs.PolicySummary())
 			}
 			markerResult, markerErr := client.executor.Run(ctx, host.Command{Name: "cat", Args: []string{MarkerPath}})
 			if markerErr != nil {
@@ -102,7 +102,7 @@ func (client Client) Ensure(ctx context.Context, plan EnsurePlan) (EnsureResult,
 					return result, markerErr
 				}
 				if strings.TrimSpace(plan.Hostname) != "" {
-					return result, fmt.Errorf("tailscale is already logged in, but Meshify cannot prove requested hostname %q without %s; refusing to reset or rejoin automatically", strings.TrimSpace(plan.Hostname), MarkerPath)
+					return result, fmt.Errorf("tailscale is already logged in, but Lanpanel cannot prove requested hostname %q without %s; refusing to reset or rejoin automatically", strings.TrimSpace(plan.Hostname), MarkerPath)
 				}
 			} else {
 				marker, err := ParseMarker([]byte(markerResult.Stdout))

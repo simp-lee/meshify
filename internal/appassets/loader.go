@@ -1,6 +1,6 @@
 package appassets
 
-import "meshify/internal/assets"
+import "lanpanel/internal/assets"
 
 type Loader struct {
 	loader assets.Loader

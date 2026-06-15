@@ -567,27 +567,27 @@ func TestValidateDNS01RequiresProviderWhenEnabled(t *testing.T) {
 	}{
 		{
 			name: "newline injection",
-			path: "/etc/meshify/dns01/cloudflare.env\nExecStart=/bin/false",
+			path: "/etc/lanpanel/dns01/cloudflare.env\nExecStart=/bin/false",
 			want: "must not contain whitespace or control characters",
 		},
 		{
 			name: "space",
-			path: "/etc/meshify/dns01/cloudflare env",
+			path: "/etc/lanpanel/dns01/cloudflare env",
 			want: "must not contain whitespace or control characters",
 		},
 		{
 			name: "specifier",
-			path: "/etc/meshify/dns01/%i.env",
+			path: "/etc/lanpanel/dns01/%i.env",
 			want: "must not contain systemd glob, specifier, quote, or escape characters",
 		},
 		{
 			name: "glob",
-			path: "/etc/meshify/dns01/*.env",
+			path: "/etc/lanpanel/dns01/*.env",
 			want: "must not contain systemd glob, specifier, quote, or escape characters",
 		},
 		{
 			name: "dot segment",
-			path: "/etc/meshify/dns01/../cloudflare.env",
+			path: "/etc/lanpanel/dns01/../cloudflare.env",
 			want: "must be a clean absolute path",
 		},
 	} {
@@ -603,7 +603,7 @@ func TestValidateDNS01RequiresProviderWhenEnabled(t *testing.T) {
 		})
 	}
 
-	cfg.Advanced.DNS01.EnvFile = "/etc/meshify/cloudflare.env"
+	cfg.Advanced.DNS01.EnvFile = "/etc/lanpanel/cloudflare.env"
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v, want nil after provider env file set", err)
 	}
@@ -617,7 +617,7 @@ func TestValidateDNS01RequiresProviderWhenEnabled(t *testing.T) {
 	if !strings.Contains(err.Error(), "advanced.dns01.env_file is required for DNS-01 renewal with lego DNS provider tencentcloud") {
 		t.Fatalf("Validate() error = %q, want tencentcloud env file failure", err.Error())
 	}
-	cfg.Advanced.DNS01.EnvFile = "/etc/meshify/tencentcloud.env"
+	cfg.Advanced.DNS01.EnvFile = "/etc/lanpanel/tencentcloud.env"
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v, want nil for tencentcloud env file", err)
 	}
@@ -627,7 +627,7 @@ func TestValidateDNS01RequiresProviderWhenEnabled(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v, want nil for route53 ambient credentials", err)
 	}
-	cfg.Advanced.DNS01.EnvFile = "/etc/meshify/route53.env"
+	cfg.Advanced.DNS01.EnvFile = "/etc/lanpanel/route53.env"
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v, want nil for route53 env file", err)
 	}
@@ -637,7 +637,7 @@ func TestValidateDNS01RequiresProviderWhenEnabled(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v, want nil for gcloud ambient credentials", err)
 	}
-	cfg.Advanced.DNS01.EnvFile = "/etc/meshify/gcloud.env"
+	cfg.Advanced.DNS01.EnvFile = "/etc/lanpanel/gcloud.env"
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v, want nil for google alias with env file", err)
 	}
@@ -673,7 +673,7 @@ default:
   certificate_email: ops@example.com
 advanced:
   dns01:
-    credentials_file: /etc/meshify/dns01/cloudflare.env
+    credentials_file: /etc/lanpanel/dns01/cloudflare.env
 `,
 			want: "field credentials_file not found",
 		},
@@ -733,7 +733,7 @@ default:
 func TestExportAndLoadFileRoundTrip(t *testing.T) {
 	t.Parallel()
 
-	path := filepath.Join(t.TempDir(), "meshify.yaml")
+	path := filepath.Join(t.TempDir(), "lanpanel.yaml")
 	want := validConfig()
 	want.Advanced.Proxy.HTTPProxy = "http://proxy.internal:8080"
 	want.Advanced.Proxy.NoProxy = "127.0.0.1,localhost"
@@ -765,7 +765,7 @@ func TestExampleYAMLMatchesPublicTemplate(t *testing.T) {
 		t.Fatalf("ExampleYAML() error = %v", err)
 	}
 
-	want, err := os.ReadFile(filepath.Join("..", "..", "deploy", "config", "meshify.yaml.example"))
+	want, err := os.ReadFile(filepath.Join("..", "..", "deploy", "config", "lanpanel.yaml.example"))
 	if err != nil {
 		t.Fatalf("ReadFile() error = %v", err)
 	}

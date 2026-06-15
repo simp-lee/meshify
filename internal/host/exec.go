@@ -1,4 +1,4 @@
-// Package host provides host execution and file mutation primitives for meshify deployments.
+// Package host provides host execution and file mutation primitives for lanpanel deployments.
 package host
 
 import (

@@ -3,9 +3,9 @@ package appassets
 import (
 	"fmt"
 	"io/fs"
-	"meshify/internal/appconfig"
-	"meshify/internal/assets"
-	"meshify/internal/components/appsvc"
+	"lanpanel/internal/appconfig"
+	"lanpanel/internal/assets"
+	"lanpanel/internal/components/appsvc"
 	"slices"
 )
 

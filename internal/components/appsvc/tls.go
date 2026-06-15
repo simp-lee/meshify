@@ -2,9 +2,9 @@ package appsvc
 
 import (
 	"fmt"
-	"meshify/internal/acme"
-	"meshify/internal/appconfig"
-	"meshify/internal/host"
+	"lanpanel/internal/acme"
+	"lanpanel/internal/appconfig"
+	"lanpanel/internal/host"
 	"strings"
 )
 
@@ -59,7 +59,7 @@ if [ -s "$cert" ] && [ -s "$key" ] && [ -s "$metadata" ]; then
     LEGO_HOOK_CERT_PATH="$cert" LEGO_HOOK_CERT_KEY_PATH="$key" "$hook"
 fi
 exec "$lego" "$@" --deploy-hook "$hook"`
-	args := []string{"-c", script, "meshify-app-lego-issue-or-renew", LegoBinaryPath, names.LegoDataPath, strings.TrimSpace(primaryDomain), names.HookPath}
+	args := []string{"-c", script, "lanpanel-app-lego-issue-or-renew", LegoBinaryPath, names.LegoDataPath, strings.TrimSpace(primaryDomain), names.HookPath}
 	args = append(args, legoArgs...)
 	displayArgs := append([]string(nil), legoArgs...)
 	displayArgs = append(displayArgs, "--deploy-hook", names.HookPath)
@@ -78,33 +78,33 @@ tls_dir=$2
 marker=$3
 fullchain=$4
 privkey=$5
-expected_marker="Meshify-managed: app.name=$app_name"
+expected_marker="Lanpanel-managed: app.name=$app_name"
 
 if [ -e "$marker" ]; then
     actual_marker=$(cat "$marker")
     if [ "$actual_marker" = "$expected_marker" ]; then
         exit 0
     fi
-    echo "$marker is managed by a different Meshify app; refusing to write app TLS files" >&2
+    echo "$marker is managed by a different Lanpanel app; refusing to write app TLS files" >&2
     exit 1
 fi
 
 for target in "$fullchain" "$privkey"; do
     if [ -e "$target" ]; then
-        echo "$target exists but $marker is missing; refusing to overwrite non-Meshify TLS file" >&2
+        echo "$target exists but $marker is missing; refusing to overwrite non-Lanpanel TLS file" >&2
         exit 1
     fi
 done
 
 install -d -m 0755 "$tls_dir"
-tmp=$(mktemp "$tls_dir/.meshify-managed.XXXXXX")
+tmp=$(mktemp "$tls_dir/.lanpanel-managed.XXXXXX")
 trap 'rm -f "$tmp"' EXIT INT TERM
 printf '%s\n' "$expected_marker" > "$tmp"
 chmod 0600 "$tmp"
 mv "$tmp" "$marker"`
 	return host.Command{
 		Name:        "sh",
-		Args:        []string{"-c", script, "meshify-app-tls-ownership-guard", names.AppName, names.TLSDir, names.TLSMarkerPath, names.FullchainPath, names.PrivateKeyPath},
+		Args:        []string{"-c", script, "lanpanel-app-tls-ownership-guard", names.AppName, names.TLSDir, names.TLSMarkerPath, names.FullchainPath, names.PrivateKeyPath},
 		DisplayName: "guard-app-tls",
 		DisplayArgs: []string{names.TLSDir},
 	}
@@ -122,7 +122,7 @@ if [ ! -s "$fullchain" ] || [ ! -s "$privkey" ]; then
 fi`
 	return []host.Command{
 		{Name: "mkdir", Args: []string{"-p", "-m", "0755", "--", names.WebrootPath, names.LegoDataPath, names.TLSDir}},
-		{Name: "sh", Args: []string{"-c", script, "meshify-app-tls-bootstrap", names.FullchainPath, names.PrivateKeyPath, names.AppName}},
+		{Name: "sh", Args: []string{"-c", script, "lanpanel-app-tls-bootstrap", names.FullchainPath, names.PrivateKeyPath, names.AppName}},
 	}
 }
 
@@ -130,7 +130,7 @@ func commandWithEnvFile(envFile string, command host.Command) host.Command {
 	script := `set -eu
 env_file=$1
 shift
-trim_meshify_env_value() {
+trim_lanpanel_env_value() {
     value=$1
     while :; do
         case "$value" in
@@ -149,7 +149,7 @@ trim_meshify_env_value() {
     printf '%s' "$value"
 }
 while IFS= read -r line || [ -n "$line" ]; do
-    line=$(trim_meshify_env_value "$line")
+    line=$(trim_lanpanel_env_value "$line")
     case "$line" in
         ""|"#"*|";"*) continue ;;
         export\ *)
@@ -159,8 +159,8 @@ while IFS= read -r line || [ -n "$line" ]; do
         *=*) ;;
         *) continue ;;
     esac
-    key=$(trim_meshify_env_value "${line%%=*}")
-    value=$(trim_meshify_env_value "${line#*=}")
+    key=$(trim_lanpanel_env_value "${line%%=*}")
+    value=$(trim_lanpanel_env_value "${line#*=}")
     case "$key" in
         ""|[0-9]*|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_]*)
             echo "unsupported DNS env_file variable name" >&2
@@ -175,7 +175,7 @@ while IFS= read -r line || [ -n "$line" ]; do
     export "$key=$value"
 done < "$env_file"
 exec "$@"`
-	args := []string{"-c", script, "meshify-app-lego-dns01", strings.TrimSpace(envFile), command.Name}
+	args := []string{"-c", script, "lanpanel-app-lego-dns01", strings.TrimSpace(envFile), command.Name}
 	args = append(args, command.Args...)
 	displayName := command.DisplayName
 	if strings.TrimSpace(displayName) == "" {

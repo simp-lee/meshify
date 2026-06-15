@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"meshify/internal/host"
+	"lanpanel/internal/host"
 	"regexp"
 	"strconv"
 	"strings"
@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	DefaultUserName             = "meshify"
+	DefaultUserName             = "lanpanel"
 	DefaultPreAuthKeyExpiration = 24 * time.Hour
 )
 

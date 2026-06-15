@@ -26,6 +26,11 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Install Nginx for runtime fixture tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nginx
+
       - name: Test
         run: go test ./...
 
@@ -35,9 +40,9 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           for arch in amd64 arm64; do
-            output="dist/meshify_linux_${arch}"
+            output="dist/lanpanel_linux_${arch}"
             GOOS=linux GOARCH="${arch}" CGO_ENABLED=0 \
-              go build -trimpath -ldflags="-s -w -X main.version=${GITHUB_REF_NAME}" -o "${output}" ./cmd/meshify
+              go build -trimpath -ldflags="-s -w -X main.version=${GITHUB_REF_NAME}" -o "${output}" ./cmd/lanpanel
           done
 
       - name: Generate checksums
@@ -45,7 +50,7 @@ jobs:
         run: |
           set -euo pipefail
           cd dist
-          sha256sum meshify_linux_* > checksums.txt
+          sha256sum lanpanel_linux_* > checksums.txt
 
       - name: Generate artifact attestations
         uses: actions/attest-build-provenance@v2

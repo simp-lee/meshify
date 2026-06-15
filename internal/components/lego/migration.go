@@ -1,18 +1,18 @@
 package lego
 
 import (
-	"meshify/internal/host"
+	"lanpanel/internal/host"
 	"strings"
 )
 
-const MigrationMarkerName = ".meshify-lego-v5-ready"
+const MigrationMarkerName = ".lanpanel-lego-v5-ready"
 
 func MigrationGateCommand(dataPath string) host.Command {
 	dataPath = strings.TrimSpace(dataPath)
 	script := `set -eu
 lego=$1
 lego_path=$2
-marker="$lego_path/.meshify-lego-v5-ready"
+marker="$lego_path/.lanpanel-lego-v5-ready"
 
 if [ -z "$lego_path" ]; then
     echo "lego data path is required for v5 storage migration" >&2
@@ -51,7 +51,7 @@ if [ ! -d "$lego_path/accounts" ] && [ ! -d "$lego_path/certificates" ]; then
     exit 1
 fi
 
-backup=$(mktemp -d "$lego_path.meshify-v4-backup.XXXXXX")
+backup=$(mktemp -d "$lego_path.lanpanel-v4-backup.XXXXXX")
 cp -a "$lego_path/." "$backup/"
 if ! printf 'y\n' | "$lego" migrate --path "$lego_path"; then
     echo "lego v5 storage migration failed for $lego_path; backup preserved at $backup" >&2
@@ -60,8 +60,8 @@ fi
 touch "$marker"`
 	return host.Command{
 		Name:        "sh",
-		Args:        []string{"-c", script, "meshify-lego-v5-migration-gate", BinaryPath, dataPath},
-		DisplayName: "meshify-lego-v5-migration-gate",
+		Args:        []string{"-c", script, "lanpanel-lego-v5-migration-gate", BinaryPath, dataPath},
+		DisplayName: "lanpanel-lego-v5-migration-gate",
 		DisplayArgs: []string{dataPath},
 	}
 }

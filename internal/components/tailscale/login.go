@@ -3,7 +3,7 @@ package tailscale
 import (
 	"encoding/json"
 	"fmt"
-	"meshify/internal/host"
+	"lanpanel/internal/host"
 	"strings"
 )
 
@@ -50,15 +50,15 @@ func MarkerInstallCommand(marker Marker) (host.Command, error) {
 		return host.Command{}, fmt.Errorf("marshal tailscale marker: %w", err)
 	}
 	script := `set -eu
-install -d -m 0700 /var/lib/meshify
-tmp=$(mktemp /var/lib/meshify/tailscale-client.json.XXXXXX)
+install -d -m 0700 /var/lib/lanpanel
+tmp=$(mktemp /var/lib/lanpanel/tailscale-client.json.XXXXXX)
 trap 'rm -f "$tmp"' EXIT INT TERM
 cat > "$tmp"
 chmod 0600 "$tmp"
-mv "$tmp" /var/lib/meshify/tailscale-client.json`
+mv "$tmp" /var/lib/lanpanel/tailscale-client.json`
 	return host.Command{
 		Name:        "sh",
-		Args:        []string{"-c", script, "meshify-tailscale-marker"},
+		Args:        []string{"-c", script, "lanpanel-tailscale-marker"},
 		Stdin:       data,
 		DisplayName: "install-tailscale-marker",
 		DisplayArgs: []string{MarkerPath},

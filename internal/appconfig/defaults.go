@@ -77,7 +77,7 @@ func (c Config) NginxGoAccessCanonicalAccessLogPath() string {
 	if accessLog != "" && accessLog != "off" {
 		return accessLog
 	}
-	return filepath.Join("/var/log/meshify/apps", c.ResourceName(), "access.log")
+	return filepath.Join("/var/log/lanpanel/apps", c.ResourceName(), "access.log")
 }
 
 func (c Config) NginxGoAccessManagesCanonicalAccessLog() bool {
@@ -89,14 +89,14 @@ func (c Config) NginxGoAccessManagesCanonicalAccessLog() bool {
 		return true
 	}
 	cleanAccessLog := filepath.Clean(accessLog)
-	return cleanAccessLog == filepath.Join("/var/log/meshify/apps", c.ResourceName(), "access.log")
+	return cleanAccessLog == filepath.Join("/var/log/lanpanel/apps", c.ResourceName(), "access.log")
 }
 
 func (c Config) NginxGoAccessDashboardPath() string {
 	if value := strings.TrimSpace(c.Nginx.GoAccess.Path); value != "" {
 		return value
 	}
-	return filepath.Join("/_meshify/apps", c.ResourceName(), DefaultNginxGoAccessPathSuffix)
+	return filepath.Join("/_lanpanel/apps", c.ResourceName(), DefaultNginxGoAccessPathSuffix)
 }
 
 func (c Config) NginxGoAccessWebSocketPath() string {
@@ -114,18 +114,35 @@ func (c Config) ServiceBinary() string {
 	return fields[0]
 }
 
-func (c Config) EffectiveMeshifyConfig() string {
+func (c Config) EffectiveLanpanelConfig() string {
 	if strings.TrimSpace(c.Tailscale.LoginServer) != "" {
 		return ""
 	}
-	if path := strings.TrimSpace(c.Tailscale.MeshifyConfig); path != "" {
+	if path := strings.TrimSpace(c.Tailscale.LanpanelConfig); path != "" {
 		return path
 	}
-	return DefaultMeshifyConfigPath
+	return DefaultLanpanelConfigPath
 }
 
 func (c Config) NginxHTTP2Enabled() bool {
 	return c.Nginx.HTTP2Enabled()
+}
+
+func (c Config) RealIPProfile(name string) (RealIPProfileConfig, bool) {
+	if c.RealIP.Profiles == nil {
+		return RealIPProfileConfig{}, false
+	}
+	profile, ok := c.RealIP.Profiles[strings.TrimSpace(name)]
+	return profile, ok
+}
+
+func (c Config) RealIPEnabled() bool {
+	name := strings.TrimSpace(c.Nginx.RealIPProfile)
+	if name == "" {
+		return false
+	}
+	profile, ok := c.RealIPProfile(name)
+	return ok && profile.IsEnabled()
 }
 
 func (n NginxConfig) HTTP2Enabled() bool {
@@ -137,6 +154,17 @@ func (n NginxConfig) EffectiveClientMaxBodySize() string {
 		return value
 	}
 	return DefaultNginxClientMaxBodySize
+}
+
+func (p RealIPProfileConfig) IsEnabled() bool {
+	return p.Enabled != nil && *p.Enabled
+}
+
+func (p RealIPProfileConfig) EffectiveRefreshInterval() string {
+	if value := strings.TrimSpace(p.RefreshInterval); value != "" {
+		return value
+	}
+	return DefaultRealIPRefreshInterval
 }
 
 func (g NginxGoAccessConfig) EffectiveLanguage() string {
@@ -157,7 +185,7 @@ func (g NginxGoAccessConfig) EffectivePath() string {
 	if value := strings.TrimSpace(g.Path); value != "" {
 		return value
 	}
-	return filepath.Join("/_meshify/apps", "<app-name>", DefaultNginxGoAccessPathSuffix)
+	return filepath.Join("/_lanpanel/apps", "<app-name>", DefaultNginxGoAccessPathSuffix)
 }
 
 func (g NginxGoAccessConfig) EffectiveWebSocketPath() string {
@@ -181,7 +209,7 @@ func DefaultNginxGoAccessWebSocketPort(appName string) int {
 	offset := int(hash.Sum32() % NginxGoAccessWebSocketPortSpan)
 	for {
 		port := NginxGoAccessWebSocketPortBase + offset
-		if !isReservedMeshifyPort(port) {
+		if !isReservedLanpanelPort(port) {
 			return port
 		}
 		offset = (offset + 1) % NginxGoAccessWebSocketPortSpan
